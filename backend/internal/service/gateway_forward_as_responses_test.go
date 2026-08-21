@@ -134,6 +134,43 @@ func TestHandleResponsesStreamingResponse_RestoresNamespaceTool(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), `"name":"codex_app__read_thread"`)
 }
 
+func TestHandleResponsesStreamingResponse_RestoresSparseCustomToolOnTruncatedStream(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	// The upstream closes before message_stop/content_block_stop. The gateway
+	// must still restore the synthetic terminal events to the client-side
+	// custom_tool_call shape instead of leaking the lowered function alias.
+	stream := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_truncated","type":"message","role":"assistant","content":[],"model":"deepseek-v4-flash","stop_reason":"","usage":{"input_tokens":10}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_sparse","name":"functions__exec","input":{"input":"pwd"}}}`,
+		``,
+	}, "\n")
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(stream))}
+	mapping := apicompat.ResponsesClientToolMapping{
+		CustomTools: map[string]bool{"exec": true},
+		NamespaceTools: map[string]apicompat.ResponsesNamespaceName{
+			"functions__wait": {Namespace: "functions", Name: "wait"},
+		},
+	}
+
+	svc := &GatewayService{}
+	_, err := svc.handleResponsesStreamingResponse(resp, c, "deepseek-v4-flash", "deepseek-v4-flash", nil, time.Now(), mapping)
+	require.NoError(t, err)
+	body := rec.Body.String()
+	require.Contains(t, body, `"type":"custom_tool_call"`)
+	require.Contains(t, body, `"name":"exec"`)
+	require.Contains(t, body, `"type":"response.completed"`)
+	require.NotContains(t, body, `"name":"functions__exec"`)
+	require.NotContains(t, body, `"type":"function_call"`)
+}
+
 func TestExtractResponsesReasoningEffortFromBody(t *testing.T) {
 	t.Parallel()
 

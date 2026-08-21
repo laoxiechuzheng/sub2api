@@ -533,6 +533,54 @@ func TestRestoreResponsesClientToolPayload_RestoresClientAndNamespaceCalls(t *te
 	require.JSONEq(t, `{"id":"resp","output":[{"type":"custom_tool_call","id":"i1","call_id":"c1","name":"exec","input":"dir"},{"type":"tool_search_call","id":"i2","call_id":"s1","execution":"client","arguments":{"query":"git"}},{"type":"function_call","id":"i3","call_id":"n1","name":"send","namespace":"team","arguments":"{}"}]}`, string(restored))
 }
 
+func TestRestoreResponsesClientToolPayload_FunctionsNamespaceAliasRestoresCustomTool(t *testing.T) {
+	mapping := ResponsesClientToolMapping{
+		CustomTools: map[string]bool{"exec": true},
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__wait": {Namespace: "functions", Name: "wait"},
+		},
+	}
+	payload := []byte(`{"id":"resp","output":[{"type":"function_call","id":"i1","call_id":"c1","name":"functions__exec","arguments":"{\"input\":\"pwd\"}"},{"type":"function_call","id":"i2","call_id":"c2","name":"functions__missing","arguments":"{}"}]}`)
+
+	restored, changed, err := RestoreResponsesClientToolPayload(payload, mapping)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "custom_tool_call", gjson.GetBytes(restored, "output.0.type").String())
+	require.Equal(t, "exec", gjson.GetBytes(restored, "output.0.name").String())
+	require.Equal(t, "c1", gjson.GetBytes(restored, "output.0.call_id").String())
+	require.Equal(t, "pwd", gjson.GetBytes(restored, "output.0.input").String())
+	require.Equal(t, "function_call", gjson.GetBytes(restored, "output.1.type").String())
+	require.Equal(t, "functions__missing", gjson.GetBytes(restored, "output.1.name").String())
+}
+
+func TestRestoreResponsesClientToolPayload_FunctionsNamespaceAliasKeepsNamespacePrecedence(t *testing.T) {
+	mapping := ResponsesClientToolMapping{
+		CustomTools: map[string]bool{"exec": true},
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__exec": {Namespace: "functions", Name: "exec"},
+		},
+	}
+	payload := []byte(`{"output":[{"type":"function_call","id":"i1","call_id":"c1","name":"functions__exec","arguments":"{}"}]}`)
+
+	restored, changed, err := RestoreResponsesClientToolPayload(payload, mapping)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "function_call", gjson.GetBytes(restored, "output.0.type").String())
+	require.Equal(t, "functions", gjson.GetBytes(restored, "output.0.namespace").String())
+	require.Equal(t, "exec", gjson.GetBytes(restored, "output.0.name").String())
+}
+
+func TestRestoreResponsesClientToolPayload_FunctionsNamespaceAliasRequiresDeclaredNamespace(t *testing.T) {
+	mapping := ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}}
+	payload := []byte(`{"output":[{"type":"function_call","name":"functions__exec","arguments":"{\"input\":\"pwd\"}"}]}`)
+
+	restored, changed, err := RestoreResponsesClientToolPayload(payload, mapping)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, "function_call", gjson.GetBytes(restored, "output.0.type").String())
+	require.Equal(t, "functions__exec", gjson.GetBytes(restored, "output.0.name").String())
+}
+
 func TestResponsesClientToolStreamRestorer_CustomToolBuffersWrapperAndSequences(t *testing.T) {
 	restorer := NewResponsesClientToolStreamRestorer(ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}})
 	added := restorer.Restore(ResponsesStreamEvent{Type: "response.output_item.added", SequenceNumber: 7, OutputIndex: 0, Item: &ResponsesOutput{Type: "function_call", ID: "i1", CallID: "c1", Name: "exec", Status: "in_progress"}})
@@ -552,6 +600,43 @@ func TestResponsesClientToolStreamRestorer_CustomToolBuffersWrapperAndSequences(
 	require.Equal(t, 10, closed[0].SequenceNumber)
 	require.Equal(t, "custom_tool_call", closed[0].Item.Type)
 	require.Equal(t, "dir", closed[0].Item.Input)
+}
+
+func TestResponsesClientToolStreamRestorer_FunctionsNamespaceAliasRestoresCustomTool(t *testing.T) {
+	restorer := NewResponsesClientToolStreamRestorer(ResponsesClientToolMapping{
+		CustomTools: map[string]bool{"exec": true},
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__wait": {Namespace: "functions", Name: "wait"},
+		},
+	})
+
+	added, changed, err := restorer.RestoreEvent([]byte(`{"type":"response.output_item.added","sequence_number":7,"output_index":0,"item":{"type":"function_call","id":"i1","call_id":"c1","name":"functions__exec","arguments":"","status":"in_progress"}}`))
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Len(t, added, 1)
+	require.Equal(t, "custom_tool_call", gjson.GetBytes(added[0], "item.type").String())
+	require.Equal(t, "exec", gjson.GetBytes(added[0], "item.name").String())
+
+	delta, changed, err := restorer.RestoreEvent([]byte(`{"type":"response.function_call_arguments.delta","sequence_number":8,"output_index":0,"item_id":"i1","delta":"{\"input\":\"pwd\"}"}`))
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Empty(t, delta)
+
+	done, changed, err := restorer.RestoreEvent([]byte(`{"type":"response.function_call_arguments.done","sequence_number":9,"output_index":0,"item_id":"i1","call_id":"c1","name":"functions__exec","arguments":"{\"input\":\"pwd\"}"}`))
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Len(t, done, 2)
+	require.Equal(t, "response.custom_tool_call_input.done", gjson.GetBytes(done[1], "type").String())
+	require.Equal(t, "exec", gjson.GetBytes(done[1], "name").String())
+	require.Equal(t, "pwd", gjson.GetBytes(done[1], "input").String())
+
+	closed, changed, err := restorer.RestoreEvent([]byte(`{"type":"response.output_item.done","sequence_number":10,"output_index":0,"item":{"type":"function_call","id":"i1","call_id":"c1","name":"functions__exec","arguments":"{\"input\":\"pwd\"}","status":"completed"}}`))
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Len(t, closed, 1)
+	require.Equal(t, "custom_tool_call", gjson.GetBytes(closed[0], "item.type").String())
+	require.Equal(t, "exec", gjson.GetBytes(closed[0], "item.name").String())
+	require.Equal(t, "pwd", gjson.GetBytes(closed[0], "item.input").String())
 }
 
 func TestResponsesClientToolStreamRestorer_ToolSearchAndFunction(t *testing.T) {

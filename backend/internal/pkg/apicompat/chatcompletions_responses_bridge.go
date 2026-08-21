@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -1064,6 +1065,45 @@ func flattenNamespaceToolName(namespace, name string) string {
 	return prefix.String() + suffix
 }
 
+// resolveCustomToolCallName restores the constrained alias some function-only
+// upstreams synthesize after seeing Codex's flattened "functions" namespace.
+// Exact namespace mappings take precedence so a declared namespace child is
+// never reclassified as a top-level custom tool.
+func resolveCustomToolCallName(rawName string, customTools map[string]bool, namespaceTools map[string]NamespacedToolName) (string, bool) {
+	name := strings.TrimSpace(rawName)
+	if name == "" {
+		return "", false
+	}
+	// An exact namespace mapping is authoritative. This keeps the resolver
+	// safe even for inherited/manual mappings that bypass the adapter's
+	// declaration-time collision checks.
+	if _, exists := namespaceTools[name]; exists {
+		return "", false
+	}
+	if customTools[name] {
+		return name, true
+	}
+	if !strings.HasPrefix(name, "functions__") {
+		return "", false
+	}
+	hasFunctionsNamespace := false
+	for _, namespaced := range namespaceTools {
+		if strings.TrimSpace(namespaced.Namespace) == "functions" {
+			hasFunctionsNamespace = true
+			break
+		}
+	}
+	if !hasFunctionsNamespace {
+		return "", false
+	}
+	for customName := range customTools {
+		if name == flattenNamespaceToolName("functions", customName) {
+			return customName, true
+		}
+	}
+	return "", false
+}
+
 // responsesToolChoiceToChatToolChoice 把 Responses 的 tool_choice 转为 chat 形态。
 // declared 是转换后实际声明的 chat 工具名集合：具名选择项仅在目标工具幸存时转发，
 // 服务端工具（web_search 等）的选择项随工具本身丢弃——指向未声明工具的 tool_choice
@@ -1224,12 +1264,12 @@ func chatMessageToResponsesOutput(message ChatMessage, customTools map[string]bo
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"
 		}
-		if customTools[toolCall.Function.Name] {
+		if customName, isCustom := resolveCustomToolCallName(toolCall.Function.Name, customTools, namespaceTools); isCustom {
 			outputs = append(outputs, ResponsesOutput{
 				Type:   "custom_tool_call",
 				ID:     generateItemID(),
 				CallID: toolCall.ID,
-				Name:   toolCall.Function.Name,
+				Name:   customName,
 				Input:  extractCustomToolCallInput(arguments),
 				Status: "completed",
 			})
@@ -1555,7 +1595,11 @@ func ChatCompletionsChunkToResponsesEvents(
 					stored.ID = toolCall.ID
 				}
 				if toolCall.Function.Name != "" {
-					stored.Function.Name = toolCall.Function.Name
+					if customName, isCustom := resolveCustomToolCallName(toolCall.Function.Name, state.CustomTools, state.NamespaceTools); isCustom {
+						stored.Function.Name = customName
+					} else {
+						stored.Function.Name = toolCall.Function.Name
+					}
 				}
 			}
 			events = append(events, announceChatToolItem(state, idx, stored, false)...)
@@ -1800,7 +1844,10 @@ func announceChatToolItem(
 		return nil
 	}
 	state.toolAnnounced[idx] = true
-	isCustom := state.CustomTools[stored.Function.Name]
+	customName, isCustom := resolveCustomToolCallName(stored.Function.Name, state.CustomTools, state.NamespaceTools)
+	if isCustom {
+		stored.Function.Name = customName
+	}
 	isToolSearch := !isCustom && state.ToolSearchDeclared && stored.Function.Name == toolSearchProxyName
 	state.toolIsCustom[idx] = isCustom
 	state.toolIsToolSearch[idx] = isToolSearch
@@ -1851,11 +1898,8 @@ func closeChatToolItems(state *ChatCompletionsToResponsesStreamState) []Response
 		return nil
 	}
 	var events []ResponsesStreamEvent
-	for i := 0; i < len(state.ToolCalls); i++ {
-		toolCall, ok := state.ToolCalls[i]
-		if !ok || toolCall == nil {
-			continue
-		}
+	for _, i := range sortedChatToolCallIndexes(state.ToolCalls) {
+		toolCall := state.ToolCalls[i]
 		itemID, opened := state.ToolItemIDs[i]
 		if !opened {
 			continue
@@ -1945,6 +1989,20 @@ func closeChatToolItems(state *ChatCompletionsToResponsesStreamState) []Response
 	return events
 }
 
+// sortedChatToolCallIndexes preserves upstream tool-call order without
+// assuming indexes are contiguous. Providers may omit a parallel sibling or
+// start indexing at a non-zero value.
+func sortedChatToolCallIndexes(toolCalls map[int]*ChatToolCall) []int {
+	indexes := make([]int, 0, len(toolCalls))
+	for idx, toolCall := range toolCalls {
+		if toolCall != nil {
+			indexes = append(indexes, idx)
+		}
+	}
+	sort.Ints(indexes)
+	return indexes
+}
+
 func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutput {
 	var outputs []ResponsesOutput
 	if state.Reasoning.Len() > 0 {
@@ -1969,11 +2027,8 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 			Status: "completed",
 		})
 	}
-	for i := 0; i < len(state.ToolCalls); i++ {
-		toolCall, ok := state.ToolCalls[i]
-		if !ok || toolCall == nil {
-			continue
-		}
+	for _, i := range sortedChatToolCallIndexes(state.ToolCalls) {
+		toolCall := state.ToolCalls[i]
 		arguments := toolCall.Function.Arguments
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"

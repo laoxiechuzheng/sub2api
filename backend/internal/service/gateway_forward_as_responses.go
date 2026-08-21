@@ -561,12 +561,28 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	finalizeStream := func() (*ForwardResult, error) {
 		if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 {
 			for _, evt := range finalEvents {
-				sse, err := apicompat.ResponsesEventToSSE(evt)
+				payload, err := json.Marshal(evt)
 				if err != nil {
 					continue
 				}
-				out := string(reverseToolNamesIfPresent(c, []byte(sse)))
-				fmt.Fprint(c.Writer, out) //nolint:errcheck
+				payload = reverseToolNamesIfPresent(c, payload)
+				payloads, _, err := clientToolRestorer.RestoreEvent(payload)
+				if err != nil {
+					logger.L().Warn("forward_as_responses stream: failed to restore terminal client tools",
+						zap.Error(err),
+						zap.String("request_id", requestID),
+					)
+					continue
+				}
+				for _, restored := range payloads {
+					eventType := gjson.GetBytes(restored, "type").String()
+					if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
+						logger.L().Info("forward_as_responses stream: client disconnected during terminal events",
+							zap.String("request_id", requestID),
+						)
+						return resultWithUsage(), nil
+					}
+				}
 			}
 			c.Writer.Flush()
 		}

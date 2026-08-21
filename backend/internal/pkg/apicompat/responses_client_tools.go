@@ -407,8 +407,9 @@ func restoreClientToolValue(value any, adapter *ResponsesClientToolMapping) bool
 	case map[string]any:
 		if strings.TrimSpace(stringValue(typed["type"])) == "function_call" {
 			name := strings.TrimSpace(stringValue(typed["name"]))
-			if adapter.CustomTools[name] {
+			if customName, isCustom := resolveCustomToolCallName(name, adapter.CustomTools, adapter.NamespaceTools); isCustom {
 				typed["type"] = "custom_tool_call"
+				typed["name"] = customName
 				typed["input"] = extractCustomToolCallInput(rawObjectString(typed["arguments"]))
 				delete(typed, "arguments")
 				delete(typed, "namespace")
@@ -618,8 +619,11 @@ func (r *ResponsesClientToolStreamRestorer) clientToolEventPayload(payload []byt
 		if raw.Item.Type != "function_call" {
 			return false
 		}
+		if _, isCustom := resolveCustomToolCallName(raw.Item.Name, r.adapter.CustomTools, r.adapter.NamespaceTools); isCustom {
+			return true
+		}
 		_, namespaceTool := r.adapter.NamespaceTools[raw.Item.Name]
-		return r.adapter.CustomTools[raw.Item.Name] || (r.adapter.ToolSearch && raw.Item.Name == toolSearchProxyName) || namespaceTool || r.calls[raw.Item.ID] != nil || r.calls[raw.Item.CallID] != nil
+		return (r.adapter.ToolSearch && raw.Item.Name == toolSearchProxyName) || namespaceTool || r.calls[raw.Item.ID] != nil || r.calls[raw.Item.CallID] != nil
 	}
 	if _, namespaceTool := r.adapter.NamespaceTools[raw.Name]; namespaceTool {
 		return true
@@ -667,8 +671,10 @@ func (r *ResponsesClientToolStreamRestorer) recordItem(event ResponsesStreamEven
 	}
 	name := event.Item.Name
 	kind := ""
-	if r.adapter.CustomTools[name] {
+	if customName, isCustom := resolveCustomToolCallName(name, r.adapter.CustomTools, r.adapter.NamespaceTools); isCustom {
 		kind = "custom"
+		name = customName
+		event.Item.Name = customName
 	} else if r.adapter.ToolSearch && name == toolSearchProxyName {
 		kind = "tool_search"
 	}
@@ -733,8 +739,9 @@ func restoreResponsesOutputClientTools(outputs []ResponsesOutput, adapter *Respo
 		if output.Type != "function_call" {
 			continue
 		}
-		if adapter.CustomTools[output.Name] {
+		if customName, isCustom := resolveCustomToolCallName(output.Name, adapter.CustomTools, adapter.NamespaceTools); isCustom {
 			output.Type = "custom_tool_call"
+			output.Name = customName
 			output.Input = extractCustomToolCallInput(output.Arguments)
 			output.Arguments = ""
 			output.Namespace = ""
