@@ -160,6 +160,22 @@ func CustomToolNames(tools []ResponsesTool) map[string]bool {
 	return out
 }
 
+// FunctionToolNames collects top-level ordinary function tool names from a
+// Responses request. Namespace children are tracked separately by
+// NamespaceToolNames because their flattened names have namespace semantics.
+func FunctionToolNames(tools []ResponsesTool) map[string]bool {
+	var out map[string]bool
+	for _, tool := range tools {
+		if tool.Type == "function" && tool.Name != "" {
+			if out == nil {
+				out = make(map[string]bool)
+			}
+			out[tool.Name] = true
+		}
+	}
+	return out
+}
+
 // NamespacedToolName 记录 namespace 子工具的原始归属（命名空间 + 裸子工具名）。
 type NamespacedToolName struct {
 	Namespace string
@@ -1067,25 +1083,34 @@ func flattenNamespaceToolName(namespace, name string) string {
 
 // resolveCustomToolCallName restores the constrained alias some function-only
 // upstreams synthesize after seeing Codex's flattened "functions" namespace.
-// Exact namespace mappings take precedence so a declared namespace child is
-// never reclassified as a top-level custom tool.
-func resolveCustomToolCallName(rawName string, customTools map[string]bool, namespaceTools map[string]NamespacedToolName) (string, bool) {
+// The reverse lookup is type-aware: an exact ordinary function or namespace
+// mapping wins over a custom alias, and ambiguous candidates are left as the
+// original function call instead of being reclassified.
+func resolveCustomToolCallName(rawName string, customTools, functionTools map[string]bool, namespaceTools map[string]NamespacedToolName) (string, bool) {
 	name := strings.TrimSpace(rawName)
 	if name == "" {
 		return "", false
 	}
-	// An exact namespace mapping is authoritative. This keeps the resolver
-	// safe even for inherited/manual mappings that bypass the adapter's
-	// declaration-time collision checks.
-	if _, exists := namespaceTools[name]; exists {
+	// Exact non-custom mappings are authoritative. This keeps the resolver safe
+	// even for inherited/manual mappings that bypass declaration-time checks.
+	if _, exists := namespaceTools[name]; exists || functionTools[name] {
 		return "", false
 	}
+
+	// Collect every possible custom source for this upstream name. A direct
+	// custom name and a flattened alias can collide, so returning the first map
+	// iteration result would make the reverse mapping non-deterministic.
+	candidates := make([]string, 0, 2)
 	if customTools[name] {
-		return name, true
+		candidates = append(candidates, name)
 	}
 	if !strings.HasPrefix(name, "functions__") {
+		if len(candidates) == 1 {
+			return candidates[0], true
+		}
 		return "", false
 	}
+
 	hasFunctionsNamespace := false
 	for _, namespaced := range namespaceTools {
 		if strings.TrimSpace(namespaced.Namespace) == "functions" {
@@ -1094,14 +1119,31 @@ func resolveCustomToolCallName(rawName string, customTools map[string]bool, name
 		}
 	}
 	if !hasFunctionsNamespace {
+		if len(candidates) == 1 {
+			return candidates[0], true
+		}
 		return "", false
 	}
 	for customName := range customTools {
 		if name == flattenNamespaceToolName("functions", customName) {
-			return customName, true
+			if !containsString(candidates, customName) {
+				candidates = append(candidates, customName)
+			}
 		}
 	}
-	return "", false
+	if len(candidates) != 1 {
+		return "", false
+	}
+	return candidates[0], true
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // responsesToolChoiceToChatToolChoice 把 Responses 的 tool_choice 转为 chat 形态。
@@ -1183,12 +1225,21 @@ func extractCustomToolCallInput(arguments string) string {
 }
 
 // ChatCompletionsResponseToResponses converts a non-streaming Chat Completions
-// response into a Responses API response. customTools 是客户端请求中 custom 工具
-// 的名字集合（见 CustomToolNames），命中的调用会还原为 custom_tool_call 项；
-// toolSearch 表示客户端声明了 tool_search 工具（见 HasToolSearchTool），代理工具
-// 的调用会还原为 tool_search_call 项；namespaceTools 是 namespace 子工具的摊平名
-// 映射（见 NamespaceToolNames），命中的调用还原为带 namespace 字段的 function_call 项。
+// response into a Responses API response. It keeps the legacy argument shape
+// for callers that do not need ordinary-function collision protection.
 func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model string, customTools map[string]bool, toolSearch bool, namespaceTools map[string]NamespacedToolName) *ResponsesResponse {
+	return ChatCompletionsResponseToResponsesWithToolMapping(resp, model, ResponsesClientToolMapping{
+		CustomTools:    customTools,
+		ToolSearch:     toolSearch,
+		NamespaceTools: namespaceTools,
+	})
+}
+
+// ChatCompletionsResponseToResponsesWithToolMapping converts a non-streaming
+// Chat response using the complete request-scoped client tool mapping. Keeping
+// ordinary function names in the mapping prevents a flattened custom alias
+// from changing a legitimate function_call into a custom_tool_call.
+func ChatCompletionsResponseToResponsesWithToolMapping(resp *ChatCompletionsResponse, model string, mapping ResponsesClientToolMapping) *ResponsesResponse {
 	id := ""
 	if resp != nil {
 		id = resp.ID
@@ -1213,7 +1264,7 @@ func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model str
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
-		out.Output = chatMessageToResponsesOutput(choice.Message, customTools, toolSearch, namespaceTools)
+		out.Output = chatMessageToResponsesOutput(choice.Message, mapping)
 		if choice.FinishReason == "length" {
 			out.Status = "incomplete"
 			out.IncompleteDetails = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
@@ -1228,7 +1279,7 @@ func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model str
 	return out
 }
 
-func chatMessageToResponsesOutput(message ChatMessage, customTools map[string]bool, toolSearch bool, namespaceTools map[string]NamespacedToolName) []ResponsesOutput {
+func chatMessageToResponsesOutput(message ChatMessage, mapping ResponsesClientToolMapping) []ResponsesOutput {
 	var outputs []ResponsesOutput
 	reasoning := message.reasoningText()
 	if reasoning != "" {
@@ -1264,7 +1315,7 @@ func chatMessageToResponsesOutput(message ChatMessage, customTools map[string]bo
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"
 		}
-		if customName, isCustom := resolveCustomToolCallName(toolCall.Function.Name, customTools, namespaceTools); isCustom {
+		if customName, isCustom := resolveCustomToolCallName(toolCall.Function.Name, mapping.CustomTools, mapping.FunctionTools, mapping.NamespaceTools); isCustom {
 			outputs = append(outputs, ResponsesOutput{
 				Type:   "custom_tool_call",
 				ID:     generateItemID(),
@@ -1275,7 +1326,7 @@ func chatMessageToResponsesOutput(message ChatMessage, customTools map[string]bo
 			})
 			continue
 		}
-		if toolSearch && toolCall.Function.Name == toolSearchProxyName {
+		if mapping.ToolSearch && toolCall.Function.Name == toolSearchProxyName {
 			outputs = append(outputs, ResponsesOutput{
 				Type:      "tool_search_call",
 				ID:        generateItemID(),
@@ -1292,7 +1343,7 @@ func chatMessageToResponsesOutput(message ChatMessage, customTools map[string]bo
 		if !json.Valid([]byte(arguments)) {
 			continue
 		}
-		if ns, ok := namespaceTools[toolCall.Function.Name]; ok {
+		if ns, ok := mapping.NamespaceTools[toolCall.Function.Name]; ok {
 			outputs = append(outputs, ResponsesOutput{
 				Type:      "function_call",
 				ID:        generateItemID(),
@@ -1435,6 +1486,11 @@ type ChatCompletionsToResponsesStreamState struct {
 	// CustomToolNames）。命中的调用按 custom_tool_call 生命周期下发，codex 才能
 	// 路由回它注册的 custom 工具。
 	CustomTools map[string]bool
+
+	// FunctionTools 是客户端请求中普通 function 工具的名字集合。它与
+	// CustomTools、NamespaceTools 共同组成请求级类型映射，防止同名别名被
+	// 恢复成错误的工具类型。
+	FunctionTools map[string]bool
 
 	// ToolSearchDeclared 表示客户端请求声明了 tool_search 工具（见
 	// HasToolSearchTool）。命中的代理调用按 tool_search_call 项还原，codex 只按
@@ -1595,7 +1651,7 @@ func ChatCompletionsChunkToResponsesEvents(
 					stored.ID = toolCall.ID
 				}
 				if toolCall.Function.Name != "" {
-					if customName, isCustom := resolveCustomToolCallName(toolCall.Function.Name, state.CustomTools, state.NamespaceTools); isCustom {
+					if customName, isCustom := resolveCustomToolCallName(toolCall.Function.Name, state.CustomTools, state.FunctionTools, state.NamespaceTools); isCustom {
 						stored.Function.Name = customName
 					} else {
 						stored.Function.Name = toolCall.Function.Name
@@ -1844,7 +1900,7 @@ func announceChatToolItem(
 		return nil
 	}
 	state.toolAnnounced[idx] = true
-	customName, isCustom := resolveCustomToolCallName(stored.Function.Name, state.CustomTools, state.NamespaceTools)
+	customName, isCustom := resolveCustomToolCallName(stored.Function.Name, state.CustomTools, state.FunctionTools, state.NamespaceTools)
 	if isCustom {
 		stored.Function.Name = customName
 	}

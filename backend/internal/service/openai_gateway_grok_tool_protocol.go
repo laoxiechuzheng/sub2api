@@ -55,7 +55,7 @@ func adaptGrokResponsesClientTools(body []byte) ([]byte, apicompat.ResponsesClie
 }
 
 func hasResponsesClientToolMapping(mapping apicompat.ResponsesClientToolMapping) bool {
-	return len(mapping.CustomTools) > 0 || mapping.ToolSearch || len(mapping.NamespaceTools) > 0
+	return len(mapping.CustomTools) > 0 || len(mapping.FunctionTools) > 0 || mapping.ToolSearch || len(mapping.NamespaceTools) > 0
 }
 
 func hasGrokResponsesClientToolMapping(mapping apicompat.ResponsesClientToolMapping) bool {

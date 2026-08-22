@@ -66,6 +66,23 @@ func TestAdaptResponsesClientTools_LowersDeclarationsHistoryChoiceAndNamespaces(
 	require.Equal(t, "team__send", namespaceCall["name"])
 }
 
+func TestAdaptResponsesClientTools_RecordsFunctionNamesForAliasCollisionChecks(t *testing.T) {
+	req := map[string]any{
+		"tools": []any{
+			map[string]any{"type": "custom", "name": "exec"},
+			map[string]any{"type": "function", "name": "functions__exec"},
+			map[string]any{"type": "namespace", "name": "functions", "tools": []any{map[string]any{"type": "function", "name": "wait"}}},
+		},
+	}
+
+	mapping, changed, err := AdaptResponsesClientTools(req)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.True(t, mapping.CustomTools["exec"])
+	require.True(t, mapping.FunctionTools["functions__exec"])
+	require.Equal(t, ResponsesNamespaceName{Namespace: "functions", Name: "wait"}, mapping.NamespaceTools["functions__wait"])
+}
+
 func TestAdaptResponsesClientTools_LowersDiscoveredToolSearchOutput(t *testing.T) {
 	requestJSON := `{
 		"tools":[{"type":"tool_search"}],
@@ -581,6 +598,43 @@ func TestRestoreResponsesClientToolPayload_FunctionsNamespaceAliasRequiresDeclar
 	require.Equal(t, "functions__exec", gjson.GetBytes(restored, "output.0.name").String())
 }
 
+func TestRestoreResponsesClientToolPayload_FunctionsNamespaceAliasCollisionKeepsFunction(t *testing.T) {
+	mapping := ResponsesClientToolMapping{
+		CustomTools:   map[string]bool{"exec": true},
+		FunctionTools: map[string]bool{"functions__exec": true},
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__wait": {Namespace: "functions", Name: "wait"},
+		},
+	}
+	payload := []byte(`{"output":[{"type":"function_call","id":"i1","call_id":"c1","name":"functions__exec","arguments":"{\"input\":\"pwd\"}"}]}`)
+
+	restored, changed, err := RestoreResponsesClientToolPayload(payload, mapping)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, "function_call", gjson.GetBytes(restored, "output.0.type").String())
+	require.Equal(t, "functions__exec", gjson.GetBytes(restored, "output.0.name").String())
+	require.Equal(t, `{"input":"pwd"}`, gjson.GetBytes(restored, "output.0.arguments").String())
+}
+
+func TestRestoreResponsesClientToolPayload_AmbiguousCustomAliasKeepsFunction(t *testing.T) {
+	mapping := ResponsesClientToolMapping{
+		CustomTools: map[string]bool{
+			"exec":            true,
+			"functions__exec": true,
+		},
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__wait": {Namespace: "functions", Name: "wait"},
+		},
+	}
+	payload := []byte(`{"output":[{"type":"function_call","name":"functions__exec","arguments":"{\"input\":\"pwd\"}"}]}`)
+
+	restored, changed, err := RestoreResponsesClientToolPayload(payload, mapping)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, "function_call", gjson.GetBytes(restored, "output.0.type").String())
+	require.Equal(t, "functions__exec", gjson.GetBytes(restored, "output.0.name").String())
+}
+
 func TestResponsesClientToolStreamRestorer_CustomToolBuffersWrapperAndSequences(t *testing.T) {
 	restorer := NewResponsesClientToolStreamRestorer(ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}})
 	added := restorer.Restore(ResponsesStreamEvent{Type: "response.output_item.added", SequenceNumber: 7, OutputIndex: 0, Item: &ResponsesOutput{Type: "function_call", ID: "i1", CallID: "c1", Name: "exec", Status: "in_progress"}})
@@ -637,6 +691,30 @@ func TestResponsesClientToolStreamRestorer_FunctionsNamespaceAliasRestoresCustom
 	require.Equal(t, "custom_tool_call", gjson.GetBytes(closed[0], "item.type").String())
 	require.Equal(t, "exec", gjson.GetBytes(closed[0], "item.name").String())
 	require.Equal(t, "pwd", gjson.GetBytes(closed[0], "item.input").String())
+}
+
+func TestResponsesClientToolStreamRestorer_FunctionsNamespaceAliasCollisionKeepsFunction(t *testing.T) {
+	restorer := NewResponsesClientToolStreamRestorer(ResponsesClientToolMapping{
+		CustomTools:   map[string]bool{"exec": true},
+		FunctionTools: map[string]bool{"functions__exec": true},
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__wait": {Namespace: "functions", Name: "wait"},
+		},
+	})
+
+	added, changed, err := restorer.RestoreEvent([]byte(`{"type":"response.output_item.added","sequence_number":7,"output_index":0,"item":{"type":"function_call","id":"i1","call_id":"c1","name":"functions__exec","arguments":"","status":"in_progress"}}`))
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Len(t, added, 1)
+	require.Equal(t, "function_call", gjson.GetBytes(added[0], "item.type").String())
+	require.Equal(t, "functions__exec", gjson.GetBytes(added[0], "item.name").String())
+
+	done, changed, err := restorer.RestoreEvent([]byte(`{"type":"response.output_item.done","sequence_number":8,"output_index":0,"item":{"type":"function_call","id":"i1","call_id":"c1","name":"functions__exec","arguments":"{\"input\":\"pwd\"}","status":"completed"}}`))
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Len(t, done, 1)
+	require.Equal(t, "function_call", gjson.GetBytes(done[0], "item.type").String())
+	require.Equal(t, "functions__exec", gjson.GetBytes(done[0], "item.name").String())
 }
 
 func TestResponsesClientToolStreamRestorer_ToolSearchAndFunction(t *testing.T) {

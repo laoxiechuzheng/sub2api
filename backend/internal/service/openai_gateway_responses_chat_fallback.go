@@ -49,9 +49,12 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("resolve responses tools: %w", err)
 	}
-	customTools := apicompat.CustomToolNames(effectiveTools)
-	toolSearch := apicompat.HasToolSearchTool(effectiveTools)
-	namespaceTools := apicompat.NamespaceToolNames(effectiveTools)
+	clientToolMapping := apicompat.ResponsesClientToolMapping{
+		CustomTools:    apicompat.CustomToolNames(effectiveTools),
+		FunctionTools:  apicompat.FunctionToolNames(effectiveTools),
+		ToolSearch:     apicompat.HasToolSearchTool(effectiveTools),
+		NamespaceTools: apicompat.NamespaceToolNames(effectiveTools),
+	}
 
 	// 自愈回写：历史里带明文 summary 的 reasoning item 刷新进缓存，覆盖 Redis
 	// 被 flush / 跨实例漂移后同 id 的 encrypted-only 副本无法再取明文的情况。
@@ -120,18 +123,16 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		return s.streamChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
-	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	c *gin.Context,
 	resp *http.Response,
 	originalModel string,
-	customTools map[string]bool,
-	toolSearch bool,
-	namespaceTools map[string]apicompat.NamespacedToolName,
+	clientToolMapping apicompat.ResponsesClientToolMapping,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,
@@ -143,7 +144,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	if err != nil {
 		return nil, err
 	}
-	responsesResp := apicompat.ChatCompletionsResponseToResponses(ccResp, originalModel, customTools, toolSearch, namespaceTools)
+	responsesResp := apicompat.ChatCompletionsResponseToResponsesWithToolMapping(ccResp, originalModel, clientToolMapping)
 	s.cacheReasoningItemsFromOutput(responsesResp.Output)
 
 	if s.responseHeaderFilter != nil {
@@ -168,9 +169,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	c *gin.Context,
 	resp *http.Response,
 	originalModel string,
-	customTools map[string]bool,
-	toolSearch bool,
-	namespaceTools map[string]apicompat.NamespacedToolName,
+	clientToolMapping apicompat.ResponsesClientToolMapping,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,
@@ -181,9 +180,10 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
 	state := apicompat.NewChatCompletionsToResponsesStreamState(originalModel)
-	state.CustomTools = customTools
-	state.ToolSearchDeclared = toolSearch
-	state.NamespaceTools = namespaceTools
+	state.CustomTools = clientToolMapping.CustomTools
+	state.FunctionTools = clientToolMapping.FunctionTools
+	state.ToolSearchDeclared = clientToolMapping.ToolSearch
+	state.NamespaceTools = clientToolMapping.NamespaceTools
 	clientDisconnected := false
 
 	writeEvents := func(events []apicompat.ResponsesStreamEvent) {

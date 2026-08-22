@@ -12,6 +12,7 @@ import (
 // function tools.
 type ResponsesClientToolMapping struct {
 	CustomTools    map[string]bool
+	FunctionTools  map[string]bool
 	ToolSearch     bool
 	NamespaceTools map[string]ResponsesNamespaceName
 }
@@ -56,6 +57,9 @@ func AdaptResponsesClientTools(req map[string]any) (ResponsesClientToolMapping, 
 		case "tool_search":
 			adapter.ToolSearch = true
 		}
+	}
+	if len(functionNames) > 0 {
+		adapter.FunctionTools = functionNames
 	}
 	for name := range customNames {
 		if functionNames[name] {
@@ -135,6 +139,9 @@ func AdaptResponsesClientTools(req map[string]any) (ResponsesClientToolMapping, 
 	if len(adapter.CustomTools) == 0 {
 		adapter.CustomTools = nil
 	}
+	if len(adapter.FunctionTools) == 0 {
+		adapter.FunctionTools = nil
+	}
 	if len(adapter.NamespaceTools) == 0 {
 		adapter.NamespaceTools = nil
 	}
@@ -157,7 +164,7 @@ func AdaptResponsesClientToolsWithInheritedMapping(
 	if _, toolsPresent := req["tools"]; toolsPresent {
 		return AdaptResponsesClientTools(req)
 	}
-	if len(inherited.CustomTools) == 0 && !inherited.ToolSearch && len(inherited.NamespaceTools) == 0 {
+	if len(inherited.CustomTools) == 0 && len(inherited.FunctionTools) == 0 && !inherited.ToolSearch && len(inherited.NamespaceTools) == 0 {
 		return ResponsesClientToolMapping{}, false, nil
 	}
 	if len(inheritedLoweredTools) > 0 && len(inheritedLoweredTools[0]) > 0 {
@@ -407,7 +414,7 @@ func restoreClientToolValue(value any, adapter *ResponsesClientToolMapping) bool
 	case map[string]any:
 		if strings.TrimSpace(stringValue(typed["type"])) == "function_call" {
 			name := strings.TrimSpace(stringValue(typed["name"]))
-			if customName, isCustom := resolveCustomToolCallName(name, adapter.CustomTools, adapter.NamespaceTools); isCustom {
+			if customName, isCustom := resolveCustomToolCallName(name, adapter.CustomTools, adapter.FunctionTools, adapter.NamespaceTools); isCustom {
 				typed["type"] = "custom_tool_call"
 				typed["name"] = customName
 				typed["input"] = extractCustomToolCallInput(rawObjectString(typed["arguments"]))
@@ -619,7 +626,7 @@ func (r *ResponsesClientToolStreamRestorer) clientToolEventPayload(payload []byt
 		if raw.Item.Type != "function_call" {
 			return false
 		}
-		if _, isCustom := resolveCustomToolCallName(raw.Item.Name, r.adapter.CustomTools, r.adapter.NamespaceTools); isCustom {
+		if _, isCustom := resolveCustomToolCallName(raw.Item.Name, r.adapter.CustomTools, r.adapter.FunctionTools, r.adapter.NamespaceTools); isCustom {
 			return true
 		}
 		_, namespaceTool := r.adapter.NamespaceTools[raw.Item.Name]
@@ -671,7 +678,7 @@ func (r *ResponsesClientToolStreamRestorer) recordItem(event ResponsesStreamEven
 	}
 	name := event.Item.Name
 	kind := ""
-	if customName, isCustom := resolveCustomToolCallName(name, r.adapter.CustomTools, r.adapter.NamespaceTools); isCustom {
+	if customName, isCustom := resolveCustomToolCallName(name, r.adapter.CustomTools, r.adapter.FunctionTools, r.adapter.NamespaceTools); isCustom {
 		kind = "custom"
 		name = customName
 		event.Item.Name = customName
@@ -739,7 +746,7 @@ func restoreResponsesOutputClientTools(outputs []ResponsesOutput, adapter *Respo
 		if output.Type != "function_call" {
 			continue
 		}
-		if customName, isCustom := resolveCustomToolCallName(output.Name, adapter.CustomTools, adapter.NamespaceTools); isCustom {
+		if customName, isCustom := resolveCustomToolCallName(output.Name, adapter.CustomTools, adapter.FunctionTools, adapter.NamespaceTools); isCustom {
 			output.Type = "custom_tool_call"
 			output.Name = customName
 			output.Input = extractCustomToolCallInput(output.Arguments)
