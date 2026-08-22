@@ -5,6 +5,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -146,6 +147,194 @@ func TestForwardResponses_ForceChatCompletionsRoutesStreamingToChatCompletions(t
 	require.Equal(t, 3, result.Usage.OutputTokens)
 	require.True(t, result.Stream)
 	require.NotNil(t, result.FirstTokenMs)
+}
+
+func TestForwardResponses_ChatFallbackRepairsUnknownStreamingToolCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := responsesChatFallbackToolRepairRequest(true)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		responsesChatFallbackStreamResponse("attempt_bad", "I will inspect the file.", "functions.read_file", `{"path":"sample.txt"`, 10, 2),
+		responsesChatFallbackStreamResponse("attempt_repaired", "", "exec", `{"input":"noop()"}`, 11, 3),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, forceChatResponsesFallbackAccount(), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, upstream.requests[0].URL.String(), upstream.requests[1].URL.String())
+	require.Contains(t, string(upstream.bodies[1]), "Tool protocol correction")
+	require.NotContains(t, string(upstream.bodies[1]), "sample.txt")
+
+	clientBody := rec.Body.String()
+	require.NotContains(t, clientBody, "functions.read_file")
+	require.Contains(t, clientBody, `"type":"custom_tool_call"`)
+	require.Contains(t, clientBody, `"name":"exec"`)
+	require.Equal(t, 1, strings.Count(clientBody, "event: response.created"))
+	require.Equal(t, 1, strings.Count(clientBody, "event: response.completed"))
+	require.Zero(t, strings.Count(clientBody, "event: response.failed"))
+	require.Equal(t, 21, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+}
+
+func TestForwardResponses_ChatFallbackRepairsUnknownNonStreamingToolCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := responsesChatFallbackToolRepairRequest(false)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		responsesChatFallbackJSONResponse("attempt_bad", "functions.read_file", `{"path":"sample.txt"}`, 10, 2),
+		responsesChatFallbackJSONResponse("attempt_repaired", "exec", `{"input":"noop()"}`, 11, 3),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, forceChatResponsesFallbackAccount(), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 2)
+	require.NotContains(t, rec.Body.String(), "functions.read_file")
+	require.Equal(t, "custom_tool_call", gjson.Get(rec.Body.String(), "output.0.type").String())
+	require.Equal(t, "exec", gjson.Get(rec.Body.String(), "output.0.name").String())
+	require.Equal(t, 21, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+}
+
+func TestForwardResponses_ChatFallbackValidStreamingToolCallDoesNotRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := responsesChatFallbackToolRepairRequest(true)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		responsesChatFallbackStreamResponse("attempt_valid", "", "exec", `{"input":"noop()"}`, 10, 2),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, forceChatResponsesFallbackAccount(), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 1)
+	require.Contains(t, rec.Body.String(), `"type":"custom_tool_call"`)
+	require.Contains(t, rec.Body.String(), `"name":"exec"`)
+}
+
+func TestForwardResponses_ChatFallbackUnknownStreamingToolRetryExhaustionFailsExplicitly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := responsesChatFallbackToolRepairRequest(true)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		responsesChatFallbackStreamResponse("attempt_bad_1", "I will inspect the file.", "functions.read_file", `{"path":"sample.txt"}`, 10, 2),
+		responsesChatFallbackStreamResponse("attempt_bad_2", "", "functions.read_file", `{"path":"sample.txt"}`, 11, 3),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, forceChatResponsesFallbackAccount(), body)
+	require.ErrorContains(t, err, "undeclared tool")
+	require.ErrorContains(t, err, "upstream response failed:")
+	require.NotNil(t, result)
+	require.True(t, IsResponseCommitted(c))
+	require.Len(t, upstream.requests, 2)
+	clientBody := rec.Body.String()
+	require.NotContains(t, clientBody, "functions.read_file")
+	require.Equal(t, 1, strings.Count(clientBody, "event: response.failed"))
+	require.Zero(t, strings.Count(clientBody, "event: response.completed"))
+	require.Contains(t, clientBody, "data: [DONE]")
+	require.Equal(t, 21, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+}
+
+func TestForwardResponses_ChatFallbackUnknownNonStreamingToolRetryExhaustionFailsExplicitly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := responsesChatFallbackToolRepairRequest(false)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		responsesChatFallbackJSONResponse("attempt_bad_1", "functions.read_file", `{"path":"sample.txt"}`, 10, 2),
+		responsesChatFallbackJSONResponse("attempt_bad_2", "functions.read_file", `{"path":"sample.txt"}`, 11, 3),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, forceChatResponsesFallbackAccount(), body)
+	require.ErrorContains(t, err, "undeclared tool")
+	require.ErrorContains(t, err, "upstream response failed:")
+	require.NotNil(t, result)
+	require.True(t, IsResponseCommitted(c))
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.NotContains(t, rec.Body.String(), "functions.read_file")
+	require.Equal(t, 21, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+}
+
+func responsesChatFallbackToolRepairRequest(stream bool) []byte {
+	return []byte(fmt.Sprintf(`{
+		"model":"claude-opus-5",
+		"input":"inspect the file",
+		"stream":%t,
+		"tools":[
+			{"type":"custom","name":"exec","description":"Run JavaScript"},
+			{"type":"namespace","name":"functions","tools":[{"type":"function","name":"wait","parameters":{"type":"object","properties":{}}}]}
+		]
+	}`, stream))
+}
+
+func responsesChatFallbackStreamResponse(id, content, toolName, arguments string, promptTokens, completionTokens int) *http.Response {
+	lines := []string{
+		fmt.Sprintf(`data: {"id":%q,"object":"chat.completion.chunk","model":"claude-opus-5","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`, id),
+		"",
+	}
+	if content != "" {
+		lines = append(lines,
+			fmt.Sprintf(`data: {"id":%q,"object":"chat.completion.chunk","model":"claude-opus-5","choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, id, content),
+			"",
+		)
+	}
+	lines = append(lines,
+		fmt.Sprintf(`data: {"id":%q,"object":"chat.completion.chunk","model":"claude-opus-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":%q,"arguments":%q}}]},"finish_reason":null}]}`, id, toolName, arguments),
+		"",
+		fmt.Sprintf(`data: {"id":%q,"object":"chat.completion.chunk","model":"claude-opus-5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`, id),
+		"",
+		fmt.Sprintf(`data: {"id":%q,"object":"chat.completion.chunk","model":"claude-opus-5","choices":[],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`, id, promptTokens, completionTokens, promptTokens+completionTokens),
+		"",
+		"data: [DONE]",
+		"",
+	)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_" + id}},
+		Body:       io.NopCloser(strings.NewReader(strings.Join(lines, "\n"))),
+	}
+}
+
+func responsesChatFallbackJSONResponse(id, toolName, arguments string, promptTokens, completionTokens int) *http.Response {
+	body := fmt.Sprintf(`{"id":%q,"object":"chat.completion","model":"claude-opus-5","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":%q,"arguments":%q}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`, id, toolName, arguments, promptTokens, completionTokens, promptTokens+completionTokens)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_" + id}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
 }
 
 func TestForwardResponses_ChatFallbackRejectsInvalidToolArgumentsAtOutputLimit(t *testing.T) {

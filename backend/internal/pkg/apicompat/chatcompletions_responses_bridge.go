@@ -1104,7 +1104,8 @@ func resolveCustomToolCallName(rawName string, customTools, functionTools map[st
 	if customTools[name] {
 		candidates = append(candidates, name)
 	}
-	if !strings.HasPrefix(name, "functions__") {
+	functionsAlias := strings.HasPrefix(name, "functions__") || strings.HasPrefix(name, "functions.")
+	if !functionsAlias {
 		if len(candidates) == 1 {
 			return candidates[0], true
 		}
@@ -1125,7 +1126,7 @@ func resolveCustomToolCallName(rawName string, customTools, functionTools map[st
 		return "", false
 	}
 	for customName := range customTools {
-		if name == flattenNamespaceToolName("functions", customName) {
+		if name == flattenNamespaceToolName("functions", customName) || name == "functions."+customName {
 			if !containsString(candidates, customName) {
 				candidates = append(candidates, customName)
 			}
@@ -1135,6 +1136,54 @@ func resolveCustomToolCallName(rawName string, customTools, functionTools map[st
 		return "", false
 	}
 	return candidates[0], true
+}
+
+func hasResponsesClientToolDeclarations(mapping ResponsesClientToolMapping) bool {
+	return len(mapping.CustomTools) > 0 || len(mapping.FunctionTools) > 0 || mapping.ToolSearch || len(mapping.NamespaceTools) > 0
+}
+
+func isKnownResponsesClientToolCallName(rawName string, mapping ResponsesClientToolMapping) bool {
+	name := strings.TrimSpace(rawName)
+	if name == "" {
+		return false
+	}
+	if !hasResponsesClientToolDeclarations(mapping) {
+		return true
+	}
+	if _, isCustom := resolveCustomToolCallName(name, mapping.CustomTools, mapping.FunctionTools, mapping.NamespaceTools); isCustom {
+		return true
+	}
+	if mapping.FunctionTools[name] {
+		return true
+	}
+	if _, ok := mapping.NamespaceTools[name]; ok {
+		return true
+	}
+	return mapping.ToolSearch && name == toolSearchProxyName
+}
+
+// UnknownChatCompletionsToolCallNames returns deterministic, unique tool names
+// that the upstream emitted without a matching request-scoped declaration.
+// When the client declared no tools, legacy permissive behavior is preserved.
+func UnknownChatCompletionsToolCallNames(resp *ChatCompletionsResponse, mapping ResponsesClientToolMapping) []string {
+	if resp == nil || !hasResponsesClientToolDeclarations(mapping) {
+		return nil
+	}
+	unknown := make(map[string]struct{})
+	for _, choice := range resp.Choices {
+		for _, toolCall := range choice.Message.ToolCalls {
+			name := strings.TrimSpace(toolCall.Function.Name)
+			if name != "" && !isKnownResponsesClientToolCallName(name, mapping) {
+				unknown[name] = struct{}{}
+			}
+		}
+	}
+	names := make([]string, 0, len(unknown))
+	for name := range unknown {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func containsString(values []string, target string) bool {
@@ -1516,6 +1565,11 @@ type ChatCompletionsToResponsesStreamState struct {
 	// 尚未到达时延迟宣告，待名字可判定类型后再补发（见 announceChatToolItem）。
 	toolAnnounced map[int]bool
 
+	// HoldToolCallsForValidation keeps every tool item unannounced until stream
+	// finalization. The Responses->Chat fallback enables this while it validates
+	// all names and may replace an invalid attempt on the same client stream.
+	HoldToolCallsForValidation bool
+
 	FinishReason string
 	Usage        *ResponsesUsage
 }
@@ -1563,6 +1617,69 @@ func (state *ChatCompletionsToResponsesStreamState) ValidateToolCallArguments() 
 	return nil
 }
 
+func (state *ChatCompletionsToResponsesStreamState) clientToolMapping() ResponsesClientToolMapping {
+	if state == nil {
+		return ResponsesClientToolMapping{}
+	}
+	return ResponsesClientToolMapping{
+		CustomTools:    state.CustomTools,
+		FunctionTools:  state.FunctionTools,
+		ToolSearch:     state.ToolSearchDeclared,
+		NamespaceTools: state.NamespaceTools,
+	}
+}
+
+// UnknownToolCallNames reports streamed tool calls that cannot be routed to a
+// tool declared by the Responses client. Unknown calls remain unannounced so a
+// service-level repair attempt can replace them before Codex sees the item.
+func (state *ChatCompletionsToResponsesStreamState) UnknownToolCallNames() []string {
+	if state == nil {
+		return nil
+	}
+	mapping := state.clientToolMapping()
+	if !hasResponsesClientToolDeclarations(mapping) {
+		return nil
+	}
+	unknown := make(map[string]struct{})
+	for _, toolCall := range state.ToolCalls {
+		if toolCall == nil {
+			continue
+		}
+		name := strings.TrimSpace(toolCall.Function.Name)
+		if name != "" && !isKnownResponsesClientToolCallName(name, mapping) {
+			unknown[name] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(unknown))
+	for name := range unknown {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// DropUnannouncedToolCalls clears a rejected upstream attempt before a repair
+// attempt reuses the same Responses stream state. Announced calls are retained
+// defensively; the fallback validation mode never announces before validation.
+func (state *ChatCompletionsToResponsesStreamState) DropUnannouncedToolCalls() {
+	if state == nil {
+		return
+	}
+	for idx := range state.ToolCalls {
+		if state.toolAnnounced[idx] {
+			continue
+		}
+		delete(state.ToolCalls, idx)
+		delete(state.ToolItemIDs, idx)
+		delete(state.ToolOutputIndex, idx)
+		delete(state.toolIsCustom, idx)
+		delete(state.toolIsToolSearch, idx)
+		delete(state.toolNamespace, idx)
+		delete(state.toolAnnounced, idx)
+	}
+	state.FinishReason = ""
+}
+
 func (state *ChatCompletionsToResponsesStreamState) allocOutputIndex() int {
 	idx := state.nextOutputIndex
 	state.nextOutputIndex++
@@ -1578,7 +1695,7 @@ func ChatCompletionsChunkToResponsesEvents(
 	if chunk == nil || state == nil {
 		return nil
 	}
-	if chunk.ID != "" {
+	if chunk.ID != "" && !state.CreatedSent {
 		state.ResponseID = chunk.ID
 	}
 	if state.Model == "" && chunk.Model != "" {
@@ -1644,8 +1761,6 @@ func ChatCompletionsChunkToResponsesEvents(
 				copyCall.Function.Arguments = ""
 				state.ToolCalls[idx] = &copyCall
 				stored = &copyCall
-				state.ToolItemIDs[idx] = generateItemID()
-				state.ToolOutputIndex[idx] = state.allocOutputIndex()
 			} else {
 				if toolCall.ID != "" {
 					stored.ID = toolCall.ID
@@ -1692,37 +1807,7 @@ func FinalizeChatCompletionsResponsesStream(state *ChatCompletionsToResponsesStr
 	var events []ResponsesStreamEvent
 	events = append(events, ensureChatToResponsesCreated(state)...)
 
-	// Close a reasoning item that never transitioned to content (reasoning-only
-	// or empty completion).
-	events = append(events, closeChatReasoningItem(state)...)
-	events = append(events, synthesizeChatReasoningFallbackMessage(state)...)
-
-	if state.MessageItemID != "" {
-		if state.TextPartOpen {
-			events = append(events, chatToResponsesEvent(state, "response.output_text.done", &ResponsesStreamEvent{
-				OutputIndex:  state.MessageIndex,
-				ContentIndex: 0,
-				Text:         state.Text.String(),
-				ItemID:       state.MessageItemID,
-			}))
-			events = append(events, chatToResponsesEvent(state, "response.content_part.done", &ResponsesStreamEvent{
-				OutputIndex:  state.MessageIndex,
-				ContentIndex: 0,
-				ItemID:       state.MessageItemID,
-				Part:         &ResponsesContentPart{Type: "output_text", Text: state.Text.String()},
-			}))
-		}
-		events = append(events, chatToResponsesEvent(state, "response.output_item.done", &ResponsesStreamEvent{
-			OutputIndex: state.MessageIndex,
-			Item: &ResponsesOutput{
-				Type:    "message",
-				ID:      state.MessageItemID,
-				Role:    "assistant",
-				Content: []ResponsesContentPart{{Type: "output_text", Text: state.Text.String()}},
-				Status:  "completed",
-			},
-		}))
-	}
+	events = append(events, closeChatMessageOutput(state)...)
 
 	// Close every function_call item opened during the stream. Codex finalizes a
 	// tool call only after function_call_arguments.done + output_item.done for
@@ -1747,6 +1832,69 @@ func FinalizeChatCompletionsResponsesStream(state *ChatCompletionsToResponsesStr
 			Output:            state.chatOutput(),
 			Usage:             state.Usage,
 			IncompleteDetails: incompleteDetails,
+		},
+	}))
+	return events
+}
+
+// FinalizeChatCompletionsResponsesStreamFailure closes any visible text and
+// emits one response.failed terminal without materializing unannounced tools.
+func FinalizeChatCompletionsResponsesStreamFailure(state *ChatCompletionsToResponsesStreamState, code, message string) []ResponsesStreamEvent {
+	if state == nil || state.CompletedSent {
+		return nil
+	}
+	var events []ResponsesStreamEvent
+	events = append(events, ensureChatToResponsesCreated(state)...)
+	events = append(events, closeChatMessageOutput(state)...)
+	state.CompletedSent = true
+	events = append(events, chatToResponsesEvent(state, "response.failed", &ResponsesStreamEvent{
+		Response: &ResponsesResponse{
+			ID:     state.ResponseID,
+			Object: "response",
+			Model:  state.Model,
+			Status: "failed",
+			Output: state.chatOutput(),
+			Usage:  state.Usage,
+			Error:  &ResponsesError{Code: code, Message: message},
+		},
+	}))
+	return events
+}
+
+func closeChatMessageOutput(state *ChatCompletionsToResponsesStreamState) []ResponsesStreamEvent {
+	if state == nil {
+		return nil
+	}
+	var events []ResponsesStreamEvent
+	// Close a reasoning item that never transitioned to content (reasoning-only
+	// or empty completion), then synthesize its visible fallback when needed.
+	events = append(events, closeChatReasoningItem(state)...)
+	events = append(events, synthesizeChatReasoningFallbackMessage(state)...)
+	if state.MessageItemID == "" {
+		return events
+	}
+	if state.TextPartOpen {
+		events = append(events, chatToResponsesEvent(state, "response.output_text.done", &ResponsesStreamEvent{
+			OutputIndex:  state.MessageIndex,
+			ContentIndex: 0,
+			Text:         state.Text.String(),
+			ItemID:       state.MessageItemID,
+		}))
+		events = append(events, chatToResponsesEvent(state, "response.content_part.done", &ResponsesStreamEvent{
+			OutputIndex:  state.MessageIndex,
+			ContentIndex: 0,
+			ItemID:       state.MessageItemID,
+			Part:         &ResponsesContentPart{Type: "output_text", Text: state.Text.String()},
+		}))
+	}
+	events = append(events, chatToResponsesEvent(state, "response.output_item.done", &ResponsesStreamEvent{
+		OutputIndex: state.MessageIndex,
+		Item: &ResponsesOutput{
+			Type:    "message",
+			ID:      state.MessageItemID,
+			Role:    "assistant",
+			Content: []ResponsesContentPart{{Type: "output_text", Text: state.Text.String()}},
+			Status:  "completed",
 		},
 	}))
 	return events
@@ -1899,6 +2047,18 @@ func announceChatToolItem(
 	if !force && stored.Function.Name == "" && (len(state.CustomTools) > 0 || state.ToolSearchDeclared || len(state.NamespaceTools) > 0) {
 		return nil
 	}
+	if state.HoldToolCallsForValidation {
+		if !force {
+			return nil
+		}
+		if hasResponsesClientToolDeclarations(state.clientToolMapping()) && !isKnownResponsesClientToolCallName(stored.Function.Name, state.clientToolMapping()) {
+			return nil
+		}
+	}
+	if _, ok := state.ToolItemIDs[idx]; !ok {
+		state.ToolItemIDs[idx] = generateItemID()
+		state.ToolOutputIndex[idx] = state.allocOutputIndex()
+	}
 	state.toolAnnounced[idx] = true
 	customName, isCustom := resolveCustomToolCallName(stored.Function.Name, state.CustomTools, state.FunctionTools, state.NamespaceTools)
 	if isCustom {
@@ -1956,12 +2116,12 @@ func closeChatToolItems(state *ChatCompletionsToResponsesStreamState) []Response
 	var events []ResponsesStreamEvent
 	for _, i := range sortedChatToolCallIndexes(state.ToolCalls) {
 		toolCall := state.ToolCalls[i]
-		itemID, opened := state.ToolItemIDs[i]
-		if !opened {
-			continue
-		}
 		// 名字始终未到导致尚未宣告的调用，收尾前按最终名字兜底宣告。
 		events = append(events, announceChatToolItem(state, i, toolCall, true)...)
+		if !state.toolAnnounced[i] {
+			continue
+		}
+		itemID := state.ToolItemIDs[i]
 		arguments := toolCall.Function.Arguments
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"

@@ -121,11 +121,18 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, chatBody, billingModel)
 	}
+	repairSender := func(unknownNames []string) (*http.Response, error) {
+		repairBody, err := buildResponsesChatToolRepairBody(chatBody, unknownNames)
+		if err != nil {
+			return nil, err
+		}
+		return s.sendCCUpstreamRequest(ctx, c, account, targetURL, repairBody, clientStream, apiKey, account.GetOpenAIUserAgent(), "")
+	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		return s.streamChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, repairSender)
 	}
-	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, repairSender)
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
@@ -138,31 +145,67 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	reasoningEffort *string,
 	serviceTier *string,
 	startTime time.Time,
+	repairSender responsesChatToolRepairSender,
 ) (*OpenAIForwardResult, error) {
-	requestID := resp.Header.Get("x-request-id")
-	ccResp, usage, err := s.readCCUpstreamJSONResponse(c, resp, writeOpenAIResponsesFallbackError)
-	if err != nil {
-		return nil, err
+	currentResp := resp
+	requestID := currentResp.Header.Get("x-request-id")
+	var totalUsage OpenAIUsage
+	result := func() *OpenAIForwardResult {
+		return &OpenAIForwardResult{
+			RequestID:       requestID,
+			Usage:           totalUsage,
+			Model:           originalModel,
+			BillingModel:    billingModel,
+			UpstreamModel:   upstreamModel,
+			ReasoningEffort: reasoningEffort,
+			ServiceTier:     serviceTier,
+			Stream:          false,
+			Duration:        time.Since(startTime),
+		}
 	}
-	responsesResp := apicompat.ChatCompletionsResponseToResponsesWithToolMapping(ccResp, originalModel, clientToolMapping)
-	s.cacheReasoningItemsFromOutput(responsesResp.Output)
-
-	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	fail := func(clientMessage string, err error) (*OpenAIForwardResult, error) {
+		MarkResponseCommitted(c)
+		writeOpenAIResponsesFallbackError(c, http.StatusBadGateway, "api_error", clientMessage)
+		return result(), fmt.Errorf("upstream response failed: %w", err)
 	}
-	c.JSON(http.StatusOK, responsesResp)
 
-	return &OpenAIForwardResult{
-		RequestID:       requestID,
-		Usage:           usage,
-		Model:           originalModel,
-		BillingModel:    billingModel,
-		UpstreamModel:   upstreamModel,
-		ReasoningEffort: reasoningEffort,
-		ServiceTier:     serviceTier,
-		Stream:          false,
-		Duration:        time.Since(startTime),
-	}, nil
+	for attempt := 0; ; attempt++ {
+		if currentResp == nil {
+			return fail("Upstream tool repair failed", fmt.Errorf("chat fallback tool repair returned nil response"))
+		}
+		if currentResp.StatusCode >= 400 {
+			_, _ = s.readOpenAIUpstreamError(currentResp)
+			return fail("Upstream tool repair failed", fmt.Errorf("chat fallback tool repair upstream returned HTTP %d", currentResp.StatusCode))
+		}
+		ccResp, usage, err := s.readCCUpstreamJSONResponse(c, currentResp, writeOpenAIResponsesFallbackError)
+		addOpenAIUsage(&totalUsage, usage)
+		if err != nil {
+			return result(), err
+		}
+		unknownNames := apicompat.UnknownChatCompletionsToolCallNames(ccResp, clientToolMapping)
+		if len(unknownNames) == 0 {
+			responsesResp := apicompat.ChatCompletionsResponseToResponsesWithToolMapping(ccResp, originalModel, clientToolMapping)
+			s.cacheReasoningItemsFromOutput(responsesResp.Output)
+			if s.responseHeaderFilter != nil {
+				responseheaders.WriteFilteredHeaders(c.Writer.Header(), currentResp.Header, s.responseHeaderFilter)
+			}
+			c.JSON(http.StatusOK, responsesResp)
+			return result(), nil
+		}
+		if attempt >= responsesChatToolRepairMaxAttempts || repairSender == nil {
+			return fail("Upstream returned an undeclared tool call", fmt.Errorf("chat fallback upstream returned an undeclared tool after repair"))
+		}
+		_ = currentResp.Body.Close()
+		repairResp, err := repairSender(unknownNames)
+		if err != nil {
+			return fail("Upstream tool repair failed", fmt.Errorf("send chat fallback tool repair: %w", err))
+		}
+		currentResp = repairResp
+		defer func() { _ = repairResp.Body.Close() }()
+		if nextRequestID := currentResp.Header.Get("x-request-id"); nextRequestID != "" {
+			requestID = nextRequestID
+		}
+	}
 }
 
 func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
@@ -175,6 +218,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	reasoningEffort *string,
 	serviceTier *string,
 	startTime time.Time,
+	repairSender responsesChatToolRepairSender,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
@@ -184,7 +228,10 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	state.FunctionTools = clientToolMapping.FunctionTools
 	state.ToolSearchDeclared = clientToolMapping.ToolSearch
 	state.NamespaceTools = clientToolMapping.NamespaceTools
+	state.HoldToolCallsForValidation = true
 	clientDisconnected := false
+	var totalUsage OpenAIUsage
+	var firstTokenMs *int
 
 	writeEvents := func(events []apicompat.ResponsesStreamEvent) {
 		if clientDisconnected || len(events) == 0 {
@@ -211,31 +258,21 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		}
 		c.Writer.Flush()
 	}
-
-	scan := s.scanCCStream(resp, "openai responses chat fallback", requestID, startTime, func(chunk *apicompat.ChatCompletionsChunk) {
-		events := apicompat.ChatCompletionsChunkToResponsesEvents(chunk, state)
-		s.cacheReasoningItemsFromEvents(events)
-		writeEvents(events)
-	})
-
-	if scan.Err != nil {
-		return &OpenAIForwardResult{
-			RequestID:       requestID,
-			Usage:           scan.Usage,
-			Model:           originalModel,
-			BillingModel:    billingModel,
-			UpstreamModel:   upstreamModel,
-			ReasoningEffort: reasoningEffort,
-			ServiceTier:     serviceTier,
-			Stream:          true,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    scan.FirstTokenMs,
-		}, fmt.Errorf("stream usage incomplete: %w", scan.Err)
+	writeDone := func() {
+		if clientDisconnected {
+			return
+		}
+		writeStreamHeaders()
+		if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
+			clientDisconnected = true
+			return
+		}
+		c.Writer.Flush()
 	}
-	if err := state.ValidateToolCallArguments(); err != nil {
+	result := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:       requestID,
-			Usage:           scan.Usage,
+			Usage:           totalUsage,
 			Model:           originalModel,
 			BillingModel:    billingModel,
 			UpstreamModel:   upstreamModel,
@@ -243,38 +280,75 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			ServiceTier:     serviceTier,
 			Stream:          true,
 			Duration:        time.Since(startTime),
-			FirstTokenMs:    scan.FirstTokenMs,
-		}, fmt.Errorf("invalid tool call arguments from upstream: %w", err)
+			FirstTokenMs:    firstTokenMs,
+		}
+	}
+	failStream := func(err error) (*OpenAIForwardResult, error) {
+		state.DropUnannouncedToolCalls()
+		failureEvents := apicompat.FinalizeChatCompletionsResponsesStreamFailure(
+			state,
+			"upstream_tool_protocol_error",
+			"Upstream returned a tool call that is not declared for this request.",
+		)
+		s.cacheReasoningItemsFromEvents(failureEvents)
+		MarkResponseCommitted(c)
+		writeEvents(failureEvents)
+		writeDone()
+		return result(), fmt.Errorf("upstream response failed: %w", err)
+	}
+
+	currentResp := resp
+	var sawDone bool
+	for attempt := 0; ; attempt++ {
+		if currentResp == nil {
+			return failStream(fmt.Errorf("chat fallback tool repair returned nil response"))
+		}
+		if currentResp.StatusCode >= 400 {
+			_, _ = s.readOpenAIUpstreamError(currentResp)
+			_ = currentResp.Body.Close()
+			return failStream(fmt.Errorf("chat fallback tool repair upstream returned HTTP %d", currentResp.StatusCode))
+		}
+		scan := s.scanCCStream(currentResp, "openai responses chat fallback", requestID, startTime, func(chunk *apicompat.ChatCompletionsChunk) {
+			events := apicompat.ChatCompletionsChunkToResponsesEvents(chunk, state)
+			s.cacheReasoningItemsFromEvents(events)
+			writeEvents(events)
+		})
+		_ = currentResp.Body.Close()
+		addOpenAIUsage(&totalUsage, scan.Usage)
+		if firstTokenMs == nil && scan.FirstTokenMs != nil {
+			firstTokenMs = scan.FirstTokenMs
+		}
+		sawDone = scan.SawDone
+		if scan.Err != nil {
+			return result(), fmt.Errorf("stream usage incomplete: %w", scan.Err)
+		}
+		unknownNames := state.UnknownToolCallNames()
+		if len(unknownNames) == 0 {
+			if err := state.ValidateToolCallArguments(); err != nil {
+				return result(), fmt.Errorf("invalid tool call arguments from upstream: %w", err)
+			}
+			break
+		}
+		state.DropUnannouncedToolCalls()
+		if attempt >= responsesChatToolRepairMaxAttempts || repairSender == nil {
+			return failStream(fmt.Errorf("chat fallback upstream returned an undeclared tool after repair"))
+		}
+		var err error
+		currentResp, err = repairSender(unknownNames)
+		if err != nil {
+			return failStream(fmt.Errorf("send chat fallback tool repair: %w", err))
+		}
 	}
 
 	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
 	s.cacheReasoningItemsFromEvents(finalEvents)
 	writeEvents(finalEvents)
-	if !clientDisconnected {
-		writeStreamHeaders()
-		if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
-			clientDisconnected = true
-		}
-		if !clientDisconnected {
-			c.Writer.Flush()
-		}
-	}
-	if !scan.SawDone {
+	writeDone()
+	if !sawDone {
 		logCCStreamMissingDoneSentinel("openai responses chat fallback", requestID)
 	}
 
-	return &OpenAIForwardResult{
-		RequestID:       requestID,
-		Usage:           scan.Usage,
-		Model:           originalModel,
-		BillingModel:    billingModel,
-		UpstreamModel:   upstreamModel,
-		ReasoningEffort: reasoningEffort,
-		ServiceTier:     serviceTier,
-		Stream:          true,
-		Duration:        time.Since(startTime),
-		FirstTokenMs:    scan.FirstTokenMs,
-	}, nil
+	return result(), nil
 }
 
 func chatChunkStartsResponsesOutput(chunk *apicompat.ChatCompletionsChunk) bool {

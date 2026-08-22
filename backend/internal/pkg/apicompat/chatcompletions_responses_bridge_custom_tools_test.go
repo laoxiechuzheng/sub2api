@@ -220,6 +220,75 @@ func TestChatCompletionsResponseToResponses_FunctionsNamespaceAliasRestoresCusto
 	assert.Empty(t, out.Output[0].Arguments)
 }
 
+func TestChatCompletionsResponseToResponses_FunctionsDotAliasRestoresCustomTool(t *testing.T) {
+	resp := &ChatCompletionsResponse{
+		ID: "cc-dot-alias",
+		Choices: []ChatChoice{{Message: ChatMessage{
+			Role: "assistant",
+			ToolCalls: []ChatToolCall{{
+				ID: "call_exec",
+				Function: ChatFunctionCall{
+					Name:      "functions.exec",
+					Arguments: `{"input":"pwd"}`,
+				},
+			}},
+		}}},
+	}
+	mapping := ResponsesClientToolMapping{
+		CustomTools: map[string]bool{"exec": true},
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__wait": {Namespace: "functions", Name: "wait"},
+		},
+	}
+
+	out := ChatCompletionsResponseToResponsesWithToolMapping(resp, "claude-opus-5", mapping)
+	require.Len(t, out.Output, 1)
+	assert.Equal(t, "custom_tool_call", out.Output[0].Type)
+	assert.Equal(t, "exec", out.Output[0].Name)
+	assert.Equal(t, "pwd", out.Output[0].Input)
+}
+
+func TestChatCompletionsResponseToResponses_FunctionsDotAliasCollisionKeepsFunction(t *testing.T) {
+	resp := &ChatCompletionsResponse{Choices: []ChatChoice{{Message: ChatMessage{
+		Role: "assistant",
+		ToolCalls: []ChatToolCall{{
+			ID:       "call_function",
+			Function: ChatFunctionCall{Name: "functions.exec", Arguments: `{}`},
+		}},
+	}}}}
+	mapping := ResponsesClientToolMapping{
+		CustomTools:   map[string]bool{"exec": true},
+		FunctionTools: map[string]bool{"functions.exec": true},
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__wait": {Namespace: "functions", Name: "wait"},
+		},
+	}
+
+	out := ChatCompletionsResponseToResponsesWithToolMapping(resp, "claude-opus-5", mapping)
+	require.Len(t, out.Output, 1)
+	assert.Equal(t, "function_call", out.Output[0].Type)
+	assert.Equal(t, "functions.exec", out.Output[0].Name)
+}
+
+func TestUnknownChatCompletionsToolCallNames_ReturnsOnlyUndeclaredNames(t *testing.T) {
+	resp := &ChatCompletionsResponse{Choices: []ChatChoice{{Message: ChatMessage{
+		Role: "assistant",
+		ToolCalls: []ChatToolCall{
+			{ID: "call_unknown", Function: ChatFunctionCall{Name: "functions.read_file", Arguments: `{}`}},
+			{ID: "call_custom", Function: ChatFunctionCall{Name: "functions.exec", Arguments: `{"input":"pwd"}`}},
+			{ID: "call_namespace", Function: ChatFunctionCall{Name: "functions__wait", Arguments: `{}`}},
+		},
+	}}}}
+	mapping := ResponsesClientToolMapping{
+		CustomTools: map[string]bool{"exec": true},
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__wait": {Namespace: "functions", Name: "wait"},
+		},
+	}
+
+	assert.Equal(t, []string{"functions.read_file"}, UnknownChatCompletionsToolCallNames(resp, mapping))
+}
+
 func TestChatCompletionsResponseToResponses_FunctionsNamespaceAliasKeepsNamespacePrecedence(t *testing.T) {
 	resp := &ChatCompletionsResponse{
 		Choices: []ChatChoice{{Message: ChatMessage{
@@ -406,6 +475,89 @@ func TestChatCompletionsChunkToResponsesEvents_FunctionsNamespaceAliasRestoresCu
 	require.Len(t, completed.Response.Output, 1)
 	assert.Equal(t, "custom_tool_call", completed.Response.Output[0].Type)
 	assert.Equal(t, "exec", completed.Response.Output[0].Name)
+}
+
+func TestChatCompletionsChunkToResponsesEvents_FunctionsDotAliasRestoresCustomTool(t *testing.T) {
+	state := NewChatCompletionsToResponsesStreamState("claude-opus-5")
+	state.CustomTools = map[string]bool{"exec": true}
+	state.NamespaceTools = map[string]NamespacedToolName{
+		"functions__wait": {Namespace: "functions", Name: "wait"},
+	}
+
+	idx := 0
+	chunk := &ChatCompletionsChunk{Choices: []ChatChunkChoice{{Delta: ChatDelta{
+		ToolCalls: []ChatToolCall{{
+			Index: &idx,
+			ID:    "call_exec",
+			Function: ChatFunctionCall{
+				Name:      "functions.exec",
+				Arguments: `{"input":"pwd"}`,
+			},
+		}},
+	}}}}
+
+	events := ChatCompletionsChunkToResponsesEvents(chunk, state)
+	events = append(events, FinalizeChatCompletionsResponsesStream(state)...)
+
+	completed := events[len(events)-1]
+	require.Equal(t, "response.completed", completed.Type)
+	require.NotNil(t, completed.Response)
+	require.Len(t, completed.Response.Output, 1)
+	assert.Equal(t, "custom_tool_call", completed.Response.Output[0].Type)
+	assert.Equal(t, "exec", completed.Response.Output[0].Name)
+	assert.Equal(t, "pwd", completed.Response.Output[0].Input)
+}
+
+func TestChatCompletionsChunkToResponsesEvents_UnknownToolWaitsForRepair(t *testing.T) {
+	state := NewChatCompletionsToResponsesStreamState("claude-opus-5")
+	state.CustomTools = map[string]bool{"exec": true}
+	state.NamespaceTools = map[string]NamespacedToolName{
+		"functions__wait": {Namespace: "functions", Name: "wait"},
+	}
+	state.HoldToolCallsForValidation = true
+
+	preamble := "I will inspect the file."
+	textEvents := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{Choices: []ChatChunkChoice{{
+		Delta: ChatDelta{Content: &preamble},
+	}}}, state)
+	require.NotEmpty(t, textEvents)
+
+	idx := 0
+	unknownEvents := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{Choices: []ChatChunkChoice{{Delta: ChatDelta{
+		ToolCalls: []ChatToolCall{{
+			Index:    &idx,
+			ID:       "call_unknown",
+			Function: ChatFunctionCall{Name: "functions.read_file", Arguments: `{"path":"sample.txt"}`},
+		}},
+	}}}}, state)
+	for _, event := range unknownEvents {
+		if event.Item != nil && (event.Item.Type == "function_call" || event.Item.Type == "custom_tool_call") {
+			t.Fatalf("undeclared tool must stay unannounced, got %s %s", event.Item.Type, event.Item.Name)
+		}
+	}
+	require.Equal(t, []string{"functions.read_file"}, state.UnknownToolCallNames())
+
+	state.DropUnannouncedToolCalls()
+	require.Empty(t, state.UnknownToolCallNames())
+	validEvents := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{Choices: []ChatChunkChoice{{Delta: ChatDelta{
+		ToolCalls: []ChatToolCall{{
+			Index:    &idx,
+			ID:       "call_exec",
+			Function: ChatFunctionCall{Name: "exec", Arguments: `{"input":"pwd"}`},
+		}},
+	}}}}, state)
+	validEvents = append(validEvents, FinalizeChatCompletionsResponsesStream(state)...)
+
+	var added *ResponsesStreamEvent
+	for i := range validEvents {
+		if validEvents[i].Type == "response.output_item.added" && validEvents[i].Item != nil && validEvents[i].Item.Type == "custom_tool_call" {
+			added = &validEvents[i]
+			break
+		}
+	}
+	require.NotNil(t, added)
+	assert.Equal(t, 1, added.OutputIndex, "discarded unknown call must not leave an output-index gap after the message")
+	assert.Equal(t, "exec", added.Item.Name)
 }
 
 func TestChatCompletionsChunkToResponsesEvents_FunctionsNamespaceAliasWithSparseIndex(t *testing.T) {
