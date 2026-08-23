@@ -580,6 +580,22 @@ func extractToolOutputText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
+	if raw[0] == '{' {
+		var object map[string]json.RawMessage
+		if json.Unmarshal(raw, &object) == nil {
+			if content, ok := object["content"]; ok {
+				content = bytesTrimSpace(content)
+				var text string
+				if json.Unmarshal(content, &text) == nil {
+					return text
+				}
+				if extracted := extractToolOutputText(content); extracted != "" {
+					return extracted
+				}
+			}
+		}
+		return ""
+	}
 	if raw[0] == '"' {
 		var nested string
 		if json.Unmarshal(raw, &nested) == nil {
