@@ -101,6 +101,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 			responsesReq.Tools = inherited
 		}
 	}
+	applyClaudeCodeModeInstructionsHint(&responsesReq)
 	clientToolMapping := apicompat.ResponsesClientToolMapping{
 		CustomTools:    apicompat.CustomToolNames(effectiveTools),
 		FunctionTools:  apicompat.FunctionToolNames(effectiveTools),
@@ -194,6 +195,22 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
 	}
 	return result, forwardErr
+}
+
+const claudeCodeModeInstructionsHint = "Provider compatibility note: when using the code-mode exec tool, call notify(result.output) to return nested command output to the model; text(result.output) alone may omit stdout on this provider."
+
+func applyClaudeCodeModeInstructionsHint(req *apicompat.ResponsesRequest) {
+	if req == nil || !strings.Contains(strings.ToLower(strings.TrimSpace(req.Model)), "claude") {
+		return
+	}
+	if strings.Contains(req.Instructions, "notify(result.output)") {
+		return
+	}
+	if strings.TrimSpace(req.Instructions) == "" {
+		req.Instructions = claudeCodeModeInstructionsHint
+		return
+	}
+	req.Instructions += "\n\n" + claudeCodeModeInstructionsHint
 }
 
 const claudeCodeModeToolOutputHint = "For the code-mode exec tool, use notify(result.output) to return command output to the model; do not rely on text(result.output) alone."
