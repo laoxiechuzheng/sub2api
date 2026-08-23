@@ -463,7 +463,10 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 					mediaByCallID[callID] = media
 				}
 			} else {
-				outputText = rawString(outputRaw)
+				outputText = extractToolOutputText(outputRaw)
+				if outputText == "" {
+					outputText = rawString(outputRaw)
+				}
 				if outputText == "" && len(outputRaw) > 0 && string(outputRaw) != "null" && string(outputRaw) != `""` {
 					// 对象/数组形式的输出（如 tool_search 的结果列表）整体字符串化。
 					outputText = string(outputRaw)
@@ -565,6 +568,49 @@ func extractAgentMessageText(raw json.RawMessage) string {
 			_ = out.WriteByte('\n')
 		}
 		_, _ = out.WriteString(value)
+	}
+	return strings.TrimSpace(out.String())
+}
+
+// extractToolOutputText preserves the text-bearing content-item form used by
+// Codex custom tool outputs. Chat providers only need the readable text; when
+// no text-bearing parts are present the caller keeps the original JSON value.
+func extractToolOutputText(raw json.RawMessage) string {
+	raw = bytesTrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	if raw[0] == '"' {
+		var nested string
+		if json.Unmarshal(raw, &nested) == nil {
+			return extractToolOutputText(json.RawMessage(nested))
+		}
+	}
+	if raw[0] != '[' {
+		return ""
+	}
+	var parts []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var out strings.Builder
+	textPartCount := 0
+	for _, part := range parts {
+		if typ := rawString(part["type"]); typ != "input_text" && typ != "output_text" && typ != "text" {
+			return ""
+		}
+		textPartCount++
+		value := rawString(part["text"])
+		if value == "" {
+			return ""
+		}
+		if out.Len() > 0 && !strings.HasSuffix(out.String(), "\n") && !strings.HasPrefix(value, "\n") {
+			_ = out.WriteByte('\n')
+		}
+		_, _ = out.WriteString(value)
+	}
+	if textPartCount == 0 {
+		return ""
 	}
 	return strings.TrimSpace(out.String())
 }

@@ -274,6 +274,35 @@ func TestResponsesInputToChatMessages_CustomToolCallHistory(t *testing.T) {
 	assert.JSONEq(t, `"main.go"`, string(messages[2].Content))
 }
 
+func TestResponsesInputToChatMessages_CustomToolCallOutputContentItemsBecomePlainText(t *testing.T) {
+	input := json.RawMessage(`[
+		{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":"Get-Location"},
+		{"type":"custom_tool_call_output","call_id":"call_1","output":[
+			{"type":"input_text","text":"C:\\Users\\Administrator\\Documents"},
+			{"type":"input_text","text":"\nExit code: 0"}
+		]}
+	]`)
+
+	messages, err := responsesInputToChatMessages("", input)
+	require.NoError(t, err)
+	require.Len(t, messages, 2)
+	require.Equal(t, "tool", messages[1].Role)
+	require.Equal(t, "call_1", messages[1].ToolCallID)
+	assert.JSONEq(t, `"C:\\Users\\Administrator\\Documents\nExit code: 0"`, string(messages[1].Content))
+}
+
+func TestResponsesInputToChatMessages_CustomToolCallOutputJSONStringContentItemsBecomePlainText(t *testing.T) {
+	input := json.RawMessage(`[
+		{"type":"custom_tool_call","call_id":"call_2","name":"exec","input":"Get-Location"},
+		{"type":"custom_tool_call_output","call_id":"call_2","output":"[{\"type\":\"input_text\",\"text\":\"C:\\\\repo\"}]"}
+	]`)
+
+	messages, err := responsesInputToChatMessages("", input)
+	require.NoError(t, err)
+	require.Len(t, messages, 2)
+	assert.JSONEq(t, `"C:\\repo"`, string(messages[1].Content))
+}
+
 func TestChatCompletionsResponseToResponses_CustomToolCallOutputItem(t *testing.T) {
 	resp := &ChatCompletionsResponse{
 		ID: "cc-1",
