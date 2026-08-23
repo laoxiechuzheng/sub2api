@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -19,6 +21,17 @@ const (
 	chatgptCodexAlphaSearchURL   = "https://chatgpt.com/backend-api/codex/alpha/search"
 	openAIPlatformAlphaSearchURL = "https://api.openai.com/v1/alpha/search"
 )
+
+type openAIAlphaSearchWebSearchFunc func(context.Context, *Account, websearch.SearchRequest) (*websearch.SearchResponse, string, error)
+
+type openAIAlphaSearchOptions struct {
+	webSearch       openAIAlphaSearchWebSearchFunc
+	builtinFallback bool
+}
+
+// errOpenAIAlphaSearchFallbackUnavailable means no configured search provider
+// is available; callers should retain the normal upstream failover behavior.
+var errOpenAIAlphaSearchFallbackUnavailable = errors.New("configured alpha search fallback unavailable")
 
 // ForwardAlphaSearch proxies Codex standalone web search without binding the
 // evolving alpha request or response schema.
@@ -88,6 +101,25 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		upstreamMessage := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
+		if shouldTryOpenAIAlphaSearchConfiguredFallback(account, resp.StatusCode) {
+			fallbackResult, attempted, fallbackErr := s.forwardAlphaSearchViaConfiguredWebSearch(
+				ctx, c, account, body, requestedModel, upstreamModel,
+			)
+			if attempted {
+				if fallbackErr == nil {
+					return fallbackResult, nil
+				}
+				if !errors.Is(fallbackErr, errOpenAIAlphaSearchFallbackUnavailable) {
+					if errors.Is(fallbackErr, websearch.ErrProxyUnavailable) {
+						return nil, &UpstreamFailoverError{
+							StatusCode:   http.StatusBadGateway,
+							ResponseBody: []byte(fallbackErr.Error()),
+						}
+					}
+					return nil, fallbackErr
+				}
+			}
+		}
 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMessage, respBody) ||
 			isOpenAIAlphaSearchEndpointUnsupported(account, resp.StatusCode) {
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -131,6 +163,208 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 		Duration:       time.Since(upstreamStart),
 		WebSearchCalls: 1,
 	}, nil
+}
+
+func (s *OpenAIGatewayService) forwardAlphaSearchViaConfiguredWebSearch(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	alphaBody []byte,
+	requestedModel string,
+	upstreamModel string,
+) (*OpenAIForwardResult, bool, error) {
+	manager := getWebSearchManager()
+	if manager == nil && s.alphaSearch.builtinFallback && s.alphaSearch.webSearch == nil {
+		manager = websearch.NewBingRSSManager()
+	}
+	if manager == nil && s.alphaSearch.webSearch == nil {
+		return nil, false, errOpenAIAlphaSearchFallbackUnavailable
+	}
+
+	queries := extractOpenAIAlphaSearchQueries(alphaBody)
+	if len(queries) == 0 {
+		return nil, true, fmt.Errorf("alpha search fallback: request contains no search_query or text input")
+	}
+
+	start := time.Now()
+	proxyURL := resolveAccountProxyURL(account)
+	var allResults []websearch.SearchResult
+	for _, query := range queries {
+		request := websearch.SearchRequest{
+			Query:      query,
+			MaxResults: webSearchDefaultMaxResults,
+			ProxyURL:   proxyURL,
+		}
+		var response *websearch.SearchResponse
+		var err error
+		if s.alphaSearch.webSearch != nil {
+			response, _, err = s.alphaSearch.webSearch(ctx, account, request)
+		} else {
+			response, _, err = manager.SearchWithBestProvider(ctx, request)
+		}
+		if err != nil {
+			return nil, true, fmt.Errorf("alpha search fallback: %w", err)
+		}
+		if response != nil {
+			allResults = append(allResults, response.Results...)
+		}
+	}
+
+	filtered := filterOpenAIAlphaSearchResults(alphaBody, allResults)
+	responseBody, err := buildOpenAIAlphaSearchFallbackResponse(strings.Join(queries, "; "), filtered)
+	if err != nil {
+		return nil, true, err
+	}
+	if c != nil {
+		SetActualOpenAIUpstreamEndpoint(c, "configured_web_search")
+		c.Data(http.StatusOK, "application/json", responseBody)
+	}
+	return &OpenAIForwardResult{
+		Model:            requestedModel,
+		UpstreamModel:    upstreamModel,
+		UpstreamEndpoint: "configured_web_search",
+		Duration:         time.Since(start),
+		WebSearchCalls:   1,
+	}, true, nil
+}
+
+func extractOpenAIAlphaSearchQueries(body []byte) []string {
+	queries := make([]string, 0, 2)
+	seen := make(map[string]struct{})
+	appendQuery := func(raw string) {
+		query := strings.TrimSpace(raw)
+		if query == "" {
+			return
+		}
+		if _, ok := seen[query]; ok {
+			return
+		}
+		seen[query] = struct{}{}
+		queries = append(queries, query)
+	}
+
+	searchQueries := gjson.GetBytes(body, "commands.search_query")
+	if searchQueries.IsArray() {
+		searchQueries.ForEach(func(_, item gjson.Result) bool {
+			appendQuery(item.Get("q").String())
+			return true
+		})
+	}
+	if len(queries) > 0 {
+		return queries
+	}
+
+	input := gjson.GetBytes(body, "input")
+	if input.Type == gjson.String {
+		appendQuery(input.String())
+		return queries
+	}
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			if role := item.Get("role").String(); role != "" && role != "user" {
+				return true
+			}
+			content := item.Get("content")
+			if content.Type == gjson.String {
+				appendQuery(content.String())
+				return true
+			}
+			if content.IsArray() {
+				content.ForEach(func(_, part gjson.Result) bool {
+					typeName := part.Get("type").String()
+					if typeName == "input_text" || typeName == "text" || typeName == "output_text" {
+						appendQuery(part.Get("text").String())
+					}
+					return true
+				})
+			}
+			return true
+		})
+	}
+	return queries
+}
+
+func filterOpenAIAlphaSearchResults(body []byte, results []websearch.SearchResult) []websearch.SearchResult {
+	allowed := make([]string, 0)
+	blocked := make([]string, 0)
+	filters := gjson.GetBytes(body, "settings.filters")
+	filters.Get("allowed_domains").ForEach(func(_, value gjson.Result) bool {
+		if domain := strings.TrimSpace(strings.ToLower(value.String())); domain != "" {
+			allowed = append(allowed, domain)
+		}
+		return true
+	})
+	filters.Get("blocked_domains").ForEach(func(_, value gjson.Result) bool {
+		if domain := strings.TrimSpace(strings.ToLower(value.String())); domain != "" {
+			blocked = append(blocked, domain)
+		}
+		return true
+	})
+
+	out := make([]websearch.SearchResult, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		u, err := url.Parse(strings.TrimSpace(result.URL))
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			continue
+		}
+		host := strings.ToLower(strings.TrimPrefix(u.Hostname(), "www."))
+		if !openAIAlphaSearchDomainAllowed(host, allowed, blocked) {
+			continue
+		}
+		key := strings.ToLower(u.Scheme + "://" + host + u.EscapedPath())
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result.URL = u.String()
+		out = append(out, result)
+	}
+	return out
+}
+
+func openAIAlphaSearchDomainAllowed(host string, allowed, blocked []string) bool {
+	matches := func(domain string) bool {
+		domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), "www.")
+		return host == domain || strings.HasSuffix(host, "."+domain)
+	}
+	for _, domain := range blocked {
+		if matches(domain) {
+			return false
+		}
+	}
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, domain := range allowed {
+		if matches(domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildOpenAIAlphaSearchFallbackResponse(query string, results []websearch.SearchResult) ([]byte, error) {
+	items := make([]map[string]any, 0, len(results))
+	for i, result := range results {
+		item := map[string]any{
+			"type":    "text_result",
+			"ref_id":  fmt.Sprintf("turn0search%d", i),
+			"url":     result.URL,
+			"title":   result.Title,
+			"snippet": result.Snippet,
+		}
+		if result.PageAge != "" {
+			item["page_age"] = result.PageAge
+		}
+		items = append(items, item)
+	}
+	payload := map[string]any{
+		"encrypted_output": nil,
+		"output":           buildTextSummary(query, results),
+		"results":          items,
+	}
+	return json.Marshal(payload)
 }
 
 func (s *OpenAIGatewayService) forwardAlphaSearchViaResponsesWebSearch(
@@ -531,6 +765,21 @@ func isOpenAIAlphaSearchEndpointUnsupported(account *Account, statusCode int) bo
 		return false
 	}
 	return statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed
+}
+
+func shouldTryOpenAIAlphaSearchConfiguredFallback(account *Account, statusCode int) bool {
+	if account == nil || account.Type != AccountTypeAPIKey {
+		return false
+	}
+	switch statusCode {
+	case http.StatusNotFound, http.StatusMethodNotAllowed,
+		http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout,
+		520, 521, 522, 523, 524:
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldApplyOpenAIAlphaSearchAccountErrorSideEffects(statusCode int) bool {

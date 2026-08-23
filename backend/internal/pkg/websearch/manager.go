@@ -84,6 +84,16 @@ func NewManager(configs []ProviderConfig, redisClient *redis.Client) *Manager {
 	}
 }
 
+// NewBingRSSManager creates the credential-free fallback used by Codex
+// standalone search when the selected OpenAI-compatible upstream has no
+// alpha/search endpoint. The request's ProxyURL still controls transport.
+func NewBingRSSManager() *Manager {
+	return NewManager([]ProviderConfig{{
+		Type:   ProviderTypeBingRSS,
+		APIKey: "builtin",
+	}}, nil)
+}
+
 // SearchWithBestProvider selects a provider using quota-weighted load balancing,
 // reserves quota, executes the search, and rolls back quota on failure.
 // If the search fails due to a proxy error, the proxy is marked unavailable for 5 minutes.
@@ -464,6 +474,8 @@ func (m *Manager) buildProvider(cfg ProviderConfig, client *http.Client) Provide
 		return NewBraveProvider(cfg.APIKey, client)
 	case tavilyProviderName:
 		return NewTavilyProvider(cfg.APIKey, client)
+	case bingRSSProviderName:
+		return NewBingRSSProvider(client)
 	default:
 		slog.Warn("websearch: unknown provider type, falling back to brave",
 			"type", cfg.Type)

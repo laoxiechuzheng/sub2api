@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -574,6 +575,72 @@ func TestForwardAlphaSearchAPIKeyEndpointNotFoundFailsOver(t *testing.T) {
 	require.Empty(t, recorder.Body.String())
 }
 
+func TestForwardAlphaSearchAPIKeyUsesConfiguredSearchProviderFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{
+		"id":"search-session",
+		"model":"DeepSeek-V4-Flash",
+		"commands":{"search_query":[
+			{"q":"OpenAI news"},
+			{"q":"Codex release","domains":["openai.com"]}
+		]},
+		"settings":{"filters":{"allowed_domains":["openai.com"],"blocked_domains":["blocked.example"]}}
+	}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", bytes.NewReader(body))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusNotFound,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Not Found"}}`)),
+	}}
+	var received []websearch.SearchRequest
+	service := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+		alphaSearch: openAIAlphaSearchOptions{webSearch: func(_ context.Context, _ *Account, req websearch.SearchRequest) (*websearch.SearchResponse, string, error) {
+			received = append(received, req)
+			return &websearch.SearchResponse{Results: []websearch.SearchResult{
+				{URL: "https://openai.com/news", Title: "OpenAI News", Snippet: "Latest news"},
+				{URL: "https://blocked.example/secret", Title: "Blocked", Snippet: "Should not pass"},
+			}}, "brave", nil
+		}},
+	}
+	account := &Account{
+		ID:       9,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://relay.example",
+		},
+	}
+
+	result, err := service.ForwardAlphaSearch(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.WebSearchCalls)
+	require.Equal(t, "configured_web_search", result.UpstreamEndpoint)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Len(t, received, 2)
+	require.Equal(t, "OpenAI news", received[0].Query)
+	require.Equal(t, "Codex release", received[1].Query)
+	response := gjson.Parse(recorder.Body.String())
+	require.True(t, response.Get("encrypted_output").Type == gjson.Null)
+	require.Contains(t, response.Get("output").String(), "OpenAI News")
+	require.Contains(t, response.Get("output").String(), "Codex release")
+	require.Equal(t, "text_result", response.Get("results.0.type").String())
+	require.Equal(t, "https://openai.com/news", response.Get("results.0.url").String())
+	require.False(t, response.Get("results.1").Exists(), "blocked result must be filtered")
+}
+
+func TestExtractOpenAIAlphaSearchQueriesUsesInputWhenCommandsAbsent(t *testing.T) {
+	body := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"find current Codex news"}]}]}`)
+	require.Equal(t, []string{"find current Codex news"}, extractOpenAIAlphaSearchQueries(body))
+}
+
 // OAuth 账号的 chatgpt.com 端点固定存在，404 保持原有透传行为不变。
 func TestForwardAlphaSearchOAuthNotFoundPassesThrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -646,4 +713,23 @@ func TestIsOpenAIAlphaSearchEndpointUnsupported(t *testing.T) {
 	require.False(t, isOpenAIAlphaSearchEndpointUnsupported(apiKey, http.StatusBadRequest))
 	require.False(t, isOpenAIAlphaSearchEndpointUnsupported(oauth, http.StatusNotFound))
 	require.False(t, isOpenAIAlphaSearchEndpointUnsupported(nil, http.StatusNotFound))
+}
+
+func TestShouldTryOpenAIAlphaSearchConfiguredFallback(t *testing.T) {
+	apiKey := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	oauth := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	for _, status := range []int{
+		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	} {
+		require.True(t, shouldTryOpenAIAlphaSearchConfiguredFallback(apiKey, status), "status %d should use configured fallback", status)
+	}
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests} {
+		require.False(t, shouldTryOpenAIAlphaSearchConfiguredFallback(apiKey, status), "status %d must preserve upstream auth/request semantics", status)
+	}
+	require.False(t, shouldTryOpenAIAlphaSearchConfiguredFallback(oauth, http.StatusServiceUnavailable))
 }
