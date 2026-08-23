@@ -330,6 +330,20 @@ func TestResponsesInputToChatMessages_CustomToolCallOutputObjectContentItemsBeco
 	assert.JSONEq(t, `"C:\\repo\nExit code: 0"`, string(messages[1].Content))
 }
 
+func TestResponsesInputToChatMessages_CustomToolCallOutputNestedObjectTextBecomesPlainText(t *testing.T) {
+	input := json.RawMessage(`[
+		{"type":"custom_tool_call","call_id":"call_5","name":"exec","input":"Write-Output codex-tool-ok"},
+		{"type":"custom_tool_call_output","call_id":"call_5","output":[
+			{"type":"input_text","text":"{\"content\":\"codex-tool-ok\\n\",\"success\":true}"}
+		]}
+	]`)
+
+	messages, err := responsesInputToChatMessages("", input)
+	require.NoError(t, err)
+	require.Len(t, messages, 2)
+	assert.JSONEq(t, `"codex-tool-ok"`, string(messages[1].Content))
+}
+
 func TestChatCompletionsResponseToResponses_CustomToolCallOutputItem(t *testing.T) {
 	resp := &ChatCompletionsResponse{
 		ID: "cc-1",

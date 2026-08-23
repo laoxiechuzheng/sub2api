@@ -620,6 +620,9 @@ func extractToolOutputText(raw json.RawMessage) string {
 		if value == "" {
 			return ""
 		}
+		if extracted := extractToolOutputText(json.RawMessage(value)); extracted != "" {
+			value = extracted
+		}
 		if out.Len() > 0 && !strings.HasSuffix(out.String(), "\n") && !strings.HasPrefix(value, "\n") {
 			_ = out.WriteByte('\n')
 		}

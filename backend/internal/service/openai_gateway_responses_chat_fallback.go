@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -120,7 +119,6 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("convert responses to chat completions: %w", err)
 	}
-	logOpenAIResponsesChatToolMessageShape(account, originalModel, chatReq)
 
 	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
@@ -195,39 +193,6 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
 	}
 	return result, forwardErr
-}
-
-func logOpenAIResponsesChatToolMessageShape(account *Account, model string, req *apicompat.ChatCompletionsRequest) {
-	if os.Getenv("SUB2API_DEBUG_OPENAI_TOOL_BODY") != "1" || account == nil || req == nil {
-		return
-	}
-	for _, message := range req.Messages {
-		if message.Role != "tool" {
-			continue
-		}
-		content := bytes.TrimSpace(message.Content)
-		kind := "raw"
-		length := len(content)
-		empty := length == 0 || bytes.Equal(content, []byte(`""`)) || bytes.Equal(content, []byte("null"))
-		var text string
-		if json.Unmarshal(content, &text) == nil {
-			kind = "string"
-			length = len(text)
-			empty = strings.TrimSpace(text) == ""
-		} else if len(content) > 0 && content[0] == '[' {
-			kind = "array"
-		} else if len(content) > 0 && content[0] == '{' {
-			kind = "object"
-		}
-		logger.L().Info("openai.responses_chat_tool_message_shape",
-			zap.Int64("account_id", account.ID),
-			zap.String("model", model),
-			zap.String("tool_call_id", message.ToolCallID),
-			zap.String("content_kind", kind),
-			zap.Int("content_length", length),
-			zap.Bool("content_empty", empty),
-		)
-	}
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
