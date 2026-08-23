@@ -14,8 +14,49 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
+
+const responsesChatFallbackSessionTTL = 24 * time.Hour
+
+type responsesChatFallbackSession struct {
+	Tools    []apicompat.ResponsesTool
+	StoredAt time.Time
+}
+
+func cloneResponsesTools(tools []apicompat.ResponsesTool) []apicompat.ResponsesTool {
+	if len(tools) == 0 {
+		return nil
+	}
+	return append([]apicompat.ResponsesTool(nil), tools...)
+}
+
+func (s *OpenAIGatewayService) loadResponsesChatFallbackTools(responseID string) []apicompat.ResponsesTool {
+	if s == nil || strings.TrimSpace(responseID) == "" {
+		return nil
+	}
+	raw, ok := s.responsesChatFallbackSessions.Load(strings.TrimSpace(responseID))
+	if !ok {
+		return nil
+	}
+	session, ok := raw.(responsesChatFallbackSession)
+	if !ok || time.Since(session.StoredAt) > responsesChatFallbackSessionTTL {
+		s.responsesChatFallbackSessions.Delete(strings.TrimSpace(responseID))
+		return nil
+	}
+	return cloneResponsesTools(session.Tools)
+}
+
+func (s *OpenAIGatewayService) storeResponsesChatFallbackTools(responseID string, tools []apicompat.ResponsesTool) {
+	if s == nil || strings.TrimSpace(responseID) == "" || len(tools) == 0 {
+		return
+	}
+	s.responsesChatFallbackSessions.Store(strings.TrimSpace(responseID), responsesChatFallbackSession{
+		Tools:    cloneResponsesTools(tools),
+		StoredAt: time.Now(),
+	})
+}
 
 // forwardResponsesViaRawChatCompletions serves /v1/responses clients through an
 // upstream that only supports /v1/chat/completions.
@@ -48,6 +89,17 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	if err != nil {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("resolve responses tools: %w", err)
+	}
+	// Codex sends tools on the first Responses request and commonly omits them
+	// on follow-ups that carry previous_response_id. Chat Completions has no
+	// server-side response state, so restore the prior request-scoped declarations
+	// before converting the follow-up.
+	toolsFieldPresent := gjson.GetBytes(body, "tools").Exists()
+	if !toolsFieldPresent && len(effectiveTools) == 0 && responsesReq.PreviousResponseID != "" {
+		if inherited := s.loadResponsesChatFallbackTools(responsesReq.PreviousResponseID); len(inherited) > 0 {
+			effectiveTools = inherited
+			responsesReq.Tools = inherited
+		}
 	}
 	clientToolMapping := apicompat.ResponsesClientToolMapping{
 		CustomTools:    apicompat.CustomToolNames(effectiveTools),
@@ -130,9 +182,17 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, repairSender)
+		result, forwardErr := s.streamChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, effectiveTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, repairSender)
+		if forwardErr == nil && result != nil {
+			s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+		}
+		return result, forwardErr
 	}
-	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, repairSender)
+	result, forwardErr := s.bufferChatCompletionsAsResponses(c, resp, originalModel, clientToolMapping, effectiveTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, repairSender)
+	if forwardErr == nil && result != nil {
+		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+	}
+	return result, forwardErr
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
@@ -140,6 +200,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	resp *http.Response,
 	originalModel string,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	effectiveTools []apicompat.ResponsesTool,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,
@@ -149,10 +210,12 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 ) (*OpenAIForwardResult, error) {
 	currentResp := resp
 	requestID := currentResp.Header.Get("x-request-id")
+	responseID := ""
 	var totalUsage OpenAIUsage
 	result := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:       requestID,
+			ResponseID:      responseID,
 			Usage:           totalUsage,
 			Model:           originalModel,
 			BillingModel:    billingModel,
@@ -185,6 +248,8 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 		unknownNames := apicompat.UnknownChatCompletionsToolCallNames(ccResp, clientToolMapping)
 		if len(unknownNames) == 0 {
 			responsesResp := apicompat.ChatCompletionsResponseToResponsesWithToolMapping(ccResp, originalModel, clientToolMapping)
+			responseID = responsesResp.ID
+			s.storeResponsesChatFallbackTools(responsesResp.ID, effectiveTools)
 			s.cacheReasoningItemsFromOutput(responsesResp.Output)
 			if s.responseHeaderFilter != nil {
 				responseheaders.WriteFilteredHeaders(c.Writer.Header(), currentResp.Header, s.responseHeaderFilter)
@@ -192,6 +257,12 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 			c.JSON(http.StatusOK, responsesResp)
 			return result(), nil
 		}
+		logger.L().Warn("openai responses chat fallback: undeclared tool",
+			zap.String("request_id", requestID),
+			zap.Int("attempt", attempt),
+			zap.Strings("unknown_tool_names", unknownNames),
+			zap.Int("effective_tool_count", len(effectiveTools)),
+		)
 		if attempt >= responsesChatToolRepairMaxAttempts || repairSender == nil {
 			return fail("Upstream returned an undeclared tool call", fmt.Errorf("chat fallback upstream returned an undeclared tool after repair"))
 		}
@@ -213,6 +284,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	resp *http.Response,
 	originalModel string,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	effectiveTools []apicompat.ResponsesTool,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,
@@ -272,6 +344,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	result := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:       requestID,
+			ResponseID:      state.ResponseID,
 			Usage:           totalUsage,
 			Model:           originalModel,
 			BillingModel:    billingModel,
@@ -329,6 +402,12 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			}
 			break
 		}
+		logger.L().Warn("openai responses chat fallback: undeclared streamed tool",
+			zap.String("request_id", requestID),
+			zap.Int("attempt", attempt),
+			zap.Strings("unknown_tool_names", unknownNames),
+			zap.Int("effective_tool_count", len(effectiveTools)),
+		)
 		state.DropUnannouncedToolCalls()
 		if attempt >= responsesChatToolRepairMaxAttempts || repairSender == nil {
 			return failStream(fmt.Errorf("chat fallback upstream returned an undeclared tool after repair"))
@@ -341,6 +420,14 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	}
 
 	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
+	if len(finalEvents) > 0 {
+		for _, event := range finalEvents {
+			if event.Response != nil && event.Response.ID != "" {
+				s.storeResponsesChatFallbackTools(event.Response.ID, effectiveTools)
+				break
+			}
+		}
+	}
 	s.cacheReasoningItemsFromEvents(finalEvents)
 	writeEvents(finalEvents)
 	writeDone()

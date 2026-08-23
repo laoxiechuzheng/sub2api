@@ -414,6 +414,10 @@ func restoreClientToolValue(value any, adapter *ResponsesClientToolMapping) bool
 	case map[string]any:
 		if strings.TrimSpace(stringValue(typed["type"])) == "function_call" {
 			name := strings.TrimSpace(stringValue(typed["name"]))
+			if canonical, ok := resolveNamespaceToolCallName(name, adapter.NamespaceTools); ok {
+				name = canonical
+				typed["name"] = canonical
+			}
 			if customName, isCustom := resolveCustomToolCallName(name, adapter.CustomTools, adapter.FunctionTools, adapter.NamespaceTools); isCustom {
 				typed["type"] = "custom_tool_call"
 				typed["name"] = customName

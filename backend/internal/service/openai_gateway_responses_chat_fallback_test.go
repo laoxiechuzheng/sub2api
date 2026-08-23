@@ -231,6 +231,47 @@ func TestForwardResponses_ChatFallbackValidStreamingToolCallDoesNotRetry(t *test
 	require.Contains(t, rec.Body.String(), `"name":"exec"`)
 }
 
+func TestForwardResponses_ChatFallbackAcceptsDottedNamespaceToolAlias(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, stream := range []bool{false, true} {
+		stream := stream
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{
+				"model":"claude-opus-5",
+				"input":"inspect the file",
+				"stream":%t,
+				"tools":[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{}}}]}]
+			}`, stream))
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+
+			var upstream *httpUpstreamRecorder
+			if stream {
+				upstream = &httpUpstreamRecorder{responses: []*http.Response{
+					responsesChatFallbackStreamResponse("attempt_dotted", "", "functions.read_file", `{"path":"sample.txt"}`, 10, 2),
+				}}
+			} else {
+				upstream = &httpUpstreamRecorder{responses: []*http.Response{
+					responsesChatFallbackJSONResponse("attempt_dotted", "functions.read_file", `{"path":"sample.txt"}`, 10, 2),
+				}}
+			}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+			result, err := svc.Forward(context.Background(), c, forceChatResponsesFallbackAccount(), body)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, upstream.requests, 1)
+			clientBody := rec.Body.String()
+			require.NotContains(t, clientBody, "response.failed")
+			require.Contains(t, clientBody, `"name":"read_file"`)
+			require.Contains(t, clientBody, `"namespace":"functions"`)
+		})
+	}
+}
+
 func TestForwardResponses_ChatFallbackUnknownStreamingToolRetryExhaustionFailsExplicitly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -538,6 +579,108 @@ func TestForwardResponses_ChatFallbackCachesStreamedReasoning(t *testing.T) {
 		require.NotEmpty(t, itemID)
 		require.Equal(t, "think first", content)
 	}
+}
+
+func TestForwardResponses_ForceChatPreservesEncryptedReasoningIDForCacheReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{
+		"model":"DeepSeek-V4-Flash",
+		"store":false,
+		"stream":false,
+		"input":[
+			{"type":"reasoning","id":"rs_cached_reasoning","summary":[],"encrypted_content":"opaque"},
+			{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"input\":\"pwd\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]
+	}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+
+	cache := &reasoningRecordingCache{getResp: map[string]string{"rs_cached_reasoning": "cached reasoning"}}
+	upstream := &httpUpstreamRecorder{resp: responsesChatFallbackJSONResponse("resp_reasoning_replay", "exec", `{"input":"next"}`, 2, 1)}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream, cache: cache}
+
+	result, err := svc.Forward(context.Background(), c, forceChatResponsesFallbackAccount(), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "cached reasoning", gjson.GetBytes(upstream.lastBody, "messages.0.reasoning_content").String())
+}
+
+func TestForwardResponses_ForceChatCarriesToolsAcrossPreviousResponseID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	firstBody := []byte(`{
+		"model":"claude-sonnet-5",
+		"stream":false,
+		"input":"first",
+		"tools":[{"type":"custom","name":"exec","description":"Execute command text."}]
+	}`)
+	secondBody := []byte(`{
+		"model":"claude-sonnet-5",
+		"stream":false,
+		"previous_response_id":"resp_first",
+		"input":"second"
+	}`)
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		responsesChatFallbackJSONResponse("resp_first", "exec", `{"input":"first"}`, 2, 1),
+		&http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_second","object":"chat.completion","model":"claude-sonnet-5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)),
+		},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	for _, body := range [][]byte{firstBody, secondBody} {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		result, err := svc.Forward(context.Background(), c, forceChatResponsesFallbackAccount(), body)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+	}
+
+	require.Equal(t, "exec", gjson.GetBytes(upstream.bodies[0], "tools.0.function.name").String())
+	require.Equal(t, "exec", gjson.GetBytes(upstream.bodies[1], "tools.0.function.name").String())
+}
+
+func TestForwardResponses_ForceChatUsesResponsesIDForChatUpstreamContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	firstBody := []byte(`{
+		"model":"claude-sonnet-5",
+		"stream":false,
+		"input":"first",
+		"tools":[{"type":"custom","name":"exec","description":"Execute command text."}]
+	}`)
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		responsesChatFallbackJSONResponse("msg_upstream_first", "exec", `{"input":"first"}`, 2, 1),
+		&http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"msg_upstream_second","object":"chat.completion","model":"claude-sonnet-5","choices":[{"index":0,"message":{"role":"assistant","content":"continued"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)),
+		},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	firstRec := httptest.NewRecorder()
+	firstCtx, _ := gin.CreateTestContext(firstRec)
+	firstCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	_, err := svc.Forward(context.Background(), firstCtx, forceChatResponsesFallbackAccount(), firstBody)
+	require.NoError(t, err)
+	responseID := gjson.Get(firstRec.Body.String(), "id").String()
+	require.True(t, strings.HasPrefix(responseID, "resp_"), "got invalid Responses id %q", responseID)
+
+	secondBody := []byte(fmt.Sprintf(`{"model":"claude-sonnet-5","stream":false,"previous_response_id":%q,"input":"second"}`, responseID))
+	secondRec := httptest.NewRecorder()
+	secondCtx, _ := gin.CreateTestContext(secondRec)
+	secondCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	_, err = svc.Forward(context.Background(), secondCtx, forceChatResponsesFallbackAccount(), secondBody)
+	require.NoError(t, err)
+	require.Equal(t, "continued", gjson.Get(secondRec.Body.String(), "output.0.content.0.text").String())
 }
 
 // 请求侧：encrypted-only reasoning item（无明文 summary）经缓存回查补回

@@ -6,6 +6,7 @@ package apicompat
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,6 +67,120 @@ func TestResponsesToChatCompletionsRequest_AdditionalToolsItem(t *testing.T) {
 
 	require.Len(t, out.Messages, 1, "additional_tools must not become a chat message")
 	assert.Equal(t, "user", out.Messages[0].Role)
+}
+
+func TestResponsesToChatCompletionsRequest_NestedCustomToolBecomesFunctionTool(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "claude-sonnet-5",
+		Input: json.RawMessage(`[
+			{"type":"additional_tools","tools":[
+				{"type":"namespace","name":"functions","tools":[
+					{"type":"custom","name":"exec","description":"Run local code","format":{"type":"text"}},
+					{"type":"function","name":"wait","parameters":{"type":"object","properties":{}}}
+				]}
+			]}
+		]`),
+	}
+
+	effective, err := EffectiveResponsesTools(req)
+	require.NoError(t, err)
+	names := NamespaceToolNames(effective)
+	require.True(t, names["functions__exec"].Custom)
+
+	out, err := ResponsesToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.Len(t, out.Tools, 2)
+	assert.Equal(t, "functions__exec", out.Tools[0].Function.Name)
+	assert.JSONEq(t, customToolInputSchema, string(out.Tools[0].Function.Parameters))
+	assert.Equal(t, "functions__wait", out.Tools[1].Function.Name)
+}
+
+func TestResponsesInputToChatMessages_AgentMessageUsesEncryptedTaskPayload(t *testing.T) {
+	input := json.RawMessage(`[
+		{
+			"type":"agent_message",
+			"author":"/root",
+			"recipient":"/root/worker",
+			"content":[
+				{"type":"input_text","text":"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\n"},
+				{"type":"encrypted_content","encrypted_content":"Run PowerShell Get-Location and return the raw output."}
+			]
+		}
+	]`)
+
+	messages, err := responsesInputToChatMessages("", input)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	assert.Equal(t, "user", messages[0].Role)
+	var text string
+	require.NoError(t, json.Unmarshal(messages[0].Content, &text))
+	assert.Contains(t, text, "Message Type: NEW_TASK")
+	assert.Contains(t, text, "Run PowerShell Get-Location")
+}
+
+func TestChatCompletionsResponseToResponses_NestedCustomToolRestoresNamespace(t *testing.T) {
+	resp := &ChatCompletionsResponse{
+		Choices: []ChatChoice{{Message: ChatMessage{
+			Role: "assistant",
+			ToolCalls: []ChatToolCall{{
+				ID:       "call_exec",
+				Function: ChatFunctionCall{Name: "functions__exec", Arguments: `{"input":"Get-Location"}`},
+			}},
+		}}},
+	}
+	out := ChatCompletionsResponseToResponsesWithToolMapping(resp, "claude-sonnet-5", ResponsesClientToolMapping{
+		NamespaceTools: map[string]NamespacedToolName{
+			"functions__exec": {Namespace: "functions", Name: "exec", Custom: true},
+		},
+	})
+	require.Len(t, out.Output, 1)
+	assert.Equal(t, "custom_tool_call", out.Output[0].Type)
+	assert.Equal(t, "exec", out.Output[0].Name)
+	assert.Equal(t, "functions", out.Output[0].Namespace)
+	assert.Equal(t, "Get-Location", out.Output[0].Input)
+}
+
+func TestChatCompletionsResponseToResponses_BareFunctionsCustomAliasRestores(t *testing.T) {
+	resp := &ChatCompletionsResponse{
+		Choices: []ChatChoice{{Message: ChatMessage{
+			Role: "assistant",
+			ToolCalls: []ChatToolCall{{
+				ID:       "call_exec",
+				Function: ChatFunctionCall{Name: "exec", Arguments: `{"input":"Get-Location"}`},
+			}},
+		}}},
+	}
+	out := ChatCompletionsResponseToResponsesWithToolMapping(resp, "claude-sonnet-5", ResponsesClientToolMapping{
+		NamespaceTools: map[string]NamespacedToolName{
+			"functions__exec": {Namespace: "functions", Name: "exec", Custom: true},
+		},
+	})
+	require.Len(t, out.Output, 1)
+	assert.Equal(t, "custom_tool_call", out.Output[0].Type)
+	assert.Equal(t, "exec", out.Output[0].Name)
+	assert.Equal(t, "functions", out.Output[0].Namespace)
+	assert.Equal(t, "Get-Location", out.Output[0].Input)
+}
+
+func TestChatCompletionsResponseToResponses_ExecCommandAliasRestoresExec(t *testing.T) {
+	resp := &ChatCompletionsResponse{
+		Choices: []ChatChoice{{Message: ChatMessage{
+			Role: "assistant",
+			ToolCalls: []ChatToolCall{{
+				ID:       "call_exec_command",
+				Function: ChatFunctionCall{Name: "exec_command", Arguments: `{"input":"Get-Location"}`},
+			}},
+		}}},
+	}
+	out := ChatCompletionsResponseToResponsesWithToolMapping(resp, "DeepSeek-V4-Flash", ResponsesClientToolMapping{
+		NamespaceTools: map[string]NamespacedToolName{
+			"functions__exec": {Namespace: "functions", Name: "exec", Custom: true},
+		},
+	})
+	require.Len(t, out.Output, 1)
+	assert.Equal(t, "custom_tool_call", out.Output[0].Type)
+	assert.Equal(t, "exec", out.Output[0].Name)
+	assert.Equal(t, "Get-Location", out.Output[0].Input)
 }
 
 func TestEffectiveResponsesTools_SkipsStringInputItems(t *testing.T) {
@@ -287,6 +402,96 @@ func TestUnknownChatCompletionsToolCallNames_ReturnsOnlyUndeclaredNames(t *testi
 	}
 
 	assert.Equal(t, []string{"functions.read_file"}, UnknownChatCompletionsToolCallNames(resp, mapping))
+}
+
+func TestChatCompletionsResponseToResponses_FunctionsDotAliasRestoresNamespace(t *testing.T) {
+	resp := &ChatCompletionsResponse{Choices: []ChatChoice{{Message: ChatMessage{
+		Role: "assistant",
+		ToolCalls: []ChatToolCall{{
+			ID:       "call_read_file",
+			Function: ChatFunctionCall{Name: "functions.read_file", Arguments: `{"path":"sample.txt"}`},
+		}},
+	}}}}
+	mapping := ResponsesClientToolMapping{
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"functions__read_file": {Namespace: "functions", Name: "read_file"},
+		},
+	}
+
+	assert.Empty(t, UnknownChatCompletionsToolCallNames(resp, mapping))
+	out := ChatCompletionsResponseToResponsesWithToolMapping(resp, "claude-opus-5", mapping)
+	require.Len(t, out.Output, 1)
+	assert.Equal(t, "function_call", out.Output[0].Type)
+	assert.Equal(t, "functions", out.Output[0].Namespace)
+	assert.Equal(t, "read_file", out.Output[0].Name)
+}
+
+func TestChatCompletionsResponseToResponses_NormalizesNonResponsesID(t *testing.T) {
+	resp := &ChatCompletionsResponse{
+		ID: "msg_upstream_123",
+		Choices: []ChatChoice{{Message: ChatMessage{
+			Role:    "assistant",
+			Content: json.RawMessage(`"ok"`),
+		}}},
+	}
+
+	out := ChatCompletionsResponseToResponsesWithToolMapping(resp, "claude-sonnet-5", ResponsesClientToolMapping{})
+	assert.True(t, strings.HasPrefix(out.ID, "resp_"), "Responses clients require resp_* continuation ids, got %q", out.ID)
+}
+
+func TestChatCompletionsStreamNormalizesNonResponsesID(t *testing.T) {
+	state := NewChatCompletionsToResponsesStreamState("claude-sonnet-5")
+	id := "msg_upstream_stream_123"
+	content := "ok"
+	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+		ID:      id,
+		Choices: []ChatChunkChoice{{Delta: ChatDelta{Content: &content}}},
+	}, state)
+	events = append(events, FinalizeChatCompletionsResponsesStream(state)...)
+
+	for _, event := range events {
+		if event.Response != nil {
+			assert.True(t, strings.HasPrefix(event.Response.ID, "resp_"), "Responses clients require resp_* continuation ids, got %q", event.Response.ID)
+		}
+	}
+}
+
+func TestChatCompletionsChunkToResponsesEvents_FunctionsDotAliasRestoresNamespace(t *testing.T) {
+	state := NewChatCompletionsToResponsesStreamState("claude-opus-5")
+	state.NamespaceTools = map[string]NamespacedToolName{
+		"functions__read_file": {Namespace: "functions", Name: "read_file"},
+	}
+	idx := 0
+	chunk := &ChatCompletionsChunk{
+		Choices: []ChatChunkChoice{{
+			Delta: ChatDelta{ToolCalls: []ChatToolCall{{
+				Index: &idx,
+				ID:    "call_read_file",
+				Function: ChatFunctionCall{
+					Name:      "functions.read_file",
+					Arguments: `{"path":"sample.txt"}`,
+				},
+			}}},
+		}},
+	}
+	events := ChatCompletionsChunkToResponsesEvents(chunk, state)
+	events = append(events, FinalizeChatCompletionsResponsesStream(state)...)
+
+	var added *ResponsesStreamEvent
+	for i := range events {
+		if events[i].Type == "response.output_item.added" && events[i].Item != nil && events[i].Item.Type == "function_call" {
+			added = &events[i]
+			break
+		}
+	}
+	require.NotNil(t, added)
+	assert.Equal(t, "functions", added.Item.Namespace)
+	assert.Equal(t, "read_file", added.Item.Name)
+	completed := events[len(events)-1]
+	require.Equal(t, "response.completed", completed.Type)
+	require.Len(t, completed.Response.Output, 1)
+	assert.Equal(t, "functions", completed.Response.Output[0].Namespace)
+	assert.Equal(t, "read_file", completed.Response.Output[0].Name)
 }
 
 func TestChatCompletionsResponseToResponses_FunctionsNamespaceAliasKeepsNamespacePrecedence(t *testing.T) {
@@ -839,17 +1044,20 @@ func TestResponsesToChatCompletionsRequest_NamespaceToolFlattensChildren(t *test
 			Name: "gmail",
 			Tools: []ResponsesTool{
 				{Type: "function", Name: "send", Description: "Send mail", Parameters: json.RawMessage(`{"type":"object","properties":{}}`)},
-				{Type: "custom", Name: "ignored_child"},
+				{Type: "custom", Name: "exec", Description: "Run local code"},
 			},
 		}},
 	}
 
 	out, err := ResponsesToChatCompletionsRequest(req)
 	require.NoError(t, err)
-	require.Len(t, out.Tools, 1, "namespace 子工具中仅 function 类型被摊平")
+	require.Len(t, out.Tools, 2, "namespace 中的 function/custom 子工具都必须可执行")
 
 	assert.Equal(t, "gmail__send", out.Tools[0].Function.Name)
 	assert.Equal(t, "Send mail", out.Tools[0].Function.Description)
+	assert.Equal(t, "gmail__exec", out.Tools[1].Function.Name)
+	assert.Equal(t, "Run local code", out.Tools[1].Function.Description)
+	assert.JSONEq(t, customToolInputSchema, string(out.Tools[1].Function.Parameters))
 }
 
 func TestResponsesToolsParsing_StringToolBecomesCustom(t *testing.T) {
@@ -1014,8 +1222,9 @@ func TestNamespaceToolNames_MapsFlattenedNames(t *testing.T) {
 	}
 
 	m := NamespaceToolNames(tools)
-	require.Len(t, m, 2)
+	require.Len(t, m, 3)
 	assert.Equal(t, NamespacedToolName{Namespace: "gmail", Name: "send"}, m["gmail__send"])
+	assert.Equal(t, NamespacedToolName{Namespace: "gmail", Name: "skip_me", Custom: true}, m["gmail__skip_me"])
 	assert.Equal(t, NamespacedToolName{Namespace: "crm", Name: "query"}, m["crm__query"])
 
 	// 摊平名超长时截断加哈希，无法按字符串切分还原，必须经映射反查。
