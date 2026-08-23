@@ -126,6 +126,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
 	chatReq.Model = upstreamModel
+	applyClaudeCodeModeToolOutputHint(chatReq)
 	if clientStream {
 		chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
 	}
@@ -193,6 +194,32 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
 	}
 	return result, forwardErr
+}
+
+const claudeCodeModeToolOutputHint = "For the code-mode exec tool, use notify(result.output) to return command output to the model; do not rely on text(result.output) alone."
+
+func applyClaudeCodeModeToolOutputHint(req *apicompat.ChatCompletionsRequest) {
+	if req == nil || !strings.Contains(strings.ToLower(strings.TrimSpace(req.Model)), "claude") {
+		return
+	}
+	for i := range req.Tools {
+		tool := &req.Tools[i]
+		if tool.Function == nil {
+			continue
+		}
+		name := strings.TrimSpace(tool.Function.Name)
+		if name != "exec" && !strings.HasSuffix(name, "__exec") {
+			continue
+		}
+		if strings.Contains(tool.Function.Description, "notify(result.output)") {
+			continue
+		}
+		if tool.Function.Description == "" {
+			tool.Function.Description = claudeCodeModeToolOutputHint
+		} else {
+			tool.Function.Description += " " + claudeCodeModeToolOutputHint
+		}
+	}
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
