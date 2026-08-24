@@ -171,6 +171,68 @@ func TestAnthropicEventToResponses_ServerSearchWithoutResultClosesBeforeNextItem
 	}
 }
 
+func TestAnthropicEventToResponses_LateServerSearchResultDoesNotDuplicateClosedItem(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	var events []ResponsesStreamEvent
+	feed := func(evt *AnthropicStreamEvent) {
+		events = append(events, AnthropicEventToResponsesEvents(evt, state)...)
+	}
+
+	searchIndex := 0
+	feed(&AnthropicStreamEvent{Type: "message_start", Message: &AnthropicResponse{ID: "msg_late_result", Model: "claude-sonnet-5"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &searchIndex, ContentBlock: &AnthropicContentBlock{
+		Type: "server_tool_use", ID: "srv_late", Name: "web_search", Input: json.RawMessage(`{}`),
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: &searchIndex, Delta: &AnthropicDelta{
+		Type: "input_json_delta", PartialJSON: `{"query":"late result"}`,
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &searchIndex})
+
+	// Some Anthropic-compatible upstreams interleave a thinking block before the
+	// matching web_search_tool_result. Opening that block closes the pending
+	// Responses search item so the stream can continue.
+	thinkingIndex := 1
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &thinkingIndex, ContentBlock: &AnthropicContentBlock{Type: "thinking"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: &thinkingIndex, Delta: &AnthropicDelta{Type: "thinking_delta", Thinking: "checking sources"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &thinkingIndex})
+
+	// The late result belongs to the already-closed search. It must not create a
+	// second web_search_call with the same id and an empty action.
+	resultIndex := 2
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &resultIndex, ContentBlock: &AnthropicContentBlock{
+		Type: "web_search_tool_result", ToolUseID: "srv_late", Content: json.RawMessage(`[]`),
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &resultIndex})
+
+	textIndex := 3
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &textIndex, ContentBlock: &AnthropicContentBlock{Type: "text"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: &textIndex, Delta: &AnthropicDelta{Type: "text_delta", Text: "answer"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &textIndex})
+	feed(&AnthropicStreamEvent{Type: "message_stop"})
+
+	searchDone := 0
+	var completed *ResponsesResponse
+	for _, evt := range events {
+		if evt.Type == "response.output_item.done" && evt.Item != nil && evt.Item.Type == "web_search_call" {
+			searchDone++
+			require.NotNil(t, evt.Item.Action)
+			require.Equal(t, "late result", evt.Item.Action.Query)
+		}
+		if evt.Type == "response.completed" {
+			completed = evt.Response
+		}
+	}
+	require.Equal(t, 1, searchDone, "late result must not emit a duplicate web_search_call")
+	require.NotNil(t, completed)
+	completedSearches := 0
+	for _, output := range completed.Output {
+		if output.Type == "web_search_call" {
+			completedSearches++
+		}
+	}
+	require.Equal(t, 1, completedSearches)
+}
+
 // TestAnthropicEventToResponses_TextEmitsContentPart pins that a message text
 // stream emits response.content_part.added, and that it precedes the first
 // output_text.delta for that part.

@@ -385,9 +385,17 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 		}))
 
 	case "web_search_tool_result":
+		searchID := toResponsesWebSearchItemID(evt.ContentBlock.ToolUseID)
+		// Anthropic-compatible upstreams may deliver the result after an
+		// interleaved thinking/text block has already closed the search item.
+		// The result belongs to that completed item; do not reopen a second
+		// web_search_call with the same id and an empty action.
+		if hasCompletedResponsesWebSearchItem(state, searchID) {
+			return nil
+		}
 		if state.CurrentItemType != "web_search_call" {
 			events = append(events, closeCurrentResponsesItem(state)...)
-			state.CurrentItemID = toResponsesWebSearchItemID(evt.ContentBlock.ToolUseID)
+			state.CurrentItemID = searchID
 			state.CurrentItemType = "web_search_call"
 			events = append(events, makeResponsesEvent(state, "response.output_item.added", &ResponsesStreamEvent{
 				OutputIndex: state.OutputIndex,
@@ -619,6 +627,18 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
 		OutputIndex: state.OutputIndex - 1, // Use the index before increment
 		Item:        &item,
 	})}
+}
+
+func hasCompletedResponsesWebSearchItem(state *AnthropicEventToResponsesState, id string) bool {
+	if state == nil || strings.TrimSpace(id) == "" {
+		return false
+	}
+	for _, output := range state.Outputs {
+		if output.Type == "web_search_call" && output.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func makeResponsesCreatedEvent(state *AnthropicEventToResponsesState) ResponsesStreamEvent {
