@@ -80,6 +80,19 @@ func AdaptResponsesClientTools(req map[string]any) (ResponsesClientToolMapping, 
 		return ResponsesClientToolMapping{}, false, err
 	}
 	adapter.NamespaceTools = names
+	// Some Anthropic-compatible upstreams expose the Codex standalone search
+	// namespace as an ordinary `web_search` function call even when the request
+	// declared `web.run`. Preserve that provider alias only when the request did
+	// not declare a conflicting ordinary function with the same name.
+	if !functionNames["web_search"] {
+		for flat, entry := range names {
+			if entry.Namespace == "web" && entry.Name == "run" {
+				if names["web_search"], flattened = entry, true; flat != "web_search" {
+					break
+				}
+			}
+		}
+	}
 	if adapter.ToolSearch {
 		if _, exists := names[toolSearchProxyName]; exists {
 			return ResponsesClientToolMapping{}, false, fmt.Errorf("built-in tool_search conflicts with namespace tool flattened as %q; this upstream cannot disambiguate them, rename the tool", toolSearchProxyName)

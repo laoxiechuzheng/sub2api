@@ -38,6 +38,41 @@ func TestRestoreResponsesClientToolPayload_CodeModeExecShellWrapperEscapesComman
 	require.Equal(t, command, decoded)
 }
 
+func TestRestoreResponsesClientToolPayload_MapsClaudeWebSearchAliasToWebRun(t *testing.T) {
+	payload := []byte(`{"output":[{"type":"function_call","name":"web_search","call_id":"call_web","arguments":"{\"search_query\":[{\"q\":\"OpenCode Go\"}]}"}]}`)
+	mapping := ResponsesClientToolMapping{
+		NamespaceTools: map[string]ResponsesNamespaceName{
+			"web__run":   {Namespace: "web", Name: "run"},
+			"web_search": {Namespace: "web", Name: "run"},
+		},
+	}
+
+	restored, changed, err := RestoreResponsesClientToolPayload(payload, mapping)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.JSONEq(t,
+		`{"output":[{"type":"function_call","name":"run","namespace":"web","call_id":"call_web","arguments":"{\"search_query\":[{\"q\":\"OpenCode Go\"}]}"}]}`,
+		string(restored),
+	)
+}
+
+func TestAdaptResponsesClientTools_RegistersClaudeWebSearchAlias(t *testing.T) {
+	req := map[string]any{
+		"tools": []any{
+			map[string]any{
+				"type": "namespace", "name": "web",
+				"tools": []any{map[string]any{"type": "function", "name": "run"}},
+			},
+		},
+	}
+
+	mapping, changed, err := AdaptResponsesClientTools(req)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, ResponsesNamespaceName{Namespace: "web", Name: "run"}, mapping.NamespaceTools["web__run"])
+	require.Equal(t, ResponsesNamespaceName{Namespace: "web", Name: "run"}, mapping.NamespaceTools["web_search"])
+}
+
 func TestAdaptResponsesClientTools_LowersDeclarationsHistoryChoiceAndNamespaces(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{
