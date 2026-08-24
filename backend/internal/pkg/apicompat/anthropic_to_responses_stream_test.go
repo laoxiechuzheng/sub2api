@@ -282,6 +282,46 @@ func TestAnthropicEventToResponses_LateServerSearchResultDoesNotStopOpenMessage(
 	require.Equal(t, "message", completed.Output[1].Type)
 }
 
+func TestAnthropicEventToResponses_LateSearchStopMatchesItsBlockIndex(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	var events []ResponsesStreamEvent
+	feed := func(evt *AnthropicStreamEvent) {
+		events = append(events, AnthropicEventToResponsesEvents(evt, state)...)
+	}
+
+	searchIndex := 0
+	feed(&AnthropicStreamEvent{Type: "message_start", Message: &AnthropicResponse{ID: "msg_indexed_late", Model: "claude-sonnet-5"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &searchIndex, ContentBlock: &AnthropicContentBlock{
+		Type: "server_tool_use", ID: "srv_indexed_late", Name: "web_search", Input: json.RawMessage(`{"query":"indexed late"}`),
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &searchIndex})
+
+	textIndex := 1
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &textIndex, ContentBlock: &AnthropicContentBlock{Type: "text"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: &textIndex, Delta: &AnthropicDelta{Type: "text_delta", Text: "answer"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &textIndex})
+
+	lateIndex := 2
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &lateIndex, ContentBlock: &AnthropicContentBlock{
+		Type: "web_search_tool_result", ToolUseID: "srv_indexed_late", Content: json.RawMessage(`[]`),
+	}})
+	// An unrelated stop arrives first. It must not consume the late-result
+	// marker because its block index differs.
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &textIndex})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &lateIndex})
+	feed(&AnthropicStreamEvent{Type: "message_stop"})
+
+	var textDone []ResponsesStreamEvent
+	for _, evt := range events {
+		if evt.Type == "response.output_text.done" {
+			textDone = append(textDone, evt)
+		}
+	}
+	require.Len(t, textDone, 2)
+	require.Equal(t, "answer", textDone[0].Text)
+	require.Equal(t, "", textDone[1].Text)
+}
+
 // TestAnthropicEventToResponses_TextEmitsContentPart pins that a message text
 // stream emits response.content_part.added, and that it precedes the first
 // output_text.delta for that part.

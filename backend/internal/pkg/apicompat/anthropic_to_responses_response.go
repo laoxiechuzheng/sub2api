@@ -168,12 +168,11 @@ type AnthropicEventToResponsesState struct {
 	// its following web_search_tool_result block while they share one Responses
 	// web_search_call output item.
 	CurrentAnthropicBlockType string
-	// IgnoreNextContentBlockStop suppresses the stop event for a late duplicate
-	// web_search_tool_result that was already represented by a closed item.
-	// The current Responses message item can remain open while Anthropic emits
-	// this unrelated result block, so returning from block_start alone is not
-	// sufficient.
-	IgnoreNextContentBlockStop bool
+	// IgnoredContentBlockStops records late duplicate web_search_tool_result
+	// blocks by Anthropic content-block index. A single boolean is insufficient
+	// when multiple late results are interleaved with other blocks.
+	IgnoredContentBlockStops map[int]bool
+	IgnoredUnindexedStops    int
 
 	// For message output: accumulate text parts
 	ContentIndex int
@@ -397,7 +396,14 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 		// The result belongs to that completed item; do not reopen a second
 		// web_search_call with the same id and an empty action.
 		if hasCompletedResponsesWebSearchItem(state, searchID) {
-			state.IgnoreNextContentBlockStop = true
+			if evt.Index != nil {
+				if state.IgnoredContentBlockStops == nil {
+					state.IgnoredContentBlockStops = make(map[int]bool)
+				}
+				state.IgnoredContentBlockStops[*evt.Index] = true
+			} else {
+				state.IgnoredUnindexedStops++
+			}
 			return nil
 		}
 		if state.CurrentItemType != "web_search_call" {
@@ -478,8 +484,12 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 }
 
 func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
-	if state.IgnoreNextContentBlockStop {
-		state.IgnoreNextContentBlockStop = false
+	if evt.Index != nil && state.IgnoredContentBlockStops[*evt.Index] {
+		delete(state.IgnoredContentBlockStops, *evt.Index)
+		return nil
+	}
+	if evt.Index == nil && state.IgnoredUnindexedStops > 0 {
+		state.IgnoredUnindexedStops--
 		return nil
 	}
 	switch state.CurrentItemType {
