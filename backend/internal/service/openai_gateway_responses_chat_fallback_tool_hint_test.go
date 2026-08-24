@@ -42,3 +42,18 @@ func TestApplyClaudeCodeModeInstructionsHint_OnlyTargetsClaude(t *testing.T) {
 	applyClaudeCodeModeInstructionsHint(other)
 	require.Equal(t, "base", other.Instructions)
 }
+
+func TestEnableChatFallbackCodeModeExecNormalizationOnlyGLMUpstream(t *testing.T) {
+	mapping := apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}}
+
+	glm := enableChatFallbackCodeModeExecNormalization(mapping, "glm-5.2")
+	require.True(t, glm.CodeModeExecTools["exec"])
+
+	zhipu := enableChatFallbackCodeModeExecNormalization(mapping, "zhipu/glm-5.2")
+	require.True(t, zhipu.CodeModeExecTools["exec"])
+
+	for _, model := range []string{"deepseek-v4-flash", "kimi-k2.6", "claude-sonnet-5"} {
+		other := enableChatFallbackCodeModeExecNormalization(mapping, model)
+		require.Empty(t, other.CodeModeExecTools, model)
+	}
+}

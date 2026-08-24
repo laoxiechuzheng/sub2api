@@ -123,6 +123,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 
 	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	clientToolMapping = enableChatFallbackCodeModeExecNormalization(clientToolMapping, upstreamModel)
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
@@ -195,6 +196,15 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
 	}
 	return result, forwardErr
+}
+
+func enableChatFallbackCodeModeExecNormalization(mapping apicompat.ResponsesClientToolMapping, upstreamModel string) apicompat.ResponsesClientToolMapping {
+	model := strings.ToLower(strings.TrimSpace(upstreamModel))
+	if strings.Contains(model, "glm-") {
+		return enableCodeModeExecNormalization(mapping)
+	}
+	mapping.CodeModeExecTools = nil
+	return mapping
 }
 
 const claudeCodeModeInstructionsHint = "Provider compatibility note: when using the code-mode exec tool, call notify(result.output) to return nested command output to the model; text(result.output) alone may omit stdout on this provider."
@@ -342,6 +352,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	state := apicompat.NewChatCompletionsToResponsesStreamState(originalModel)
 	state.CustomTools = clientToolMapping.CustomTools
 	state.FunctionTools = clientToolMapping.FunctionTools
+	state.CodeModeExecTools = clientToolMapping.CodeModeExecTools
 	state.ToolSearchDeclared = clientToolMapping.ToolSearch
 	state.NamespaceTools = clientToolMapping.NamespaceTools
 	state.HoldToolCallsForValidation = true

@@ -1555,7 +1555,8 @@ func chatMessageToResponsesOutput(message ChatMessage, mapping ResponsesClientTo
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"
 		}
-		toolName := toolCall.Function.Name
+		sourceName := toolCall.Function.Name
+		toolName := sourceName
 		if canonical, ok := resolveNamespaceToolCallName(toolName, mapping.NamespaceTools); ok {
 			toolName = canonical
 		}
@@ -1566,7 +1567,7 @@ func chatMessageToResponsesOutput(message ChatMessage, mapping ResponsesClientTo
 				CallID:    toolCall.ID,
 				Name:      namespace.Name,
 				Namespace: namespace.Namespace,
-				Input:     extractCustomToolCallInput(arguments),
+				Input:     normalizeRestoredCustomToolInput(sourceName, extractCustomToolCallInput(arguments), &mapping),
 				Status:    "completed",
 			})
 			continue
@@ -1577,7 +1578,7 @@ func chatMessageToResponsesOutput(message ChatMessage, mapping ResponsesClientTo
 				ID:     generateItemID(),
 				CallID: toolCall.ID,
 				Name:   customName,
-				Input:  extractCustomToolCallInput(arguments),
+				Input:  normalizeRestoredCustomToolInput(sourceName, extractCustomToolCallInput(arguments), &mapping),
 				Status: "completed",
 			})
 			continue
@@ -1748,6 +1749,10 @@ type ChatCompletionsToResponsesStreamState struct {
 	// 恢复成错误的工具类型。
 	FunctionTools map[string]bool
 
+	// CodeModeExecTools identifies provider-returned custom tool names that need
+	// strict Codex code-mode exec normalization on the way back.
+	CodeModeExecTools map[string]bool
+
 	// ToolSearchDeclared 表示客户端请求声明了 tool_search 工具（见
 	// HasToolSearchTool）。命中的代理调用按 tool_search_call 项还原，codex 只按
 	// 该项类型（且 execution=client）执行 tool search。
@@ -1829,10 +1834,11 @@ func (state *ChatCompletionsToResponsesStreamState) clientToolMapping() Response
 		return ResponsesClientToolMapping{}
 	}
 	return ResponsesClientToolMapping{
-		CustomTools:    state.CustomTools,
-		FunctionTools:  state.FunctionTools,
-		ToolSearch:     state.ToolSearchDeclared,
-		NamespaceTools: state.NamespaceTools,
+		CustomTools:       state.CustomTools,
+		FunctionTools:     state.FunctionTools,
+		CodeModeExecTools: state.CodeModeExecTools,
+		ToolSearch:        state.ToolSearchDeclared,
+		NamespaceTools:    state.NamespaceTools,
 	}
 }
 
@@ -2329,6 +2335,7 @@ func closeChatToolItems(state *ChatCompletionsToResponsesStreamState) []Response
 		return nil
 	}
 	var events []ResponsesStreamEvent
+	mapping := state.clientToolMapping()
 	for _, i := range sortedChatToolCallIndexes(state.ToolCalls) {
 		toolCall := state.ToolCalls[i]
 		// 名字始终未到导致尚未宣告的调用，收尾前按最终名字兜底宣告。
@@ -2345,7 +2352,7 @@ func closeChatToolItems(state *ChatCompletionsToResponsesStreamState) []Response
 		if state.toolIsCustom[i] {
 			// custom 调用按 custom_tool_call 生命周期收尾：input 在此处一次性下发
 			// （流中不产出增量，见 ChatCompletionsChunkToResponsesEvents）。
-			input := extractCustomToolCallInput(arguments)
+			input := normalizeRestoredCustomToolInput(toolCall.Function.Name, extractCustomToolCallInput(arguments), &mapping)
 			name, namespace := toolCall.Function.Name, ""
 			if ns, ok := state.toolNamespace[i]; ok {
 				name, namespace = ns.Name, ns.Namespace
@@ -2441,6 +2448,7 @@ func sortedChatToolCallIndexes(toolCalls map[int]*ChatToolCall) []int {
 
 func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutput {
 	var outputs []ResponsesOutput
+	mapping := state.clientToolMapping()
 	if state.Reasoning.Len() > 0 {
 		outputs = append(outputs, ResponsesOutput{
 			Type: "reasoning",
@@ -2480,7 +2488,7 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 				CallID:    toolCall.ID,
 				Name:      name,
 				Namespace: namespace,
-				Input:     extractCustomToolCallInput(arguments),
+				Input:     normalizeRestoredCustomToolInput(toolCall.Function.Name, extractCustomToolCallInput(arguments), &mapping),
 				Status:    "completed",
 			})
 			continue

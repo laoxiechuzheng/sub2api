@@ -140,6 +140,30 @@ func TestChatCompletionsResponseToResponses_NestedCustomToolRestoresNamespace(t 
 	assert.Equal(t, "Get-Location", out.Output[0].Input)
 }
 
+func TestChatCompletionsResponseToResponses_NormalizesGLMCodeModeExec(t *testing.T) {
+	resp := &ChatCompletionsResponse{
+		ID:    "chatcmpl_glm_exec",
+		Model: "glm-5.2",
+		Choices: []ChatChoice{{
+			Message: ChatMessage{Role: "assistant", ToolCalls: []ChatToolCall{{
+				ID: "call_exec", Type: "function",
+				Function: ChatFunctionCall{Name: "exec", Arguments: `{"input":"process.cwd()"}`},
+			}}},
+			FinishReason: "tool_calls",
+		}},
+	}
+	mapping := ResponsesClientToolMapping{
+		CustomTools:       map[string]bool{"exec": true},
+		CodeModeExecTools: map[string]bool{"exec": true},
+	}
+
+	out := ChatCompletionsResponseToResponsesWithToolMapping(resp, "glm-5.2", mapping)
+
+	require.Len(t, out.Output, 1)
+	require.Equal(t, "custom_tool_call", out.Output[0].Type)
+	require.Equal(t, "const result = await tools.exec_command({cmd: \"pwd\"});\ntext(result.output);", out.Output[0].Input)
+}
+
 func TestChatCompletionsResponseToResponses_BareFunctionsCustomAliasRestores(t *testing.T) {
 	resp := &ChatCompletionsResponse{
 		Choices: []ChatChoice{{Message: ChatMessage{
@@ -689,6 +713,30 @@ func TestChatCompletionsChunkToResponsesEvents_CustomToolCallStream(t *testing.T
 		}
 	}
 	assert.True(t, foundCustom, "response.completed 缺少 custom_tool_call 输出项")
+}
+
+func TestChatCompletionsStreamState_NormalizesGLMCodeModeExec(t *testing.T) {
+	state := NewChatCompletionsToResponsesStreamState("glm-5.2")
+	state.CustomTools = map[string]bool{"exec": true}
+	state.CodeModeExecTools = map[string]bool{"exec": true}
+	state.ToolCalls[0] = &ChatToolCall{
+		ID: "call_exec", Type: "function",
+		Function: ChatFunctionCall{Name: "exec", Arguments: `{"input":"process.cwd()"}`},
+	}
+	state.ToolItemIDs[0] = "item_exec"
+	state.ToolOutputIndex[0] = 0
+	state.toolIsCustom[0] = true
+	state.toolAnnounced[0] = true
+
+	events := closeChatToolItems(state)
+	var done *ResponsesOutput
+	for _, event := range events {
+		if event.Type == "response.output_item.done" {
+			done = event.Item
+		}
+	}
+	require.NotNil(t, done)
+	require.Equal(t, "const result = await tools.exec_command({cmd: \"pwd\"});\ntext(result.output);", done.Input)
 }
 
 func TestChatCompletionsChunkToResponsesEvents_FunctionsNamespaceAliasRestoresCustomTool(t *testing.T) {
