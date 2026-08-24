@@ -231,6 +231,16 @@ func TestRestoreGrokResponsesClientToolPayloadNormalizesExecInput(t *testing.T) 
 			input: `const result=await tools.exec_command({cmd:"Get-Location"}); text(result.output);`,
 			want:  `const result=await tools.exec_command({cmd:"Get-Location"}); text(result.output);`,
 		},
+		{
+			name:  "valid JavaScript string containing repair marker",
+			input: `const result=await tools.exec_command({cmd:"printf 'emit text('"}); text(result.output);`,
+			want:  `const result=await tools.exec_command({cmd:"printf 'emit text('"}); text(result.output);`,
+		},
+		{
+			name:  "valid bare await with later result binding",
+			input: `await tools.exec_command({cmd:"pwd"}); const result={output:"kept"}; text(result.output);`,
+			want:  `await tools.exec_command({cmd:"pwd"}); const result={output:"kept"}; text(result.output);`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -266,7 +276,37 @@ func TestEnableGrokCodeModeExecNormalizationRequiresCanonicalExec(t *testing.T) 
 		},
 	})
 
-	require.Equal(t, map[string]bool{"exec": true}, mapping.CodeModeExecTools)
+	require.True(t, mapping.CodeModeExecTools["exec"])
+	require.True(t, mapping.CodeModeExecTools["functions__exec"])
+	require.False(t, mapping.CodeModeExecTools["backup__exec"])
+	require.False(t, mapping.CodeModeExecTools["database.exec"])
+	require.False(t, mapping.CodeModeExecTools["database__exec"])
+}
+
+func TestRestoreGrokResponsesClientToolPayloadDoesNotNormalizeCoexistingDatabaseExec(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	mapping := enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
+		CustomTools: map[string]bool{
+			"functions__exec": true,
+			"database__exec":  true,
+		},
+		NamespaceTools: map[string]apicompat.ResponsesNamespaceName{
+			"functions__exec": {Namespace: "functions", Name: "exec", Custom: true},
+			"database__exec":  {Namespace: "database", Name: "exec", Custom: true},
+		},
+	})
+	setGrokResponsesClientToolMapping(c, mapping)
+	payload := []byte(`{"output":[
+		{"type":"function_call","id":"item_functions","call_id":"call_functions","name":"functions__exec","arguments":"{\"input\":\"Get-Location\"}"},
+		{"type":"function_call","id":"item_database","call_id":"call_database","name":"database__exec","arguments":"{\"input\":\"dir\"}"}
+	]}`)
+
+	restored, err := restoreGrokResponsesClientToolPayload(c, payload)
+
+	require.NoError(t, err)
+	require.Contains(t, gjson.GetBytes(restored, "output.0.input").String(), "tools.exec_command")
+	require.Equal(t, "dir", gjson.GetBytes(restored, "output.1.input").String())
 }
 
 func TestRestoreGrokResponsesClientToolPayloadNormalizesFunctionsExecNamespace(t *testing.T) {

@@ -15,7 +15,7 @@ type ResponsesClientToolMapping struct {
 	FunctionTools  map[string]bool
 	ToolSearch     bool
 	NamespaceTools map[string]ResponsesNamespaceName
-	// CodeModeExecTools identifies restored custom tools whose obvious
+	// CodeModeExecTools identifies upstream custom-tool names whose obvious
 	// shell/PowerShell dialect must be wrapped into Codex code-mode JavaScript.
 	// Providers opt into this narrowly; ordinary custom tools remain byte-for-byte.
 	CodeModeExecTools map[string]bool
@@ -417,7 +417,8 @@ func restoreClientToolValue(value any, adapter *ResponsesClientToolMapping) bool
 		}
 	case map[string]any:
 		if strings.TrimSpace(stringValue(typed["type"])) == "function_call" {
-			name := strings.TrimSpace(stringValue(typed["name"]))
+			sourceName := strings.TrimSpace(stringValue(typed["name"]))
+			name := sourceName
 			if canonical, ok := resolveNamespaceToolCallName(name, adapter.NamespaceTools); ok {
 				name = canonical
 				typed["name"] = canonical
@@ -426,7 +427,7 @@ func restoreClientToolValue(value any, adapter *ResponsesClientToolMapping) bool
 				typed["type"] = "custom_tool_call"
 				typed["name"] = customName
 				input := extractCustomToolCallInput(rawObjectString(typed["arguments"]))
-				typed["input"] = normalizeRestoredCustomToolInput(customName, input, adapter)
+				typed["input"] = normalizeRestoredCustomToolInput(sourceName, input, adapter)
 				delete(typed, "arguments")
 				delete(typed, "namespace")
 				changed = true
@@ -458,12 +459,13 @@ type ResponsesClientToolStreamRestorer struct {
 }
 
 type responsesClientToolStreamCall struct {
-	kind      string
-	name      string
-	callID    string
-	itemID    string
-	outputIdx int
-	arguments strings.Builder
+	kind       string
+	name       string
+	sourceName string
+	callID     string
+	itemID     string
+	outputIdx  int
+	arguments  strings.Builder
 }
 
 func NewResponsesClientToolStreamRestorer(mapping ResponsesClientToolMapping) *ResponsesClientToolStreamRestorer {
@@ -518,7 +520,7 @@ func (r *ResponsesClientToolStreamRestorer) Restore(event ResponsesStreamEvent) 
 			}
 			if call.kind == "custom" {
 				input := extractCustomToolCallInput(call.arguments.String())
-				input = normalizeRestoredCustomToolInput(call.name, input, &r.adapter)
+				input = normalizeRestoredCustomToolInput(call.sourceName, input, &r.adapter)
 				if input != "" {
 					emit(ResponsesStreamEvent{Type: "response.custom_tool_call_input.delta", OutputIndex: call.outputIdx, ItemID: call.itemID, Delta: input})
 				}
@@ -532,7 +534,7 @@ func (r *ResponsesClientToolStreamRestorer) Restore(event ResponsesStreamEvent) 
 			if call.kind == "custom" {
 				event.Item.Type = "custom_tool_call"
 				input := extractCustomToolCallInput(call.arguments.String())
-				event.Item.Input = normalizeRestoredCustomToolInput(call.name, input, &r.adapter)
+				event.Item.Input = normalizeRestoredCustomToolInput(call.sourceName, input, &r.adapter)
 				event.Item.Arguments = ""
 				event.Item.Namespace = ""
 			} else {
@@ -687,7 +689,8 @@ func (r *ResponsesClientToolStreamRestorer) recordItem(event ResponsesStreamEven
 	if event.Item == nil || event.Item.Type != "function_call" {
 		return nil
 	}
-	name := event.Item.Name
+	sourceName := event.Item.Name
+	name := sourceName
 	kind := ""
 	if customName, isCustom := resolveCustomToolCallName(name, r.adapter.CustomTools, r.adapter.FunctionTools, r.adapter.NamespaceTools); isCustom {
 		kind = "custom"
@@ -705,7 +708,7 @@ func (r *ResponsesClientToolStreamRestorer) recordItem(event ResponsesStreamEven
 	}
 	call := r.calls[key]
 	if call == nil {
-		call = &responsesClientToolStreamCall{kind: kind, name: name, callID: event.Item.CallID, itemID: event.Item.ID, outputIdx: event.OutputIndex}
+		call = &responsesClientToolStreamCall{kind: kind, name: name, sourceName: sourceName, callID: event.Item.CallID, itemID: event.Item.ID, outputIdx: event.OutputIndex}
 		r.calls[key] = call
 		if call.callID != "" {
 			r.calls[call.callID] = call
@@ -757,11 +760,12 @@ func restoreResponsesOutputClientTools(outputs []ResponsesOutput, adapter *Respo
 		if output.Type != "function_call" {
 			continue
 		}
-		if customName, isCustom := resolveCustomToolCallName(output.Name, adapter.CustomTools, adapter.FunctionTools, adapter.NamespaceTools); isCustom {
+		sourceName := output.Name
+		if customName, isCustom := resolveCustomToolCallName(sourceName, adapter.CustomTools, adapter.FunctionTools, adapter.NamespaceTools); isCustom {
 			output.Type = "custom_tool_call"
 			output.Name = customName
 			input := extractCustomToolCallInput(output.Arguments)
-			output.Input = normalizeRestoredCustomToolInput(customName, input, adapter)
+			output.Input = normalizeRestoredCustomToolInput(sourceName, input, adapter)
 			output.Arguments = ""
 			output.Namespace = ""
 		} else if adapter.ToolSearch && output.Name == toolSearchProxyName {
@@ -775,8 +779,8 @@ func restoreResponsesOutputClientTools(outputs []ResponsesOutput, adapter *Respo
 	}
 }
 
-func normalizeRestoredCustomToolInput(name, input string, adapter *ResponsesClientToolMapping) string {
-	if adapter == nil || !adapter.CodeModeExecTools[strings.TrimSpace(name)] {
+func normalizeRestoredCustomToolInput(sourceName, input string, adapter *ResponsesClientToolMapping) string {
+	if adapter == nil || !adapter.CodeModeExecTools[strings.TrimSpace(sourceName)] {
 		return input
 	}
 	return normalizeCodeModeExecInput(input)
@@ -794,12 +798,15 @@ func normalizeCodeModeExecInput(input string) string {
 		return wrapShellCommandForCodeMode("pwd")
 	}
 
+	const malformedPrefix = "await tools.exec_command("
+	const malformedSuffix = "); emit text(result.output);"
+	if strings.HasPrefix(trimmed, malformedPrefix) && strings.HasSuffix(trimmed, malformedSuffix) {
+		arguments := strings.TrimSuffix(strings.TrimPrefix(trimmed, malformedPrefix), malformedSuffix)
+		return "const result = await tools.exec_command(" + arguments + "); text(result.output);"
+	}
+
 	if strings.Contains(trimmed, "tools.exec_command(") {
-		fixed := strings.ReplaceAll(trimmed, "emit text(", "text(")
-		if strings.HasPrefix(trimmed, "await tools.exec_command(") && strings.Contains(fixed, "result.output") {
-			fixed = strings.Replace(fixed, "await tools.exec_command(", "const result = await tools.exec_command(", 1)
-		}
-		return fixed
+		return input
 	}
 
 	if likelyShellCommand(trimmed) {

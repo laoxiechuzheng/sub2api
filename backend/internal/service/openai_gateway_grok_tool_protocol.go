@@ -134,18 +134,22 @@ func newResponsesClientToolStreamBody(
 }
 
 func enableGrokCodeModeExecNormalization(mapping apicompat.ResponsesClientToolMapping) apicompat.ResponsesClientToolMapping {
-	var enabled bool
+	names := make(map[string]bool)
 	if mapping.CustomTools["exec"] {
-		enabled = true
+		names["exec"] = true
 	}
-	for _, tool := range mapping.NamespaceTools {
+	for flat, tool := range mapping.NamespaceTools {
 		if tool.Custom && strings.TrimSpace(tool.Namespace) == "functions" && strings.TrimSpace(tool.Name) == "exec" {
-			enabled = true
-			break
+			names[flat] = true
+			names["functions.exec"] = true
+			names["exec"] = true
+			names["exec_command"] = true
+			names["functions.exec_command"] = true
+			names["functions__exec_command"] = true
 		}
 	}
-	if enabled {
-		mapping.CodeModeExecTools = map[string]bool{"exec": true}
+	if len(names) > 0 {
+		mapping.CodeModeExecTools = names
 	} else {
 		mapping.CodeModeExecTools = nil
 	}
