@@ -247,7 +247,7 @@ func TestRestoreGrokResponsesClientToolPayloadNormalizesExecInput(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
-			setGrokResponsesClientToolMapping(c, enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
+			setGrokResponsesClientToolMapping(c, enableCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
 				CustomTools: map[string]bool{"exec": true},
 			}))
 			arguments, err := json.Marshal(map[string]string{"input": tt.input})
@@ -263,8 +263,8 @@ func TestRestoreGrokResponsesClientToolPayloadNormalizesExecInput(t *testing.T) 
 	}
 }
 
-func TestEnableGrokCodeModeExecNormalizationRequiresCanonicalExec(t *testing.T) {
-	mapping := enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
+func TestEnableCodeModeExecNormalizationRequiresCanonicalExec(t *testing.T) {
+	mapping := enableCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
 		CustomTools: map[string]bool{
 			"exec":          true,
 			"backup__exec":  true,
@@ -283,10 +283,28 @@ func TestEnableGrokCodeModeExecNormalizationRequiresCanonicalExec(t *testing.T) 
 	require.False(t, mapping.CodeModeExecTools["database__exec"])
 }
 
+func TestEnableClaudeCodeModeExecNormalizationOnlyClaudeModels(t *testing.T) {
+	mapping := apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}}
+
+	claude := enableClaudeCodeModeExecNormalization(mapping, "claude-sonnet-5")
+	require.True(t, claude.CodeModeExecTools["exec"])
+
+	for _, model := range []string{"glm-5.2", "deepseek-v4-flash", "kimi-k2.6"} {
+		other := enableClaudeCodeModeExecNormalization(mapping, model)
+		require.Empty(t, other.CodeModeExecTools, model)
+	}
+
+	mappedAway := enableClaudeCodeModeExecNormalization(mapping, "claude-sonnet-5", "glm-5.2")
+	require.Empty(t, mappedAway.CodeModeExecTools, "the final upstream model must control normalization")
+
+	mappedToClaude := enableClaudeCodeModeExecNormalization(mapping, "public-alias", "claude-sonnet-5")
+	require.True(t, mappedToClaude.CodeModeExecTools["exec"])
+}
+
 func TestRestoreGrokResponsesClientToolPayloadDoesNotNormalizeCoexistingDatabaseExec(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	mapping := enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
+	mapping := enableCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
 		CustomTools: map[string]bool{
 			"functions__exec": true,
 			"database__exec":  true,
@@ -312,7 +330,7 @@ func TestRestoreGrokResponsesClientToolPayloadDoesNotNormalizeCoexistingDatabase
 func TestRestoreGrokResponsesClientToolPayloadNormalizesFunctionsExecNamespace(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	setGrokResponsesClientToolMapping(c, enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
+	setGrokResponsesClientToolMapping(c, enableCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
 		CustomTools: map[string]bool{"functions__exec": true},
 		NamespaceTools: map[string]apicompat.ResponsesNamespaceName{
 			"functions__exec": {Namespace: "functions", Name: "exec", Custom: true},
@@ -345,7 +363,7 @@ func TestGrokResponsesClientToolStreamNormalizesExecInput(t *testing.T) {
 	}, "\n")
 	body := newResponsesClientToolStreamBody(
 		io.NopCloser(strings.NewReader(upstream)),
-		enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}}),
+		enableCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}}),
 		defaultMaxLineSize,
 	)
 	defer func() { _ = body.Close() }()

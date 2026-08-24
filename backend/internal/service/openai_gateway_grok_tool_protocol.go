@@ -55,7 +55,7 @@ func adaptGrokResponsesClientTools(body []byte) ([]byte, apicompat.ResponsesClie
 	if err != nil {
 		return adapted, mapping, err
 	}
-	return adapted, enableGrokCodeModeExecNormalization(mapping), nil
+	return adapted, enableCodeModeExecNormalization(mapping), nil
 }
 
 func hasResponsesClientToolMapping(mapping apicompat.ResponsesClientToolMapping) bool {
@@ -133,7 +133,7 @@ func newResponsesClientToolStreamBody(
 	return body
 }
 
-func enableGrokCodeModeExecNormalization(mapping apicompat.ResponsesClientToolMapping) apicompat.ResponsesClientToolMapping {
+func enableCodeModeExecNormalization(mapping apicompat.ResponsesClientToolMapping) apicompat.ResponsesClientToolMapping {
 	names := make(map[string]bool)
 	if mapping.CustomTools["exec"] {
 		names["exec"] = true
@@ -153,6 +153,25 @@ func enableGrokCodeModeExecNormalization(mapping apicompat.ResponsesClientToolMa
 	} else {
 		mapping.CodeModeExecTools = nil
 	}
+	return mapping
+}
+
+func enableClaudeCodeModeExecNormalization(
+	mapping apicompat.ResponsesClientToolMapping,
+	models ...string,
+) apicompat.ResponsesClientToolMapping {
+	for index := len(models) - 1; index >= 0; index-- {
+		model := strings.ToLower(strings.TrimSpace(models[index]))
+		if model == "" {
+			continue
+		}
+		if strings.Contains(model, "claude") {
+			return enableCodeModeExecNormalization(mapping)
+		}
+		mapping.CodeModeExecTools = nil
+		return mapping
+	}
+	mapping.CodeModeExecTools = nil
 	return mapping
 }
 

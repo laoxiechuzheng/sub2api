@@ -302,20 +302,13 @@ func TestResponsesStreamingFromNativeAnthropic_PreservesHostedWebSearchLifecycle
 	require.NotContains(t, body, `response.function_call_arguments.delta`)
 }
 
-func TestResponsesBufferedFromNativeAnthropic_ReplacesEmptyToolInputPlaceholder(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	svc := newNativeAnthropicHangTestService(5)
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
-
-	const toolInput = `const result = await tools.exec_command({cmd: "Get-Location"}); text(result.output);`
+func anthropicExecToolSSE(t *testing.T, toolInput string) string {
+	t.Helper()
 	inputJSON, err := json.Marshal(map[string]string{"input": toolInput})
 	require.NoError(t, err)
 	partialJSON, err := json.Marshal(string(inputJSON))
 	require.NoError(t, err)
-	stream := strings.Join([]string{
+	return strings.Join([]string{
 		`event: message_start`,
 		`data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","usage":{"input_tokens":10}}}`,
 		``,
@@ -335,6 +328,19 @@ func TestResponsesBufferedFromNativeAnthropic_ReplacesEmptyToolInputPlaceholder(
 		`data: {"type":"message_stop"}`,
 		``,
 	}, "\n")
+}
+
+func TestResponsesBufferedFromNativeAnthropic_ReplacesEmptyToolInputPlaceholder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newNativeAnthropicHangTestService(5)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	const toolInput = `console.log(process.cwd());`
+	const wantInput = "const result = await tools.exec_command({cmd: \"pwd\"});\ntext(result.output);"
+	stream := anthropicExecToolSSE(t, toolInput)
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(stream))}
 	mapping := apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}}
 
@@ -345,5 +351,5 @@ func TestResponsesBufferedFromNativeAnthropic_ReplacesEmptyToolInputPlaceholder(
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "custom_tool_call", gjson.Get(rec.Body.String(), "output.0.type").String())
-	require.Equal(t, toolInput, gjson.Get(rec.Body.String(), "output.0.input").String())
+	require.Equal(t, wantInput, gjson.Get(rec.Body.String(), "output.0.input").String())
 }

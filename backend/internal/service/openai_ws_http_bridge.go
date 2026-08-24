@@ -333,7 +333,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			return nil, fmt.Errorf("adapt %s client tools: %w", openAIWSHTTPBridgeToolUpstreamName(account), err)
 		}
 		if account.Platform == PlatformGrok {
-			clientToolMapping = enableGrokCodeModeExecNormalization(clientToolMapping)
+			clientToolMapping = enableCodeModeExecNormalization(clientToolMapping)
 		}
 		if account.Platform == PlatformGrok && !grokExplicitToolsField && !grokExplicitToolIntent && len(inheritedLoweredTools) > 0 && hasGrokResponsesToolIntent(body) {
 			// This continuation omitted tools, so the pre-adapter source cannot

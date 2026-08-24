@@ -323,6 +323,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	clientToolMapping apicompat.ResponsesClientToolMapping,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	clientToolMapping = enableClaudeCodeModeExecNormalization(clientToolMapping, originalModel, mappedModel)
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -468,6 +469,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	clientToolMapping apicompat.ResponsesClientToolMapping,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	clientToolMapping = enableClaudeCodeModeExecNormalization(clientToolMapping, originalModel, mappedModel)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
