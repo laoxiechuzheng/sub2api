@@ -794,7 +794,10 @@ func normalizeCodeModeExecInput(input string) string {
 
 	compact := strings.ToLower(strings.Join(strings.Fields(trimmed), ""))
 	compact = strings.TrimSuffix(compact, ";")
-	if compact == "console.log(process.cwd())" || compact == "process.cwd()" {
+	if compact == "console.log(process.cwd())" || compact == "process.cwd()" ||
+		(compact == "constcwd=process.cwd();console.log(cwd);cwd" ||
+			compact == "letcwd=process.cwd();console.log(cwd);cwd" ||
+			compact == "varcwd=process.cwd();console.log(cwd);cwd") {
 		return wrapShellCommandForCodeMode("pwd")
 	}
 

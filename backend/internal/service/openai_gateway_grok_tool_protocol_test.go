@@ -222,6 +222,11 @@ func TestRestoreGrokResponsesClientToolPayloadNormalizesExecInput(t *testing.T) 
 			want:  "const result = await tools.exec_command({cmd: \"pwd\"});\ntext(result.output);",
 		},
 		{
+			name:  "Node cwd variable",
+			input: `const cwd = process.cwd(); console.log(cwd); cwd;`,
+			want:  "const result = await tools.exec_command({cmd: \"pwd\"});\ntext(result.output);",
+		},
+		{
 			name:  "valid Codex JavaScript",
 			input: `const result = await tools.exec_command({cmd: "Get-Location"}); text(result.output);`,
 			want:  `const result = await tools.exec_command({cmd: "Get-Location"}); text(result.output);`,
