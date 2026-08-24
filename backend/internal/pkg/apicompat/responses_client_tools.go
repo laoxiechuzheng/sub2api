@@ -15,6 +15,10 @@ type ResponsesClientToolMapping struct {
 	FunctionTools  map[string]bool
 	ToolSearch     bool
 	NamespaceTools map[string]ResponsesNamespaceName
+	// CodeModeExecTools identifies restored custom tools whose obvious
+	// shell/PowerShell dialect must be wrapped into Codex code-mode JavaScript.
+	// Providers opt into this narrowly; ordinary custom tools remain byte-for-byte.
+	CodeModeExecTools map[string]bool
 }
 
 // AdaptResponsesClientTools lowers Codex client-only tools in req to
@@ -421,7 +425,8 @@ func restoreClientToolValue(value any, adapter *ResponsesClientToolMapping) bool
 			if customName, isCustom := resolveCustomToolCallName(name, adapter.CustomTools, adapter.FunctionTools, adapter.NamespaceTools); isCustom {
 				typed["type"] = "custom_tool_call"
 				typed["name"] = customName
-				typed["input"] = extractCustomToolCallInput(rawObjectString(typed["arguments"]))
+				input := extractCustomToolCallInput(rawObjectString(typed["arguments"]))
+				typed["input"] = normalizeRestoredCustomToolInput(customName, input, adapter)
 				delete(typed, "arguments")
 				delete(typed, "namespace")
 				changed = true
@@ -513,6 +518,7 @@ func (r *ResponsesClientToolStreamRestorer) Restore(event ResponsesStreamEvent) 
 			}
 			if call.kind == "custom" {
 				input := extractCustomToolCallInput(call.arguments.String())
+				input = normalizeRestoredCustomToolInput(call.name, input, &r.adapter)
 				if input != "" {
 					emit(ResponsesStreamEvent{Type: "response.custom_tool_call_input.delta", OutputIndex: call.outputIdx, ItemID: call.itemID, Delta: input})
 				}
@@ -525,7 +531,8 @@ func (r *ResponsesClientToolStreamRestorer) Restore(event ResponsesStreamEvent) 
 		if call := r.recordItem(event); call != nil {
 			if call.kind == "custom" {
 				event.Item.Type = "custom_tool_call"
-				event.Item.Input = extractCustomToolCallInput(call.arguments.String())
+				input := extractCustomToolCallInput(call.arguments.String())
+				event.Item.Input = normalizeRestoredCustomToolInput(call.name, input, &r.adapter)
 				event.Item.Arguments = ""
 				event.Item.Namespace = ""
 			} else {
@@ -753,7 +760,8 @@ func restoreResponsesOutputClientTools(outputs []ResponsesOutput, adapter *Respo
 		if customName, isCustom := resolveCustomToolCallName(output.Name, adapter.CustomTools, adapter.FunctionTools, adapter.NamespaceTools); isCustom {
 			output.Type = "custom_tool_call"
 			output.Name = customName
-			output.Input = extractCustomToolCallInput(output.Arguments)
+			input := extractCustomToolCallInput(output.Arguments)
+			output.Input = normalizeRestoredCustomToolInput(customName, input, adapter)
 			output.Arguments = ""
 			output.Namespace = ""
 		} else if adapter.ToolSearch && output.Name == toolSearchProxyName {
@@ -765,4 +773,68 @@ func restoreResponsesOutputClientTools(outputs []ResponsesOutput, adapter *Respo
 			output.Name, output.Namespace = name.Name, name.Namespace
 		}
 	}
+}
+
+func normalizeRestoredCustomToolInput(name, input string, adapter *ResponsesClientToolMapping) string {
+	if adapter == nil || !adapter.CodeModeExecTools[strings.TrimSpace(name)] {
+		return input
+	}
+	return normalizeCodeModeExecInput(input)
+}
+
+func normalizeCodeModeExecInput(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return input
+	}
+
+	compact := strings.ToLower(strings.Join(strings.Fields(trimmed), ""))
+	compact = strings.TrimSuffix(compact, ";")
+	if compact == "console.log(process.cwd())" || compact == "process.cwd()" {
+		return wrapShellCommandForCodeMode("pwd")
+	}
+
+	if strings.Contains(trimmed, "tools.exec_command(") {
+		fixed := strings.ReplaceAll(trimmed, "emit text(", "text(")
+		if strings.HasPrefix(trimmed, "await tools.exec_command(") && strings.Contains(fixed, "result.output") {
+			fixed = strings.Replace(fixed, "await tools.exec_command(", "const result = await tools.exec_command(", 1)
+		}
+		return fixed
+	}
+
+	if likelyShellCommand(trimmed) {
+		return wrapShellCommandForCodeMode(input)
+	}
+	return input
+}
+
+func wrapShellCommandForCodeMode(command string) string {
+	encoded, _ := json.Marshal(command)
+	return "const result = await tools.exec_command({cmd: " + string(encoded) + "});\ntext(result.output);"
+}
+
+func likelyShellCommand(input string) bool {
+	firstLine := strings.TrimSpace(strings.SplitN(input, "\n", 2)[0])
+	lower := strings.ToLower(firstLine)
+	if lower == "" {
+		return false
+	}
+	for _, prefix := range []string{
+		"get-", "set-", "new-", "remove-", "select-", "write-", "where-object", "foreach-object",
+		"$", "./", `.\\`, "& ",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	for _, command := range []string{
+		"ls", "dir", "pwd", "cd", "curl", "wget", "git", "rg", "grep", "find",
+		"python", "python3", "node", "npm", "pnpm", "go", "docker", "docker-compose",
+		"ssh", "scp", "cmd", "powershell", "pwsh",
+	} {
+		if lower == command || strings.HasPrefix(lower, command+" ") || strings.HasPrefix(lower, command+"\t") {
+			return true
+		}
+	}
+	return false
 }

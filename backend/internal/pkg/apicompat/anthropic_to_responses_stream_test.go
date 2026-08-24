@@ -1,6 +1,175 @@
 package apicompat
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestAnthropicToResponsesResponse_PreservesServerWebSearchCall(t *testing.T) {
+	resp := &AnthropicResponse{
+		ID:    "msg_search",
+		Model: "claude-sonnet-5",
+		Content: []AnthropicContentBlock{
+			{
+				Type:  "server_tool_use",
+				ID:    "srv_1",
+				Name:  "web_search",
+				Input: json.RawMessage(`{"query":"OpenCode Go pricing"}`),
+			},
+			{
+				Type:      "web_search_tool_result",
+				ToolUseID: "srv_1",
+				Content:   json.RawMessage(`[]`),
+			},
+			{Type: "text", Text: "The current price is $10/month."},
+		},
+		StopReason: AnthropicStopReasonPtr("end_turn"),
+	}
+
+	out := AnthropicToResponsesResponse(resp)
+	if len(out.Output) < 2 {
+		t.Fatalf("output = %+v, want web_search_call and message", out.Output)
+	}
+
+	search := out.Output[0]
+	if search.Type != "web_search_call" {
+		t.Fatalf("output[0].type = %q, want web_search_call", search.Type)
+	}
+	if search.Status != "completed" {
+		t.Errorf("search status = %q, want completed", search.Status)
+	}
+	if search.Action == nil || search.Action.Type != "search" || search.Action.Query != "OpenCode Go pricing" {
+		t.Errorf("search action = %+v, want search query", search.Action)
+	}
+}
+
+func TestAnthropicEventToResponses_ServerSearchDoesNotEmitFunctionArguments(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	var events []ResponsesStreamEvent
+	feed := func(evt *AnthropicStreamEvent) {
+		events = append(events, AnthropicEventToResponsesEvents(evt, state)...)
+	}
+
+	start := 0
+	feed(&AnthropicStreamEvent{Type: "message_start", Message: &AnthropicResponse{ID: "msg_search", Model: "claude-sonnet-5"}})
+	feed(&AnthropicStreamEvent{
+		Type: "content_block_start", Index: &start,
+		ContentBlock: &AnthropicContentBlock{
+			Type: "server_tool_use", ID: "srv_1", Name: "web_search",
+			Input: json.RawMessage(`{}`),
+		},
+	})
+	feed(&AnthropicStreamEvent{
+		Type: "content_block_delta", Index: &start,
+		Delta: &AnthropicDelta{Type: "input_json_delta", PartialJSON: `{"query":"OpenCode `},
+	})
+	feed(&AnthropicStreamEvent{
+		Type: "content_block_delta", Index: &start,
+		Delta: &AnthropicDelta{Type: "input_json_delta", PartialJSON: `Go pricing"}`},
+	})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &start})
+
+	result := 1
+	feed(&AnthropicStreamEvent{
+		Type: "content_block_start", Index: &result,
+		ContentBlock: &AnthropicContentBlock{Type: "web_search_tool_result", ToolUseID: "srv_1", Content: json.RawMessage(`[]`)},
+	})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &result})
+	feed(&AnthropicStreamEvent{Type: "message_stop"})
+
+	var sawAdded, sawDone, sawCompleted, sawFunctionDelta bool
+	for _, evt := range events {
+		switch evt.Type {
+		case "response.output_item.added":
+			if evt.Item != nil && evt.Item.Type == "web_search_call" {
+				sawAdded = true
+			}
+		case "response.output_item.done":
+			if evt.Item != nil && evt.Item.Type == "web_search_call" {
+				sawDone = true
+				if evt.Item.Action == nil || evt.Item.Action.Query != "OpenCode Go pricing" {
+					t.Errorf("completed search item = %+v, want query", evt.Item)
+				}
+			}
+		case "response.function_call_arguments.delta":
+			sawFunctionDelta = true
+		case "response.completed":
+			if evt.Response != nil && len(evt.Response.Output) == 1 && evt.Response.Output[0].Type == "web_search_call" {
+				sawCompleted = true
+			}
+		}
+	}
+	if !sawAdded || !sawDone {
+		t.Fatalf("events = %+v, want added/done web_search_call lifecycle", events)
+	}
+	if sawFunctionDelta {
+		t.Fatalf("events = %+v, server search must not emit function_call_arguments.delta", events)
+	}
+	if !sawCompleted {
+		t.Fatalf("events = %+v, response.completed must carry the web_search_call", events)
+	}
+}
+
+func TestAnthropicEventToResponses_ServerSearchWithoutResultClosesBeforeNextItem(t *testing.T) {
+	tests := []struct {
+		name         string
+		nextType     string
+		wantNextType string
+		delta        *AnthropicDelta
+	}{
+		{name: "text", nextType: "text", wantNextType: "message", delta: &AnthropicDelta{Type: "text_delta", Text: "answer"}},
+		{name: "thinking", nextType: "thinking", wantNextType: "reasoning", delta: &AnthropicDelta{Type: "thinking_delta", Thinking: "reason"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewAnthropicEventToResponsesState()
+			var events []ResponsesStreamEvent
+			feed := func(evt *AnthropicStreamEvent) {
+				events = append(events, AnthropicEventToResponsesEvents(evt, state)...)
+			}
+
+			searchIndex := 0
+			feed(&AnthropicStreamEvent{Type: "message_start", Message: &AnthropicResponse{ID: "msg_missing_result", Model: "claude-sonnet-5"}})
+			feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &searchIndex, ContentBlock: &AnthropicContentBlock{
+				Type: "server_tool_use", ID: "srv_missing", Name: "web_search", Input: json.RawMessage(`{}`),
+			}})
+			feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: &searchIndex, Delta: &AnthropicDelta{
+				Type: "input_json_delta", PartialJSON: `{"query":"missing result"}`,
+			}})
+			feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &searchIndex})
+
+			nextIndex := 1
+			feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &nextIndex, ContentBlock: &AnthropicContentBlock{Type: tt.nextType}})
+			feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: &nextIndex, Delta: tt.delta})
+			feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &nextIndex})
+			feed(&AnthropicStreamEvent{Type: "message_stop"})
+
+			var done []ResponsesStreamEvent
+			var completed *ResponsesResponse
+			for _, evt := range events {
+				if evt.Type == "response.output_item.done" {
+					done = append(done, evt)
+				}
+				if evt.Type == "response.completed" {
+					completed = evt.Response
+				}
+			}
+			require.Len(t, done, 2)
+			require.Equal(t, 0, done[0].OutputIndex)
+			require.Equal(t, "web_search_call", done[0].Item.Type)
+			require.Equal(t, "missing result", done[0].Item.Action.Query)
+			require.Equal(t, 1, done[1].OutputIndex)
+			require.Equal(t, tt.wantNextType, done[1].Item.Type)
+			require.NotNil(t, completed)
+			require.Len(t, completed.Output, 2)
+			require.Equal(t, "web_search_call", completed.Output[0].Type)
+			require.Equal(t, tt.wantNextType, completed.Output[1].Type)
+		})
+	}
+}
 
 // TestAnthropicEventToResponses_TextEmitsContentPart pins that a message text
 // stream emits response.content_part.added, and that it precedes the first

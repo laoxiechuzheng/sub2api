@@ -324,7 +324,10 @@ func TestOpenAIPassthroughAPIKeyRestoresClientToolsStreaming(t *testing.T) {
 		`data: {"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"type":"function_call","id":"i1","call_id":"c1","name":"apply_patch","status":"in_progress"}}`,
 		`data: {"type":"response.function_call_arguments.done","sequence_number":1,"item_id":"i1","call_id":"c1","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}"}`,
 		`data: {"type":"response.output_item.done","sequence_number":2,"output_index":0,"item":{"type":"function_call","id":"i1","call_id":"c1","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}","status":"completed"}}`,
-		`data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_stream_tools","status":"completed","output":[{"type":"function_call","id":"i1","call_id":"c1","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}"}],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`data: {"type":"response.output_item.added","sequence_number":3,"output_index":1,"item":{"type":"function_call","id":"i2","call_id":"c2","name":"exec","status":"in_progress"}}`,
+		`data: {"type":"response.function_call_arguments.done","sequence_number":4,"item_id":"i2","call_id":"c2","name":"exec","arguments":"{\"input\":\"pwd\"}"}`,
+		`data: {"type":"response.output_item.done","sequence_number":5,"output_index":1,"item":{"type":"function_call","id":"i2","call_id":"c2","name":"exec","arguments":"{\"input\":\"pwd\"}","status":"completed"}}`,
+		`data: {"type":"response.completed","sequence_number":6,"response":{"id":"resp_stream_tools","status":"completed","output":[{"type":"function_call","id":"i1","call_id":"c1","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}"},{"type":"function_call","id":"i2","call_id":"c2","name":"exec","arguments":"{\"input\":\"pwd\"}"}],"usage":{"input_tokens":1,"output_tokens":1}}}`,
 	}, "\n\n") + "\n\n"
 	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sse))}}
 	svc := openAIClientToolsTestService(upstream)
@@ -339,5 +342,7 @@ func TestOpenAIPassthroughAPIKeyRestoresClientToolsStreaming(t *testing.T) {
 	require.Contains(t, output, `"type":"custom_tool_call"`)
 	require.Contains(t, output, `"type":"response.custom_tool_call_input.done"`)
 	require.Contains(t, output, `"input":"*** Begin Patch"`)
+	require.Contains(t, output, `"input":"pwd"`)
+	require.NotContains(t, output, `tools.exec_command`)
 	require.NotContains(t, output, `"input":{`)
 }

@@ -51,7 +51,11 @@ func adaptResponsesClientToolsForFunctionUpstreamWithMapping(
 }
 
 func adaptGrokResponsesClientTools(body []byte) ([]byte, apicompat.ResponsesClientToolMapping, error) {
-	return adaptResponsesClientToolsForFunctionUpstream(body, "Grok")
+	adapted, mapping, err := adaptResponsesClientToolsForFunctionUpstream(body, "Grok")
+	if err != nil {
+		return adapted, mapping, err
+	}
+	return adapted, enableGrokCodeModeExecNormalization(mapping), nil
 }
 
 func hasResponsesClientToolMapping(mapping apicompat.ResponsesClientToolMapping) bool {
@@ -129,12 +133,23 @@ func newResponsesClientToolStreamBody(
 	return body
 }
 
-func newGrokResponsesClientToolStreamBody(
-	source io.ReadCloser,
-	mapping apicompat.ResponsesClientToolMapping,
-	maxLineSize int,
-) io.ReadCloser {
-	return newResponsesClientToolStreamBody(source, mapping, maxLineSize)
+func enableGrokCodeModeExecNormalization(mapping apicompat.ResponsesClientToolMapping) apicompat.ResponsesClientToolMapping {
+	var enabled bool
+	if mapping.CustomTools["exec"] {
+		enabled = true
+	}
+	for _, tool := range mapping.NamespaceTools {
+		if tool.Custom && strings.TrimSpace(tool.Namespace) == "functions" && strings.TrimSpace(tool.Name) == "exec" {
+			enabled = true
+			break
+		}
+	}
+	if enabled {
+		mapping.CodeModeExecTools = map[string]bool{"exec": true}
+	} else {
+		mapping.CodeModeExecTools = nil
+	}
+	return mapping
 }
 
 func transformResponsesClientToolStream(

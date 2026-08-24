@@ -2,11 +2,41 @@ package apicompat
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestRestoreResponsesClientToolPayload_CodeModeExecShellWrapperEscapesCommand(t *testing.T) {
+	command := "Write-Output \"a; b\"\nGet-Location"
+	arguments, err := json.Marshal(map[string]string{"input": command})
+	require.NoError(t, err)
+	payload, err := json.Marshal(map[string]any{
+		"output": []any{map[string]any{
+			"type": "function_call", "name": "exec", "arguments": string(arguments),
+		}},
+	})
+	require.NoError(t, err)
+
+	restored, changed, err := RestoreResponsesClientToolPayload(payload, ResponsesClientToolMapping{
+		CustomTools:       map[string]bool{"exec": true},
+		CodeModeExecTools: map[string]bool{"exec": true},
+	})
+	require.NoError(t, err)
+	require.True(t, changed)
+	input := gjson.GetBytes(restored, "output.0.input").String()
+
+	const prefix = "const result = await tools.exec_command({cmd: "
+	const suffix = "});\ntext(result.output);"
+	require.True(t, strings.HasPrefix(input, prefix))
+	require.True(t, strings.HasSuffix(input, suffix))
+	encodedCommand := strings.TrimSuffix(strings.TrimPrefix(input, prefix), suffix)
+	var decoded string
+	require.NoError(t, json.Unmarshal([]byte(encodedCommand), &decoded))
+	require.Equal(t, command, decoded)
+}
 
 func TestAdaptResponsesClientTools_LowersDeclarationsHistoryChoiceAndNamespaces(t *testing.T) {
 	req := map[string]any{

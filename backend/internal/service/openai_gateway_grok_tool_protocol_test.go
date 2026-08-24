@@ -200,6 +200,128 @@ func TestClearGrokResponsesClientToolMappingRemovesStaleContextState(t *testing.
 	require.False(t, remains)
 }
 
+func TestRestoreGrokResponsesClientToolPayloadNormalizesExecInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "raw PowerShell",
+			input: `Get-ChildItem -Path . -Recurse`,
+			want:  "const result = await tools.exec_command({cmd: \"Get-ChildItem -Path . -Recurse\"});\ntext(result.output);",
+		},
+		{
+			name:  "malformed code mode",
+			input: `await tools.exec_command({cmd: "Get-Location"}); emit text(result.output);`,
+			want:  `const result = await tools.exec_command({cmd: "Get-Location"}); text(result.output);`,
+		},
+		{
+			name:  "Node cwd",
+			input: `console.log(process.cwd());`,
+			want:  "const result = await tools.exec_command({cmd: \"pwd\"});\ntext(result.output);",
+		},
+		{
+			name:  "valid Codex JavaScript",
+			input: `const result = await tools.exec_command({cmd: "Get-Location"}); text(result.output);`,
+			want:  `const result = await tools.exec_command({cmd: "Get-Location"}); text(result.output);`,
+		},
+		{
+			name:  "valid compact Codex JavaScript",
+			input: `const result=await tools.exec_command({cmd:"Get-Location"}); text(result.output);`,
+			want:  `const result=await tools.exec_command({cmd:"Get-Location"}); text(result.output);`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			setGrokResponsesClientToolMapping(c, enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
+				CustomTools: map[string]bool{"exec": true},
+			}))
+			arguments, err := json.Marshal(map[string]string{"input": tt.input})
+			require.NoError(t, err)
+			payload := []byte(`{"output":[{"type":"function_call","id":"item_exec","call_id":"call_exec","name":"exec","arguments":` + string(mustMarshalJSONForTest(t, string(arguments))) + `}]}`)
+
+			restored, err := restoreGrokResponsesClientToolPayload(c, payload)
+
+			require.NoError(t, err)
+			require.Equal(t, "custom_tool_call", gjson.GetBytes(restored, "output.0.type").String())
+			require.Equal(t, tt.want, gjson.GetBytes(restored, "output.0.input").String())
+		})
+	}
+}
+
+func TestEnableGrokCodeModeExecNormalizationRequiresCanonicalExec(t *testing.T) {
+	mapping := enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
+		CustomTools: map[string]bool{
+			"exec":          true,
+			"backup__exec":  true,
+			"database.exec": true,
+		},
+		NamespaceTools: map[string]apicompat.ResponsesNamespaceName{
+			"functions__exec": {Namespace: "functions", Name: "exec", Custom: true},
+			"database__exec":  {Namespace: "database", Name: "exec", Custom: true},
+		},
+	})
+
+	require.Equal(t, map[string]bool{"exec": true}, mapping.CodeModeExecTools)
+}
+
+func TestRestoreGrokResponsesClientToolPayloadNormalizesFunctionsExecNamespace(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	setGrokResponsesClientToolMapping(c, enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{
+		CustomTools: map[string]bool{"functions__exec": true},
+		NamespaceTools: map[string]apicompat.ResponsesNamespaceName{
+			"functions__exec": {Namespace: "functions", Name: "exec", Custom: true},
+		},
+	}))
+	payload := []byte(`{"output":[{"type":"function_call","id":"item_exec","call_id":"call_exec","name":"functions__exec","arguments":"{\"input\":\"dir /s /b\"}"}]}`)
+
+	restored, err := restoreGrokResponsesClientToolPayload(c, payload)
+
+	require.NoError(t, err)
+	require.Equal(t, "custom_tool_call", gjson.GetBytes(restored, "output.0.type").String())
+	require.Equal(t, "exec", gjson.GetBytes(restored, "output.0.name").String())
+	require.Equal(t,
+		"const result = await tools.exec_command({cmd: \"dir /s /b\"});\ntext(result.output);",
+		gjson.GetBytes(restored, "output.0.input").String(),
+	)
+}
+
+func TestGrokResponsesClientToolStreamNormalizesExecInput(t *testing.T) {
+	upstream := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","id":"item_exec","call_id":"call_exec","name":"exec","arguments":"","status":"in_progress"}}`,
+		``,
+		`event: response.function_call_arguments.done`,
+		`data: {"type":"response.function_call_arguments.done","sequence_number":2,"output_index":0,"item_id":"item_exec","call_id":"call_exec","name":"exec","arguments":"{\"input\":\"Get-Location\"}"}`,
+		``,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":{"type":"function_call","id":"item_exec","call_id":"call_exec","name":"exec","arguments":"{\"input\":\"Get-Location\"}","status":"completed"}}`,
+		``,
+	}, "\n")
+	body := newResponsesClientToolStreamBody(
+		io.NopCloser(strings.NewReader(upstream)),
+		enableGrokCodeModeExecNormalization(apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}}),
+		defaultMaxLineSize,
+	)
+	defer func() { _ = body.Close() }()
+
+	output, err := io.ReadAll(body)
+	require.NoError(t, err)
+	want := "const result = await tools.exec_command({cmd: \"Get-Location\"});\ntext(result.output);"
+	frames := parseGrokProtocolSSEFrames(t, string(output))
+	delta := requireGrokProtocolFrame(t, frames, "response.custom_tool_call_input.delta", "", "")
+	done := requireGrokProtocolFrame(t, frames, "response.custom_tool_call_input.done", "", "")
+	itemDone := requireGrokProtocolFrame(t, frames, "response.output_item.done", "item.type", "custom_tool_call")
+	require.Equal(t, want, gjson.GetBytes(delta.data, "delta").String())
+	require.Equal(t, want, gjson.GetBytes(done.data, "input").String())
+	require.Equal(t, want, gjson.GetBytes(itemDone.data, "item.input").String())
+}
+
 func TestForwardGrokResponsesClientToolNameConflictReturns400(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -427,7 +549,7 @@ func TestForwardGrokResponsesAPIKeyRestoresClientToolsStreaming(t *testing.T) {
 
 func TestGrokResponsesClientToolStreamBodyFlushesFrameBeforeEOF(t *testing.T) {
 	sourceReader, sourceWriter := io.Pipe()
-	body := newGrokResponsesClientToolStreamBody(sourceReader, apicompat.ResponsesClientToolMapping{
+	body := newResponsesClientToolStreamBody(sourceReader, apicompat.ResponsesClientToolMapping{
 		CustomTools: map[string]bool{"apply_patch": true},
 	}, defaultMaxLineSize)
 	defer func() { _ = body.Close() }()
