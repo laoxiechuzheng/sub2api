@@ -233,6 +233,55 @@ func TestAnthropicEventToResponses_LateServerSearchResultDoesNotDuplicateClosedI
 	require.Equal(t, 1, completedSearches)
 }
 
+func TestAnthropicEventToResponses_LateServerSearchResultDoesNotStopOpenMessage(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	var events []ResponsesStreamEvent
+	feed := func(evt *AnthropicStreamEvent) {
+		events = append(events, AnthropicEventToResponsesEvents(evt, state)...)
+	}
+
+	searchIndex := 0
+	feed(&AnthropicStreamEvent{Type: "message_start", Message: &AnthropicResponse{ID: "msg_open_message", Model: "claude-sonnet-5"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &searchIndex, ContentBlock: &AnthropicContentBlock{
+		Type: "server_tool_use", ID: "srv_open_message", Name: "web_search", Input: json.RawMessage(`{}`),
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: &searchIndex, Delta: &AnthropicDelta{
+		Type: "input_json_delta", PartialJSON: `{"query":"open message"}`,
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &searchIndex})
+
+	textIndex := 1
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &textIndex, ContentBlock: &AnthropicContentBlock{Type: "text"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: &textIndex, Delta: &AnthropicDelta{Type: "text_delta", Text: "answer"}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &textIndex})
+
+	// The message item remains open after a text block stop. A late duplicate
+	// search result must consume only its own stop event, not close the message.
+	resultIndex := 2
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: &resultIndex, ContentBlock: &AnthropicContentBlock{
+		Type: "web_search_tool_result", ToolUseID: "srv_open_message", Content: json.RawMessage(`[]`),
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &resultIndex})
+	feed(&AnthropicStreamEvent{Type: "message_stop"})
+
+	var textDone []ResponsesStreamEvent
+	var completed *ResponsesResponse
+	for _, evt := range events {
+		if evt.Type == "response.output_text.done" {
+			textDone = append(textDone, evt)
+		}
+		if evt.Type == "response.completed" {
+			completed = evt.Response
+		}
+	}
+	require.Len(t, textDone, 1, "late result must not emit a second output_text.done")
+	require.Equal(t, "answer", textDone[0].Text)
+	require.NotNil(t, completed)
+	require.Len(t, completed.Output, 2)
+	require.Equal(t, "web_search_call", completed.Output[0].Type)
+	require.Equal(t, "message", completed.Output[1].Type)
+}
+
 // TestAnthropicEventToResponses_TextEmitsContentPart pins that a message text
 // stream emits response.content_part.added, and that it precedes the first
 // output_text.delta for that part.

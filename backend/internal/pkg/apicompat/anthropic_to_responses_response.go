@@ -168,6 +168,12 @@ type AnthropicEventToResponsesState struct {
 	// its following web_search_tool_result block while they share one Responses
 	// web_search_call output item.
 	CurrentAnthropicBlockType string
+	// IgnoreNextContentBlockStop suppresses the stop event for a late duplicate
+	// web_search_tool_result that was already represented by a closed item.
+	// The current Responses message item can remain open while Anthropic emits
+	// this unrelated result block, so returning from block_start alone is not
+	// sufficient.
+	IgnoreNextContentBlockStop bool
 
 	// For message output: accumulate text parts
 	ContentIndex int
@@ -391,6 +397,7 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 		// The result belongs to that completed item; do not reopen a second
 		// web_search_call with the same id and an empty action.
 		if hasCompletedResponsesWebSearchItem(state, searchID) {
+			state.IgnoreNextContentBlockStop = true
 			return nil
 		}
 		if state.CurrentItemType != "web_search_call" {
@@ -471,6 +478,10 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 }
 
 func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
+	if state.IgnoreNextContentBlockStop {
+		state.IgnoreNextContentBlockStop = false
+		return nil
+	}
 	switch state.CurrentItemType {
 	case "reasoning":
 		// Emit reasoning summary done + output item done
