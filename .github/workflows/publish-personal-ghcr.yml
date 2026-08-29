@@ -7,12 +7,12 @@ on:
         description: "Exact source commit or ref to build"
         required: true
         type: string
-        default: "50f9e563efc42a76f407e8340add3f6fbb212680"
+        default: "335d6ddd68722c5cf64d436aa3be531e938f5411"
       image_tag:
         description: "Deployment tag (re-running may move it; pin production by digest)"
         required: true
         type: string
-        default: "sha-50f9e563e"
+        default: "sha-335d6ddd6"
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/laoxiechuzheng/sub2api
-  RELEASE_VERSION: 0.1.183-local-codex-tools-20260829-r28
+  RELEASE_VERSION: 0.1.183-local-codex-tools-20260829-r29
   GOLDEN_R18_VERSION: 0.1.179-local-codex-tools-20260823-r18
   GOLDEN_R18_DIGEST: sha256:e4c659bcc94488ac703f29b49854e06a974ca5d815666689df2562a3d9768226
 
