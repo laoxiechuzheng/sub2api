@@ -91,7 +91,7 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		upstreamMessage := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
-		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMessage, respBody) ||
+		if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMessage, respBody) ||
 			isOpenAIAlphaSearchEndpointUnsupported(account, resp.StatusCode) {
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			// alpha/search 是独立的工具端点，单次 401 不能证明账号的模型调用
@@ -128,11 +128,12 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 		return nil, nil
 	}
 	return &OpenAIForwardResult{
-		RequestID:      strings.TrimSpace(resp.Header.Get("x-request-id")),
-		Model:          requestedModel,
-		UpstreamModel:  upstreamModel,
-		Duration:       time.Since(upstreamStart),
-		WebSearchCalls: 1,
+		RequestID:       strings.TrimSpace(resp.Header.Get("x-request-id")),
+		UpstreamHeaders: resp.Header,
+		Model:           requestedModel,
+		UpstreamModel:   upstreamModel,
+		Duration:        time.Since(upstreamStart),
+		WebSearchCalls:  1,
 	}, nil
 }
 
@@ -174,7 +175,7 @@ func (s *OpenAIGatewayService) forwardAlphaSearchViaResponsesWebSearch(
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		upstreamMessage := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
-		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMessage, respBody) {
+		if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMessage, respBody) {
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			// 仍按 alpha/search 工具请求处理：PAT 的工具链路失败不能直接永久置错。
 			shouldDisable := false
@@ -212,6 +213,7 @@ func (s *OpenAIGatewayService) forwardAlphaSearchViaResponsesWebSearch(
 	c.Data(http.StatusOK, "application/json", alphaRespBody)
 	return &OpenAIForwardResult{
 		RequestID:        strings.TrimSpace(resp.Header.Get("x-request-id")),
+		UpstreamHeaders:  resp.Header,
 		Model:            requestedModel,
 		UpstreamModel:    upstreamModel,
 		UpstreamEndpoint: "/v1/responses",
@@ -544,11 +546,6 @@ func shouldApplyOpenAIAlphaSearchAccountErrorSideEffects(statusCode int) bool {
 		// 401：工具端点的 access enforcement 不代表凭据全局失效；
 		// 404/405：端点不存在只说明该上游不支持独立搜索，账号本身健康。
 		// 两类都只换号，不写账号错误状态。
-		return false
-	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 520, 521, 522, 523, 524:
-		// Standalone search is an optional side endpoint. A transient failure
-		// there must not cool down the account/model used by ordinary Responses
-		// calls; the handler already performs endpoint-local failover.
 		return false
 	default:
 		return true

@@ -161,6 +161,8 @@ func (s *GatewayService) ForwardAsResponses(
 
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -342,7 +344,6 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	clientToolMapping apicompat.ResponsesClientToolMapping,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
-	clientToolMapping = enableClaudeCodeModeExecNormalization(clientToolMapping, originalModel, mappedModel)
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -467,6 +468,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 	return &ForwardResult{
 		RequestID:       requestID,
+		UpstreamHeaders: resp.Header,
 		Usage:           usage,
 		Model:           originalModel,
 		UpstreamModel:   mappedModel,
@@ -488,7 +490,6 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	clientToolMapping apicompat.ResponsesClientToolMapping,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
-	clientToolMapping = enableClaudeCodeModeExecNormalization(clientToolMapping, originalModel, mappedModel)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -516,6 +517,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
 			RequestID:       requestID,
+			UpstreamHeaders: resp.Header,
 			Usage:           usage,
 			Model:           originalModel,
 			UpstreamModel:   mappedModel,
@@ -582,28 +584,12 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	finalizeStream := func() (*ForwardResult, error) {
 		if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 {
 			for _, evt := range finalEvents {
-				payload, err := json.Marshal(evt)
+				sse, err := apicompat.ResponsesEventToSSE(evt)
 				if err != nil {
 					continue
 				}
-				payload = reverseToolNamesIfPresent(c, payload)
-				payloads, _, err := clientToolRestorer.RestoreEvent(payload)
-				if err != nil {
-					logger.L().Warn("forward_as_responses stream: failed to restore terminal client tools",
-						zap.Error(err),
-						zap.String("request_id", requestID),
-					)
-					continue
-				}
-				for _, restored := range payloads {
-					eventType := gjson.GetBytes(restored, "type").String()
-					if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
-						logger.L().Info("forward_as_responses stream: client disconnected during terminal events",
-							zap.String("request_id", requestID),
-						)
-						return resultWithUsage(), nil
-					}
-				}
+				out := string(reverseToolNamesIfPresent(c, []byte(sse)))
+				fmt.Fprint(c.Writer, out) //nolint:errcheck
 			}
 			c.Writer.Flush()
 		}
@@ -659,13 +645,10 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 func appendRawJSON(existing json.RawMessage, fragment string) json.RawMessage {
 	// Anthropic initializes tool_use.input to {} in content_block_start, then
 	// streams the actual input through input_json_delta events. Treat that empty
-	// object (or null) as a placeholder instead of prefixing it to the streamed JSON.
-	trimmed := bytes.TrimSpace(existing)
-	if len(trimmed) == 0 {
-		return json.RawMessage(fragment)
-	}
+	// object as a placeholder instead of prefixing it to the streamed JSON.
 	var existingObject map[string]json.RawMessage
-	if json.Unmarshal(trimmed, &existingObject) == nil && len(existingObject) == 0 {
+	isEmptyObject := json.Unmarshal(existing, &existingObject) == nil && existingObject != nil && len(existingObject) == 0
+	if len(existing) == 0 || isEmptyObject {
 		return json.RawMessage(fragment)
 	}
 	return json.RawMessage(string(existing) + fragment)

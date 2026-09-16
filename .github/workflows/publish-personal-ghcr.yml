@@ -2,17 +2,6 @@ name: Publish Personal GHCR Image
 
 on:
   workflow_dispatch:
-    inputs:
-      source_ref:
-        description: "Exact source commit or ref to build"
-        required: true
-        type: string
-        default: "335d6ddd68722c5cf64d436aa3be531e938f5411"
-      image_tag:
-        description: "Deployment tag (re-running may move it; pin production by digest)"
-        required: true
-        type: string
-        default: "sha-335d6ddd6"
 
 permissions:
   contents: read
@@ -24,9 +13,7 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/laoxiechuzheng/sub2api
-  RELEASE_VERSION: 0.1.183-local-codex-tools-20260829-r29
-  GOLDEN_R18_VERSION: 0.1.179-local-codex-tools-20260823-r18
-  GOLDEN_R18_DIGEST: sha256:e4c659bcc94488ac703f29b49854e06a974ca5d815666689df2562a3d9768226
+  RELEASE_VERSION: 0.2.5-deepseek-responses-media-fix-20260917
 
 jobs:
   publish:
@@ -35,7 +22,6 @@ jobs:
       - name: Checkout exact source
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.source_ref }}
           fetch-depth: 1
 
       - name: Resolve exact source commit
@@ -61,7 +47,6 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
             ${{ env.IMAGE_NAME }}:${{ env.RELEASE_VERSION }}
             ${{ env.IMAGE_NAME }}:latest
           build-args: |
@@ -72,17 +57,8 @@ jobs:
             org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
             org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
 
-      - name: Restore golden r18 version tag
+      - name: Verify pushed manifests
         run: |
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:${GOLDEN_R18_VERSION}" \
-            "${IMAGE_NAME}@${GOLDEN_R18_DIGEST}"
-
-      - name: Verify pushed manifest
-        env:
-          SOURCE_SHA: ${{ steps.source.outputs.sha }}
-        run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${{ inputs.image_tag }}"
           docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_VERSION}"
-          docker buildx imagetools inspect "${IMAGE_NAME}:${GOLDEN_R18_VERSION}"
-          echo "Published source SHA: ${SOURCE_SHA}"
+          docker buildx imagetools inspect "${IMAGE_NAME}:latest"
+          echo "Published source SHA: ${{ steps.source.outputs.sha }}"

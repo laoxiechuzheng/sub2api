@@ -132,23 +132,29 @@ func TestWire_UnknownEventFallsBackToDefault(t *testing.T) {
 	require.Contains(t, m, "response")
 }
 
-func TestWire_WebSearchCallCarriesActionOnDone(t *testing.T) {
-	m := marshalEvent(t, ResponsesStreamEvent{
-		Type:        "response.output_item.done",
-		OutputIndex: 0,
-		Item: &ResponsesOutput{
-			Type:   "web_search_call",
-			ID:     "ws_1",
-			Status: "completed",
-			Action: &WebSearchAction{Type: "search", Query: "OpenCode Go pricing"},
-		},
+// grok-build 把 sequence_number 当必填。response.created 从 0 起号，
+// omitempty 会把 0 整段丢掉，第一帧就反序列化失败。
+func TestWire_SequenceNumberPresentAtZero(t *testing.T) {
+	created := marshalEvent(t, ResponsesStreamEvent{
+		Type:     "response.created",
+		Response: &ResponsesResponse{ID: "resp_1", Object: "response", Status: "in_progress"},
 	})
-	item, ok := m["item"].(map[string]any)
-	require.True(t, ok, "item must be an object")
-	action, ok := item["action"].(map[string]any)
-	require.True(t, ok, "web_search_call done must carry action")
-	require.Equal(t, "search", action["type"])
-	require.Equal(t, "OpenCode Go pricing", action["query"])
+	require.Contains(t, created, "sequence_number")
+	require.EqualValues(t, 0, created["sequence_number"])
+
+	completed := marshalEvent(t, ResponsesStreamEvent{
+		Type:           "response.completed",
+		SequenceNumber: 0,
+		Response:       &ResponsesResponse{ID: "resp_1", Object: "response", Status: "completed"},
+	})
+	require.Contains(t, completed, "sequence_number")
+	require.EqualValues(t, 0, completed["sequence_number"])
+
+	delta := marshalEvent(t, ResponsesStreamEvent{
+		Type: "response.output_text.delta", OutputIndex: 0, ContentIndex: 0, ItemID: "msg_1", Delta: "hi",
+	})
+	require.Contains(t, delta, "sequence_number")
+	require.EqualValues(t, 0, delta["sequence_number"])
 }
 
 func TestResponsesOutputUnmarshal_ToolSearchObjectArguments(t *testing.T) {

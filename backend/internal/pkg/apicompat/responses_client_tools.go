@@ -12,13 +12,8 @@ import (
 // function tools.
 type ResponsesClientToolMapping struct {
 	CustomTools    map[string]bool
-	FunctionTools  map[string]bool
 	ToolSearch     bool
 	NamespaceTools map[string]ResponsesNamespaceName
-	// CodeModeExecTools identifies upstream custom-tool names whose obvious
-	// shell/PowerShell dialect must be wrapped into Codex code-mode JavaScript.
-	// Providers opt into this narrowly; ordinary custom tools remain byte-for-byte.
-	CodeModeExecTools map[string]bool
 }
 
 // AdaptResponsesClientTools lowers Codex client-only tools in req to
@@ -62,9 +57,6 @@ func AdaptResponsesClientTools(req map[string]any) (ResponsesClientToolMapping, 
 			adapter.ToolSearch = true
 		}
 	}
-	if len(functionNames) > 0 {
-		adapter.FunctionTools = functionNames
-	}
 	for name := range customNames {
 		if functionNames[name] {
 			return ResponsesClientToolMapping{}, false, fmt.Errorf("custom tool %q conflicts with a function tool of the same name; this upstream cannot disambiguate them, rename one of the tools", name)
@@ -80,19 +72,6 @@ func AdaptResponsesClientTools(req map[string]any) (ResponsesClientToolMapping, 
 		return ResponsesClientToolMapping{}, false, err
 	}
 	adapter.NamespaceTools = names
-	// Some Anthropic-compatible upstreams expose the Codex standalone search
-	// namespace as an ordinary `web_search` function call even when the request
-	// declared `web.run`. Preserve that provider alias only when the request did
-	// not declare a conflicting ordinary function with the same name.
-	if !functionNames["web_search"] {
-		for flat, entry := range names {
-			if entry.Namespace == "web" && entry.Name == "run" {
-				if names["web_search"], flattened = entry, true; flat != "web_search" {
-					break
-				}
-			}
-		}
-	}
 	if adapter.ToolSearch {
 		if _, exists := names[toolSearchProxyName]; exists {
 			return ResponsesClientToolMapping{}, false, fmt.Errorf("built-in tool_search conflicts with namespace tool flattened as %q; this upstream cannot disambiguate them, rename the tool", toolSearchProxyName)
@@ -159,9 +138,6 @@ func AdaptResponsesClientTools(req map[string]any) (ResponsesClientToolMapping, 
 	if len(adapter.CustomTools) == 0 {
 		adapter.CustomTools = nil
 	}
-	if len(adapter.FunctionTools) == 0 {
-		adapter.FunctionTools = nil
-	}
 	if len(adapter.NamespaceTools) == 0 {
 		adapter.NamespaceTools = nil
 	}
@@ -204,7 +180,7 @@ func AdaptResponsesClientToolsWithInheritedMapping(
 	if _, toolsPresent := req["tools"]; toolsPresent {
 		return AdaptResponsesClientTools(req)
 	}
-	if len(inherited.CustomTools) == 0 && len(inherited.FunctionTools) == 0 && !inherited.ToolSearch && len(inherited.NamespaceTools) == 0 {
+	if len(inherited.CustomTools) == 0 && !inherited.ToolSearch && len(inherited.NamespaceTools) == 0 {
 		return ResponsesClientToolMapping{}, false, nil
 	}
 	if len(inheritedLoweredTools) > 0 && len(inheritedLoweredTools[0]) > 0 {
@@ -534,18 +510,11 @@ func restoreClientToolValue(value any, adapter *ResponsesClientToolMapping) bool
 		}
 	case map[string]any:
 		if strings.TrimSpace(stringValue(typed["type"])) == "function_call" {
-			sourceName := strings.TrimSpace(stringValue(typed["name"]))
-			name := sourceName
-			if canonical, ok := resolveNamespaceToolCallName(name, adapter.NamespaceTools); ok {
-				name = canonical
-				typed["name"] = canonical
-			}
-			if customName, isCustom := resolveCustomToolCallName(name, adapter.CustomTools, adapter.FunctionTools, adapter.NamespaceTools); isCustom {
+			name := strings.TrimSpace(stringValue(typed["name"]))
+			if adapter.CustomTools[name] {
 				typed["type"] = "custom_tool_call"
-				typed["name"] = customName
 				retypeResponsesToolCallItemID(typed, "custom_tool_call")
-				input := extractCustomToolCallInput(rawObjectString(typed["arguments"]))
-				typed["input"] = normalizeRestoredCustomToolInput(sourceName, input, adapter)
+				typed["input"] = extractCustomToolCallInput(rawObjectString(typed["arguments"]))
 				delete(typed, "arguments")
 				delete(typed, "namespace")
 				changed = true
@@ -578,9 +547,8 @@ type ResponsesClientToolStreamRestorer struct {
 }
 
 type responsesClientToolStreamCall struct {
-	kind       string
-	name       string
-	sourceName string
+	kind string
+	name string
 	// callID and itemID stay as the upstream sent them so later upstream
 	// events keep matching this call; clientItemID is what we emit.
 	callID       string
@@ -645,7 +613,6 @@ func (r *ResponsesClientToolStreamRestorer) Restore(event ResponsesStreamEvent) 
 			}
 			if call.kind == "custom" {
 				input := extractCustomToolCallInput(call.arguments.String())
-				input = normalizeRestoredCustomToolInput(call.sourceName, input, &r.adapter)
 				if input != "" {
 					emit(ResponsesStreamEvent{Type: "response.custom_tool_call_input.delta", OutputIndex: call.outputIdx, ItemID: call.clientItemID, Delta: input})
 				}
@@ -658,8 +625,7 @@ func (r *ResponsesClientToolStreamRestorer) Restore(event ResponsesStreamEvent) 
 		if call := r.recordItem(event); call != nil {
 			if call.kind == "custom" {
 				event.Item.Type = "custom_tool_call"
-				input := extractCustomToolCallInput(call.arguments.String())
-				event.Item.Input = normalizeRestoredCustomToolInput(call.sourceName, input, &r.adapter)
+				event.Item.Input = extractCustomToolCallInput(call.arguments.String())
 				event.Item.Arguments = ""
 				event.Item.Namespace = ""
 			} else {
@@ -767,11 +733,8 @@ func (r *ResponsesClientToolStreamRestorer) clientToolEventPayload(payload []byt
 		if raw.Item.Type != "function_call" {
 			return false
 		}
-		if _, isCustom := resolveCustomToolCallName(raw.Item.Name, r.adapter.CustomTools, r.adapter.FunctionTools, r.adapter.NamespaceTools); isCustom {
-			return true
-		}
 		_, namespaceTool := r.adapter.NamespaceTools[raw.Item.Name]
-		return (r.adapter.ToolSearch && raw.Item.Name == toolSearchProxyName) || namespaceTool || r.calls[raw.Item.ID] != nil || r.calls[raw.Item.CallID] != nil
+		return r.adapter.CustomTools[raw.Item.Name] || (r.adapter.ToolSearch && raw.Item.Name == toolSearchProxyName) || namespaceTool || r.calls[raw.Item.ID] != nil || r.calls[raw.Item.CallID] != nil
 	}
 	if _, namespaceTool := r.adapter.NamespaceTools[raw.Name]; namespaceTool {
 		return true
@@ -826,13 +789,10 @@ func (r *ResponsesClientToolStreamRestorer) recordItem(event ResponsesStreamEven
 	if event.Item == nil || event.Item.Type != "function_call" {
 		return nil
 	}
-	sourceName := event.Item.Name
-	name := sourceName
+	name := event.Item.Name
 	kind := ""
-	if customName, isCustom := resolveCustomToolCallName(name, r.adapter.CustomTools, r.adapter.FunctionTools, r.adapter.NamespaceTools); isCustom {
+	if r.adapter.CustomTools[name] {
 		kind = "custom"
-		name = customName
-		event.Item.Name = customName
 	} else if r.adapter.ToolSearch && name == toolSearchProxyName {
 		kind = "tool_search"
 	}
@@ -848,7 +808,6 @@ func (r *ResponsesClientToolStreamRestorer) recordItem(event ResponsesStreamEven
 		call = &responsesClientToolStreamCall{
 			kind:         kind,
 			name:         name,
-			sourceName:   sourceName,
 			callID:       event.Item.CallID,
 			itemID:       event.Item.ID,
 			clientItemID: retypedResponsesToolCallItemID(event.Item.ID, responsesClientToolItemType(kind)),
@@ -905,13 +864,10 @@ func restoreResponsesOutputClientTools(outputs []ResponsesOutput, adapter *Respo
 		if output.Type != "function_call" {
 			continue
 		}
-		sourceName := output.Name
-		if customName, isCustom := resolveCustomToolCallName(sourceName, adapter.CustomTools, adapter.FunctionTools, adapter.NamespaceTools); isCustom {
+		if adapter.CustomTools[output.Name] {
 			output.Type = "custom_tool_call"
-			output.Name = customName
 			output.ID = retypedResponsesToolCallItemID(output.ID, output.Type)
-			input := extractCustomToolCallInput(output.Arguments)
-			output.Input = normalizeRestoredCustomToolInput(sourceName, input, adapter)
+			output.Input = extractCustomToolCallInput(output.Arguments)
 			output.Arguments = ""
 			output.Namespace = ""
 		} else if adapter.ToolSearch && output.Name == toolSearchProxyName {
@@ -924,74 +880,4 @@ func restoreResponsesOutputClientTools(outputs []ResponsesOutput, adapter *Respo
 			output.Name, output.Namespace = name.Name, name.Namespace
 		}
 	}
-}
-
-func normalizeRestoredCustomToolInput(sourceName, input string, adapter *ResponsesClientToolMapping) string {
-	if adapter == nil || !adapter.CodeModeExecTools[strings.TrimSpace(sourceName)] {
-		return input
-	}
-	return normalizeCodeModeExecInput(input)
-}
-
-func normalizeCodeModeExecInput(input string) string {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" {
-		return input
-	}
-
-	compact := strings.ToLower(strings.Join(strings.Fields(trimmed), ""))
-	compact = strings.TrimSuffix(compact, ";")
-	if compact == "console.log(process.cwd())" || compact == "process.cwd()" ||
-		(compact == "constcwd=process.cwd();console.log(cwd);cwd" ||
-			compact == "letcwd=process.cwd();console.log(cwd);cwd" ||
-			compact == "varcwd=process.cwd();console.log(cwd);cwd") {
-		return wrapShellCommandForCodeMode("pwd")
-	}
-
-	const malformedPrefix = "await tools.exec_command("
-	const malformedSuffix = "); emit text(result.output);"
-	if strings.HasPrefix(trimmed, malformedPrefix) && strings.HasSuffix(trimmed, malformedSuffix) {
-		arguments := strings.TrimSuffix(strings.TrimPrefix(trimmed, malformedPrefix), malformedSuffix)
-		return "const result = await tools.exec_command(" + arguments + "); text(result.output);"
-	}
-
-	if strings.Contains(trimmed, "tools.exec_command(") {
-		return input
-	}
-
-	if likelyShellCommand(trimmed) {
-		return wrapShellCommandForCodeMode(input)
-	}
-	return input
-}
-
-func wrapShellCommandForCodeMode(command string) string {
-	encoded, _ := json.Marshal(command)
-	return "const result = await tools.exec_command({cmd: " + string(encoded) + "});\ntext(result.output);"
-}
-
-func likelyShellCommand(input string) bool {
-	firstLine := strings.TrimSpace(strings.SplitN(input, "\n", 2)[0])
-	lower := strings.ToLower(firstLine)
-	if lower == "" {
-		return false
-	}
-	for _, prefix := range []string{
-		"get-", "set-", "new-", "remove-", "select-", "write-", "where-object", "foreach-object",
-		"$", "./", `.\\`, "& ",
-	} {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
-	}
-	for _, command := range []string{
-		"ls", "dir", "pwd", "cd", "curl", "wget", "git", "rg", "grep", "find",
-		"python", "python3", "node", "npm", "pnpm", "go", "docker", "docker-compose",
-		"ssh", "scp", "cmd", "powershell", "pwsh",
-	} {
-		if lower == command || strings.HasPrefix(lower, command+" ") || strings.HasPrefix(lower, command+"\t") {
-			return true
-		}
-	}
-	return false
 }
