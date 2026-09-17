@@ -1,0 +1,64 @@
+name: Publish Personal GHCR Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: personal-ghcr-publish
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/laoxiechuzheng/sub2api
+  RELEASE_VERSION: 0.2.5-deepseek-responses-media-fix-20260917
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Resolve exact source commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.RELEASE_VERSION }}
+            ${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            VERSION=${{ env.RELEASE_VERSION }}
+            COMMIT=${{ steps.source.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
+
+      - name: Verify pushed manifests
+        run: |
+          docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_VERSION}"
+          docker buildx imagetools inspect "${IMAGE_NAME}:latest"
+          echo "Published source SHA: ${{ steps.source.outputs.sha }}"
