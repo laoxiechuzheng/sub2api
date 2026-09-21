@@ -100,6 +100,16 @@ func Endpoint(v string) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldEQ(FieldEndpoint, v))
 }
 
+// UserAgentContains applies equality check predicate on the "user_agent_contains" field. It's identical to UserAgentContainsEQ.
+func UserAgentContains(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldUserAgentContains, v))
+}
+
+// BodyContains applies equality check predicate on the "body_contains" field. It's identical to BodyContainsEQ.
+func BodyContains(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldBodyContains, v))
+}
+
 // Priority applies equality check predicate on the "priority" field. It's identical to PriorityEQ.
 func Priority(v int) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldEQ(FieldPriority, v))
@@ -588,6 +598,136 @@ func EndpointEqualFold(v string) predicate.CompositeModelRoute {
 // EndpointContainsFold applies the ContainsFold predicate on the "endpoint" field.
 func EndpointContainsFold(v string) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldContainsFold(FieldEndpoint, v))
+}
+
+// UserAgentContainsEQ applies the EQ predicate on the "user_agent_contains" field.
+func UserAgentContainsEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsNEQ applies the NEQ predicate on the "user_agent_contains" field.
+func UserAgentContainsNEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNEQ(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsIn applies the In predicate on the "user_agent_contains" field.
+func UserAgentContainsIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldIn(FieldUserAgentContains, vs...))
+}
+
+// UserAgentContainsNotIn applies the NotIn predicate on the "user_agent_contains" field.
+func UserAgentContainsNotIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNotIn(FieldUserAgentContains, vs...))
+}
+
+// UserAgentContainsGT applies the GT predicate on the "user_agent_contains" field.
+func UserAgentContainsGT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGT(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsGTE applies the GTE predicate on the "user_agent_contains" field.
+func UserAgentContainsGTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGTE(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsLT applies the LT predicate on the "user_agent_contains" field.
+func UserAgentContainsLT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLT(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsLTE applies the LTE predicate on the "user_agent_contains" field.
+func UserAgentContainsLTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLTE(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsContains applies the Contains predicate on the "user_agent_contains" field.
+func UserAgentContainsContains(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContains(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsHasPrefix applies the HasPrefix predicate on the "user_agent_contains" field.
+func UserAgentContainsHasPrefix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasPrefix(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsHasSuffix applies the HasSuffix predicate on the "user_agent_contains" field.
+func UserAgentContainsHasSuffix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasSuffix(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsEqualFold applies the EqualFold predicate on the "user_agent_contains" field.
+func UserAgentContainsEqualFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEqualFold(FieldUserAgentContains, v))
+}
+
+// UserAgentContainsContainsFold applies the ContainsFold predicate on the "user_agent_contains" field.
+func UserAgentContainsContainsFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContainsFold(FieldUserAgentContains, v))
+}
+
+// BodyContainsEQ applies the EQ predicate on the "body_contains" field.
+func BodyContainsEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldBodyContains, v))
+}
+
+// BodyContainsNEQ applies the NEQ predicate on the "body_contains" field.
+func BodyContainsNEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNEQ(FieldBodyContains, v))
+}
+
+// BodyContainsIn applies the In predicate on the "body_contains" field.
+func BodyContainsIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldIn(FieldBodyContains, vs...))
+}
+
+// BodyContainsNotIn applies the NotIn predicate on the "body_contains" field.
+func BodyContainsNotIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNotIn(FieldBodyContains, vs...))
+}
+
+// BodyContainsGT applies the GT predicate on the "body_contains" field.
+func BodyContainsGT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGT(FieldBodyContains, v))
+}
+
+// BodyContainsGTE applies the GTE predicate on the "body_contains" field.
+func BodyContainsGTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGTE(FieldBodyContains, v))
+}
+
+// BodyContainsLT applies the LT predicate on the "body_contains" field.
+func BodyContainsLT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLT(FieldBodyContains, v))
+}
+
+// BodyContainsLTE applies the LTE predicate on the "body_contains" field.
+func BodyContainsLTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLTE(FieldBodyContains, v))
+}
+
+// BodyContainsContains applies the Contains predicate on the "body_contains" field.
+func BodyContainsContains(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContains(FieldBodyContains, v))
+}
+
+// BodyContainsHasPrefix applies the HasPrefix predicate on the "body_contains" field.
+func BodyContainsHasPrefix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasPrefix(FieldBodyContains, v))
+}
+
+// BodyContainsHasSuffix applies the HasSuffix predicate on the "body_contains" field.
+func BodyContainsHasSuffix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasSuffix(FieldBodyContains, v))
+}
+
+// BodyContainsEqualFold applies the EqualFold predicate on the "body_contains" field.
+func BodyContainsEqualFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEqualFold(FieldBodyContains, v))
+}
+
+// BodyContainsContainsFold applies the ContainsFold predicate on the "body_contains" field.
+func BodyContainsContainsFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContainsFold(FieldBodyContains, v))
 }
 
 // PriorityEQ applies the EQ predicate on the "priority" field.

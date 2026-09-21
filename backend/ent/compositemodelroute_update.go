@@ -139,6 +139,34 @@ func (_u *CompositeModelRouteUpdate) SetNillableEndpoint(v *string) *CompositeMo
 	return _u
 }
 
+// SetUserAgentContains sets the "user_agent_contains" field.
+func (_u *CompositeModelRouteUpdate) SetUserAgentContains(v string) *CompositeModelRouteUpdate {
+	_u.mutation.SetUserAgentContains(v)
+	return _u
+}
+
+// SetNillableUserAgentContains sets the "user_agent_contains" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdate) SetNillableUserAgentContains(v *string) *CompositeModelRouteUpdate {
+	if v != nil {
+		_u.SetUserAgentContains(*v)
+	}
+	return _u
+}
+
+// SetBodyContains sets the "body_contains" field.
+func (_u *CompositeModelRouteUpdate) SetBodyContains(v string) *CompositeModelRouteUpdate {
+	_u.mutation.SetBodyContains(v)
+	return _u
+}
+
+// SetNillableBodyContains sets the "body_contains" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdate) SetNillableBodyContains(v *string) *CompositeModelRouteUpdate {
+	if v != nil {
+		_u.SetBodyContains(*v)
+	}
+	return _u
+}
+
 // SetPriority sets the "priority" field.
 func (_u *CompositeModelRouteUpdate) SetPriority(v int) *CompositeModelRouteUpdate {
 	_u.mutation.ResetPriority()
@@ -321,6 +349,12 @@ func (_u *CompositeModelRouteUpdate) sqlSave(ctx context.Context) (_node int, er
 	if value, ok := _u.mutation.Endpoint(); ok {
 		_spec.SetField(compositemodelroute.FieldEndpoint, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.UserAgentContains(); ok {
+		_spec.SetField(compositemodelroute.FieldUserAgentContains, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BodyContains(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyContains, field.TypeString, value)
+	}
 	if value, ok := _u.mutation.Priority(); ok {
 		_spec.SetField(compositemodelroute.FieldPriority, field.TypeInt, value)
 	}
@@ -491,6 +525,34 @@ func (_u *CompositeModelRouteUpdateOne) SetEndpoint(v string) *CompositeModelRou
 func (_u *CompositeModelRouteUpdateOne) SetNillableEndpoint(v *string) *CompositeModelRouteUpdateOne {
 	if v != nil {
 		_u.SetEndpoint(*v)
+	}
+	return _u
+}
+
+// SetUserAgentContains sets the "user_agent_contains" field.
+func (_u *CompositeModelRouteUpdateOne) SetUserAgentContains(v string) *CompositeModelRouteUpdateOne {
+	_u.mutation.SetUserAgentContains(v)
+	return _u
+}
+
+// SetNillableUserAgentContains sets the "user_agent_contains" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdateOne) SetNillableUserAgentContains(v *string) *CompositeModelRouteUpdateOne {
+	if v != nil {
+		_u.SetUserAgentContains(*v)
+	}
+	return _u
+}
+
+// SetBodyContains sets the "body_contains" field.
+func (_u *CompositeModelRouteUpdateOne) SetBodyContains(v string) *CompositeModelRouteUpdateOne {
+	_u.mutation.SetBodyContains(v)
+	return _u
+}
+
+// SetNillableBodyContains sets the "body_contains" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdateOne) SetNillableBodyContains(v *string) *CompositeModelRouteUpdateOne {
+	if v != nil {
+		_u.SetBodyContains(*v)
 	}
 	return _u
 }
@@ -706,6 +768,12 @@ func (_u *CompositeModelRouteUpdateOne) sqlSave(ctx context.Context) (_node *Com
 	}
 	if value, ok := _u.mutation.Endpoint(); ok {
 		_spec.SetField(compositemodelroute.FieldEndpoint, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.UserAgentContains(); ok {
+		_spec.SetField(compositemodelroute.FieldUserAgentContains, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BodyContains(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyContains, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.Priority(); ok {
 		_spec.SetField(compositemodelroute.FieldPriority, field.TypeInt, value)

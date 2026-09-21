@@ -220,7 +220,10 @@ func (s *adminServiceImpl) PreviewCompositeRoute(ctx context.Context, groupID in
 	if resolver == nil {
 		resolver = NewCompositeRouteResolver(s.compositeRouteRepo)
 	}
-	decision, err := resolver.Resolve(ctx, groupID, input.Model, input.Endpoint)
+	decision, err := resolver.ResolveWithMatch(ctx, groupID, input.Model, input.Endpoint, CompositeRouteRequestMatch{
+		UserAgent: input.UserAgent,
+		Body:      []byte(input.Body),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +254,11 @@ func (s *adminServiceImpl) compositeRouteBelongsToGroup(ctx context.Context, gro
 	return false, nil
 }
 
+const (
+	maxCompositeRouteUserAgentConditionBytes = 2048
+	maxCompositeRouteBodyConditionBytes      = 8192
+)
+
 func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*CompositeModelRoute, error) {
 	input = normalizeCompositeRouteInput(input)
 	if input.PublicModel == "" {
@@ -259,19 +267,27 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 	if !isConcreteRequestPlatform(input.TargetPlatform) {
 		return nil, fmt.Errorf("target_platform must be a concrete provider")
 	}
+	if len(input.UserAgentContains) > maxCompositeRouteUserAgentConditionBytes {
+		return nil, fmt.Errorf("user_agent_contains is too long (max %d bytes)", maxCompositeRouteUserAgentConditionBytes)
+	}
+	if len(input.BodyContains) > maxCompositeRouteBodyConditionBytes {
+		return nil, fmt.Errorf("body_contains is too long (max %d bytes)", maxCompositeRouteBodyConditionBytes)
+	}
 	if input.Priority == 0 {
 		input.Priority = 100
 	}
 	return &CompositeModelRoute{
-		GroupID:        groupID,
-		PublicModel:    input.PublicModel,
-		MatchType:      input.MatchType,
-		TargetPlatform: input.TargetPlatform,
-		UpstreamModel:  input.UpstreamModel,
-		Endpoint:       input.Endpoint,
-		Priority:       input.Priority,
-		Enabled:        input.Enabled,
-		Notes:          input.Notes,
+		GroupID:           groupID,
+		PublicModel:       input.PublicModel,
+		MatchType:         input.MatchType,
+		TargetPlatform:    input.TargetPlatform,
+		UpstreamModel:     input.UpstreamModel,
+		Endpoint:          input.Endpoint,
+		UserAgentContains: input.UserAgentContains,
+		BodyContains:      input.BodyContains,
+		Priority:          input.Priority,
+		Enabled:           input.Enabled,
+		Notes:             input.Notes,
 	}, nil
 }
 

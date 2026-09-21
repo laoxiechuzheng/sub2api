@@ -19707,27 +19707,29 @@ func (m *ChannelMonitorRequestTemplateMutation) ResetEdge(name string) error {
 // CompositeModelRouteMutation represents an operation that mutates the CompositeModelRoute nodes in the graph.
 type CompositeModelRouteMutation struct {
 	config
-	op              Op
-	typ             string
-	id              *int64
-	created_at      *time.Time
-	updated_at      *time.Time
-	deleted_at      *time.Time
-	public_model    *string
-	match_type      *string
-	target_platform *string
-	upstream_model  *string
-	endpoint        *string
-	priority        *int
-	addpriority     *int
-	enabled         *bool
-	notes           *string
-	clearedFields   map[string]struct{}
-	group           *int64
-	clearedgroup    bool
-	done            bool
-	oldValue        func(context.Context) (*CompositeModelRoute, error)
-	predicates      []predicate.CompositeModelRoute
+	op                  Op
+	typ                 string
+	id                  *int64
+	created_at          *time.Time
+	updated_at          *time.Time
+	deleted_at          *time.Time
+	public_model        *string
+	match_type          *string
+	target_platform     *string
+	upstream_model      *string
+	endpoint            *string
+	user_agent_contains *string
+	body_contains       *string
+	priority            *int
+	addpriority         *int
+	enabled             *bool
+	notes               *string
+	clearedFields       map[string]struct{}
+	group               *int64
+	clearedgroup        bool
+	done                bool
+	oldValue            func(context.Context) (*CompositeModelRoute, error)
+	predicates          []predicate.CompositeModelRoute
 }
 
 var _ ent.Mutation = (*CompositeModelRouteMutation)(nil)
@@ -20165,6 +20167,78 @@ func (m *CompositeModelRouteMutation) ResetEndpoint() {
 	m.endpoint = nil
 }
 
+// SetUserAgentContains sets the "user_agent_contains" field.
+func (m *CompositeModelRouteMutation) SetUserAgentContains(s string) {
+	m.user_agent_contains = &s
+}
+
+// UserAgentContains returns the value of the "user_agent_contains" field in the mutation.
+func (m *CompositeModelRouteMutation) UserAgentContains() (r string, exists bool) {
+	v := m.user_agent_contains
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserAgentContains returns the old "user_agent_contains" field's value of the CompositeModelRoute entity.
+// If the CompositeModelRoute object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CompositeModelRouteMutation) OldUserAgentContains(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserAgentContains is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserAgentContains requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserAgentContains: %w", err)
+	}
+	return oldValue.UserAgentContains, nil
+}
+
+// ResetUserAgentContains resets all changes to the "user_agent_contains" field.
+func (m *CompositeModelRouteMutation) ResetUserAgentContains() {
+	m.user_agent_contains = nil
+}
+
+// SetBodyContains sets the "body_contains" field.
+func (m *CompositeModelRouteMutation) SetBodyContains(s string) {
+	m.body_contains = &s
+}
+
+// BodyContains returns the value of the "body_contains" field in the mutation.
+func (m *CompositeModelRouteMutation) BodyContains() (r string, exists bool) {
+	v := m.body_contains
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldBodyContains returns the old "body_contains" field's value of the CompositeModelRoute entity.
+// If the CompositeModelRoute object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CompositeModelRouteMutation) OldBodyContains(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldBodyContains is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldBodyContains requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldBodyContains: %w", err)
+	}
+	return oldValue.BodyContains, nil
+}
+
+// ResetBodyContains resets all changes to the "body_contains" field.
+func (m *CompositeModelRouteMutation) ResetBodyContains() {
+	m.body_contains = nil
+}
+
 // SetPriority sets the "priority" field.
 func (m *CompositeModelRouteMutation) SetPriority(i int) {
 	m.priority = &i
@@ -20367,7 +20441,7 @@ func (m *CompositeModelRouteMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *CompositeModelRouteMutation) Fields() []string {
-	fields := make([]string, 0, 12)
+	fields := make([]string, 0, 14)
 	if m.created_at != nil {
 		fields = append(fields, compositemodelroute.FieldCreatedAt)
 	}
@@ -20394,6 +20468,12 @@ func (m *CompositeModelRouteMutation) Fields() []string {
 	}
 	if m.endpoint != nil {
 		fields = append(fields, compositemodelroute.FieldEndpoint)
+	}
+	if m.user_agent_contains != nil {
+		fields = append(fields, compositemodelroute.FieldUserAgentContains)
+	}
+	if m.body_contains != nil {
+		fields = append(fields, compositemodelroute.FieldBodyContains)
 	}
 	if m.priority != nil {
 		fields = append(fields, compositemodelroute.FieldPriority)
@@ -20430,6 +20510,10 @@ func (m *CompositeModelRouteMutation) Field(name string) (ent.Value, bool) {
 		return m.UpstreamModel()
 	case compositemodelroute.FieldEndpoint:
 		return m.Endpoint()
+	case compositemodelroute.FieldUserAgentContains:
+		return m.UserAgentContains()
+	case compositemodelroute.FieldBodyContains:
+		return m.BodyContains()
 	case compositemodelroute.FieldPriority:
 		return m.Priority()
 	case compositemodelroute.FieldEnabled:
@@ -20463,6 +20547,10 @@ func (m *CompositeModelRouteMutation) OldField(ctx context.Context, name string)
 		return m.OldUpstreamModel(ctx)
 	case compositemodelroute.FieldEndpoint:
 		return m.OldEndpoint(ctx)
+	case compositemodelroute.FieldUserAgentContains:
+		return m.OldUserAgentContains(ctx)
+	case compositemodelroute.FieldBodyContains:
+		return m.OldBodyContains(ctx)
 	case compositemodelroute.FieldPriority:
 		return m.OldPriority(ctx)
 	case compositemodelroute.FieldEnabled:
@@ -20540,6 +20628,20 @@ func (m *CompositeModelRouteMutation) SetField(name string, value ent.Value) err
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetEndpoint(v)
+		return nil
+	case compositemodelroute.FieldUserAgentContains:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserAgentContains(v)
+		return nil
+	case compositemodelroute.FieldBodyContains:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetBodyContains(v)
 		return nil
 	case compositemodelroute.FieldPriority:
 		v, ok := value.(int)
@@ -20667,6 +20769,12 @@ func (m *CompositeModelRouteMutation) ResetField(name string) error {
 		return nil
 	case compositemodelroute.FieldEndpoint:
 		m.ResetEndpoint()
+		return nil
+	case compositemodelroute.FieldUserAgentContains:
+		m.ResetUserAgentContains()
+		return nil
+	case compositemodelroute.FieldBodyContains:
+		m.ResetBodyContains()
 		return nil
 	case compositemodelroute.FieldPriority:
 		m.ResetPriority()

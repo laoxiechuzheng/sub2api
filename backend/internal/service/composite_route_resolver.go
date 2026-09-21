@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -23,6 +25,14 @@ func (r *CompositeRouteResolver) SetModelOwnershipResolver(resolver CompositeMod
 }
 
 func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, model, endpoint string) (CompositeRouteDecision, error) {
+	return r.ResolveWithMatch(ctx, groupID, model, endpoint, CompositeRouteRequestMatch{})
+}
+
+// ResolveWithMatch resolves a route using both the model/endpoint scope and the
+// inbound request facts. Routes with request conditions are evaluated as an
+// override layer first, so a conditional compaction rule can beat an existing
+// exact model route without changing that route's configuration.
+func (r *CompositeRouteResolver) ResolveWithMatch(ctx context.Context, groupID int64, model, endpoint string, match CompositeRouteRequestMatch) (CompositeRouteDecision, error) {
 	model = strings.TrimSpace(model)
 	endpoint = normalizeCompositeRouteEndpoint(endpoint)
 	decision := CompositeRouteDecision{
@@ -40,7 +50,7 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 		if err != nil {
 			return decision, fmt.Errorf("list composite routes: %w", err)
 		}
-		if route, ok := matchCompositeRoute(routes, model, endpoint); ok {
+		if route, ok := matchCompositeRoute(routes, model, endpoint, match); ok {
 			upstreamModel := strings.TrimSpace(route.UpstreamModel)
 			if upstreamModel == "" {
 				upstreamModel = model
@@ -102,7 +112,31 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 	return decision, nil
 }
 
-func matchCompositeRoute(routes []CompositeModelRoute, model, endpoint string) (CompositeModelRoute, bool) {
+func matchCompositeRoute(routes []CompositeModelRoute, model, endpoint string, match CompositeRouteRequestMatch) (CompositeModelRoute, bool) {
+	if len(routes) == 0 {
+		return CompositeModelRoute{}, false
+	}
+
+	conditional := make([]CompositeModelRoute, 0, len(routes))
+	fallback := make([]CompositeModelRoute, 0, len(routes))
+	for _, route := range routes {
+		if compositeRouteHasRequestConditions(route) {
+			conditional = append(conditional, route)
+			continue
+		}
+		fallback = append(fallback, route)
+	}
+	if route, ok := bestCompositeRoute(conditional, model, endpoint, match); ok {
+		return route, true
+	}
+	return bestCompositeRoute(fallback, model, endpoint, match)
+}
+
+func compositeRouteHasRequestConditions(route CompositeModelRoute) bool {
+	return strings.TrimSpace(route.UserAgentContains) != "" || strings.TrimSpace(route.BodyContains) != ""
+}
+
+func bestCompositeRoute(routes []CompositeModelRoute, model, endpoint string, match CompositeRouteRequestMatch) (CompositeModelRoute, bool) {
 	if len(routes) == 0 {
 		return CompositeModelRoute{}, false
 	}
@@ -132,13 +166,21 @@ func matchCompositeRoute(routes []CompositeModelRoute, model, endpoint string) (
 			if publicModel != model {
 				continue
 			}
-			matchStrength = 2
+			matchStrength = 3
 		case CompositeRouteMatchPrefix:
 			if !strings.HasPrefix(model, publicModel) {
 				continue
 			}
+			matchStrength = 2
+		case CompositeRouteMatchContains:
+			if !strings.Contains(model, publicModel) {
+				continue
+			}
 			matchStrength = 1
 		default:
+			continue
+		}
+		if !compositeRouteRequestConditionsMatch(route, match) {
 			continue
 		}
 		endpointWeight := 0
@@ -173,4 +215,63 @@ func matchCompositeRoute(routes []CompositeModelRoute, model, endpoint string) (
 		return a.route.ID < b.route.ID
 	})
 	return candidates[0].route, true
+}
+
+func compositeRouteRequestConditionsMatch(route CompositeModelRoute, match CompositeRouteRequestMatch) bool {
+	if match.IgnoreRequestConditions {
+		return true
+	}
+	uaPatterns := splitCompositeRouteConditionPatterns(route.UserAgentContains)
+	if len(uaPatterns) > 0 {
+		userAgent := strings.TrimSpace(match.UserAgent)
+		if userAgent == "" {
+			return false
+		}
+		userAgent = strings.ToLower(userAgent)
+		matched := false
+		for _, pattern := range uaPatterns {
+			if strings.Contains(userAgent, strings.ToLower(pattern)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	bodyPatterns := splitCompositeRouteConditionPatterns(route.BodyContains)
+	if len(bodyPatterns) > 0 {
+		if len(match.Body) == 0 {
+			return false
+		}
+		matched := false
+		for _, pattern := range bodyPatterns {
+			if requestBodyContainsPattern(match.Body, pattern) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func requestBodyContainsPattern(body []byte, pattern string) bool {
+	if len(body) == 0 || pattern == "" {
+		return false
+	}
+	if bytes.Contains(body, []byte(pattern)) {
+		return true
+	}
+	// Request bodies are normally JSON, so signatures containing quotes or
+	// newlines appear escaped in the raw payload. Accept that representation too.
+	encoded, err := json.Marshal(pattern)
+	if err != nil || len(encoded) < 2 {
+		return false
+	}
+	escaped := string(encoded[1 : len(encoded)-1])
+	return escaped != pattern && bytes.Contains(body, []byte(escaped))
 }

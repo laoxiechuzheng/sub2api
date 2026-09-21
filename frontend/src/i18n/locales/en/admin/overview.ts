@@ -1191,6 +1191,14 @@ export default {
         upstreamModelHint: 'Leave empty to pass the original requested model through: under prefix match each matched model forwards verbatim (e.g. deepseek-v4-flash and deepseek-v4-pro each forwarded as-is); set a value to forward every matched request to that fixed model.',
         notes: 'Notes',
         enabled: 'Enabled',
+        conditionsBadge: 'Conditional',
+        requestConditions: 'Request conditions (optional)',
+        userAgentContains: 'User-Agent contains',
+        userAgentContainsPlaceholder: 'e.g. codex',
+        bodyContains: 'Request body contains',
+        bodyContainsPlaceholder: 'e.g. You are performing a CONTEXT CHECKPOINT COMPACTION',
+        conditionsHint:
+          'One signature per line; any matching line is enough. Multiple fields are ANDed. User-Agent ignores case; the body is case-sensitive. Conditional routes override plain routes.',
         preview: 'Preview',
         matched: 'Matched',
         notMatched: 'No Match',
@@ -1215,7 +1223,8 @@ export default {
         },
         match: {
           exact: 'Exact',
-          prefix: 'Prefix'
+          prefix: 'Prefix',
+          contains: 'Contains'
         },
         sources: {
           route: 'Route',

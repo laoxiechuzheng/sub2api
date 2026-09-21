@@ -134,6 +134,77 @@ func TestCompositeTargetPlatformMiddlewareUsesExplicitRouteAndRewritesBody(t *te
 	require.Equal(t, http.StatusNoContent, w.Code)
 }
 
+func TestCompositeTargetPlatformMiddlewareUsesConditionalRouteFromRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	resolver := service.NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []service.CompositeModelRoute{
+			{
+				ID:             1,
+				GroupID:        1,
+				PublicModel:    "gpt-5.6-sol",
+				MatchType:      service.CompositeRouteMatchExact,
+				TargetPlatform: service.PlatformAnthropic,
+				UpstreamModel:  "claude-opus-5",
+				Endpoint:       service.CompositeRouteEndpointResponses,
+				Enabled:        true,
+			},
+			{
+				ID:                2,
+				GroupID:           1,
+				PublicModel:       "gpt",
+				MatchType:         service.CompositeRouteMatchContains,
+				TargetPlatform:    service.PlatformDeepseek,
+				UpstreamModel:     "DeepSeek-V4-Flash",
+				Endpoint:          service.CompositeRouteEndpointResponses,
+				UserAgentContains: "codex",
+				BodyContains:      "CONTEXT CHECKPOINT COMPACTION",
+				Enabled:           true,
+			},
+		},
+	})
+	router.Use(gin.HandlerFunc(servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+		groupID := int64(1)
+		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+			GroupID: &groupID,
+			Group:   &service.Group{ID: groupID, Platform: service.PlatformComposite},
+		})
+		c.Next()
+	})))
+	router.Use(compositeTargetPlatformMiddleware(resolver))
+	router.POST("/v1/responses", func(c *gin.Context) {
+		platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context())
+		require.True(t, ok)
+		require.Equal(t, service.PlatformDeepseek, platform)
+
+		upstreamModel, ok := service.ResolvedUpstreamModelFromContext(c.Request.Context())
+		require.True(t, ok)
+		require.Equal(t, "DeepSeek-V4-Flash", upstreamModel)
+
+		body, err := io.ReadAll(c.Request.Body)
+		require.NoError(t, err)
+		require.JSONEq(
+			t,
+			`{"model":"DeepSeek-V4-Flash","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"You are performing a CONTEXT CHECKPOINT COMPACTION"}]}]}`,
+			string(body),
+		)
+		c.Status(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/responses",
+		strings.NewReader(`{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"You are performing a CONTEXT CHECKPOINT COMPACTION"}]}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Codex Desktop/0.155.0")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNoContent, w.Code)
+}
+
 func TestCompositeTargetPlatformMiddlewareRewritesNestedLiveModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

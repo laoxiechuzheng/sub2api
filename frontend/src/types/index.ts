@@ -669,7 +669,7 @@ export interface CodexModelsManifestConfig {
   fallback_to_scheduler: boolean
 }
 
-export type CompositeRouteMatchType = 'exact' | 'prefix'
+export type CompositeRouteMatchType = 'exact' | 'prefix' | 'contains'
 
 export type CompositeRouteEndpoint =
   | 'any'
@@ -691,6 +691,8 @@ export interface CompositeModelRoute {
   target_platform: Exclude<GroupPlatform, 'composite'>
   upstream_model: string
   endpoint: CompositeRouteEndpoint
+  user_agent_contains: string
+  body_contains: string
   priority: number
   enabled: boolean
   notes: string
@@ -704,6 +706,8 @@ export interface CompositeModelRouteInput {
   target_platform: Exclude<GroupPlatform, 'composite'>
   upstream_model?: string
   endpoint: CompositeRouteEndpoint
+  user_agent_contains?: string
+  body_contains?: string
   priority?: number
   enabled?: boolean
   notes?: string
@@ -712,6 +716,8 @@ export interface CompositeModelRouteInput {
 export interface CompositeRoutePreviewRequest {
   model: string
   endpoint: CompositeRouteEndpoint
+  user_agent?: string
+  body?: string
 }
 
 export interface CompositeRouteDecision {
