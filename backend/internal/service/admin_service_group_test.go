@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -2044,6 +2045,57 @@ func TestAdminService_CreateCompositeRoute_NormalizesAndPersists(t *testing.T) {
 	require.True(t, route.Enabled)
 	require.Equal(t, "route note", route.Notes)
 	require.Equal(t, route, routeRepo.created)
+}
+
+func TestAdminService_CreateCompositeRoute_NormalizesRequestConditions(t *testing.T) {
+	groupRepo := &groupRepoStubForAdmin{
+		getByID: &Group{ID: 7, Platform: PlatformComposite},
+	}
+	routeRepo := &compositeRouteRepoStubForAdmin{nextID: 100}
+	svc := &adminServiceImpl{groupRepo: groupRepo, compositeRouteRepo: routeRepo}
+
+	route, err := svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+		PublicModel:       "gpt",
+		MatchType:         CompositeRouteMatchContains,
+		TargetPlatform:    PlatformDeepseek,
+		UpstreamModel:     " DeepSeek-V4-Flash ",
+		Endpoint:          CompositeRouteEndpointResponses,
+		UserAgentContains: " Codex \nCodex\n\nCodex Desktop ",
+		BodyContains:      " first signature \r\nsecond signature\r\n\r\nfirst signature ",
+		Enabled:           true,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, route)
+	require.Equal(t, CompositeRouteMatchContains, route.MatchType)
+	require.Equal(t, "Codex\nCodex Desktop", route.UserAgentContains)
+	require.Equal(t, "first signature\nsecond signature", route.BodyContains)
+	require.Equal(t, "DeepSeek-V4-Flash", route.UpstreamModel)
+	require.Equal(t, route, routeRepo.created)
+}
+
+func TestAdminService_CreateCompositeRoute_RejectsOversizedRequestConditions(t *testing.T) {
+	groupRepo := &groupRepoStubForAdmin{
+		getByID: &Group{ID: 7, Platform: PlatformComposite},
+	}
+	routeRepo := &compositeRouteRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: groupRepo, compositeRouteRepo: routeRepo}
+
+	_, err := svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+		PublicModel:       "gpt",
+		TargetPlatform:    PlatformOpenAI,
+		UserAgentContains: strings.Repeat("a", maxCompositeRouteUserAgentConditionBytes+1),
+		Enabled:           true,
+	})
+	require.ErrorContains(t, err, "user_agent_contains is too long")
+
+	_, err = svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+		PublicModel:    "gpt",
+		TargetPlatform: PlatformOpenAI,
+		BodyContains:   strings.Repeat("b", maxCompositeRouteBodyConditionBytes+1),
+		Enabled:        true,
+	})
+	require.ErrorContains(t, err, "body_contains is too long")
 }
 
 // TestAdminService_CreateCompositeRoute_ExactEmptyUpstreamBackfillsPublicModel 锁定

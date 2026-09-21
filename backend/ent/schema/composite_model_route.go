@@ -41,7 +41,7 @@ func (CompositeModelRoute) Fields() []ent.Field {
 		field.String("match_type").
 			MaxLen(20).
 			Default("exact").
-			Comment("exact or prefix."),
+			Comment("exact, prefix, or contains."),
 		field.String("target_platform").
 			MaxLen(50).
 			Default(domain.PlatformOpenAI).
@@ -54,6 +54,14 @@ func (CompositeModelRoute) Fields() []ent.Field {
 			MaxLen(50).
 			Default("any").
 			Comment("Endpoint scope such as any, messages, responses, chat_completions."),
+		field.String("user_agent_contains").
+			SchemaType(map[string]string{dialect.Postgres: "text"}).
+			Default("").
+			Comment("Newline-separated User-Agent substrings; empty disables the condition."),
+		field.String("body_contains").
+			SchemaType(map[string]string{dialect.Postgres: "text"}).
+			Default("").
+			Comment("Newline-separated request-body substrings; empty disables the condition."),
 		field.Int("priority").
 			Default(100).
 			Comment("Lower values win within the same match strength."),

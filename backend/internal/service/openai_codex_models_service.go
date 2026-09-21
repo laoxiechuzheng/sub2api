@@ -993,7 +993,7 @@ func resolveCodexCatalogMetadataModel(
 		if !compositeRoutesAvailable {
 			return modelID
 		}
-		if route, matched := matchCompositeRoute(compositeRoutes, modelID, CompositeRouteEndpointResponses); matched {
+		if route, matched := matchCompositeRoute(compositeRoutes, modelID, CompositeRouteEndpointResponses, CompositeRouteRequestMatch{IgnoreRequestConditions: true}); matched {
 			if upstreamModel := strings.TrimSpace(route.UpstreamModel); upstreamModel != "" {
 				return upstreamModel
 			}
@@ -1147,7 +1147,7 @@ func resolveCodexCompositeModelTarget(
 	if !routesAvailable {
 		return "", "", false
 	}
-	if route, matched := matchCompositeRoute(routes, modelID, CompositeRouteEndpointResponses); matched {
+	if route, matched := matchCompositeRoute(routes, modelID, CompositeRouteEndpointResponses, CompositeRouteRequestMatch{IgnoreRequestConditions: true}); matched {
 		upstreamModel := strings.TrimSpace(route.UpstreamModel)
 		if upstreamModel == "" {
 			upstreamModel = modelID
@@ -1189,6 +1189,10 @@ func codexCompositeRouteMatchesModel(routes []CompositeModelRoute, modelID strin
 		switch normalizeCompositeRouteMatchType(route.MatchType) {
 		case CompositeRouteMatchPrefix:
 			if strings.HasPrefix(modelID, publicModel) {
+				return true
+			}
+		case CompositeRouteMatchContains:
+			if strings.Contains(modelID, publicModel) {
 				return true
 			}
 		default:

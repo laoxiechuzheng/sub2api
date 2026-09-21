@@ -42,6 +42,177 @@ func (s compositeRouteRepoStub) DeleteByGroup(ctx context.Context, groupID int64
 	return nil
 }
 
+func TestCompositeRouteResolverConditionalRouteOverridesExactRoute(t *testing.T) {
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{
+			{
+				ID:             1,
+				GroupID:        7,
+				PublicModel:    "gpt-5.6-sol",
+				MatchType:      CompositeRouteMatchExact,
+				TargetPlatform: PlatformAnthropic,
+				UpstreamModel:  "claude-opus-5",
+				Endpoint:       CompositeRouteEndpointResponses,
+				Enabled:        true,
+			},
+			{
+				ID:                2,
+				GroupID:           7,
+				PublicModel:       "gpt",
+				MatchType:         CompositeRouteMatchContains,
+				TargetPlatform:    PlatformDeepseek,
+				UpstreamModel:     "DeepSeek-V4-Flash",
+				Endpoint:          CompositeRouteEndpointResponses,
+				UserAgentContains: "codex",
+				BodyContains:      "CONTEXT CHECKPOINT COMPACTION",
+				Enabled:           true,
+			},
+		},
+	})
+
+	decision, err := resolver.ResolveWithMatch(
+		context.Background(),
+		7,
+		"gpt-5.6-sol",
+		CompositeRouteEndpointResponses,
+		CompositeRouteRequestMatch{
+			UserAgent: "Codex Desktop/0.155.0",
+			Body:      []byte(`{"input":[{"text":"You are performing a CONTEXT CHECKPOINT COMPACTION"}]}`),
+		},
+	)
+
+	require.NoError(t, err)
+	require.True(t, decision.Matched)
+	require.NotNil(t, decision.Route)
+	require.Equal(t, int64(2), decision.Route.ID)
+	require.Equal(t, PlatformDeepseek, decision.TargetPlatform)
+	require.Equal(t, "DeepSeek-V4-Flash", decision.UpstreamModel)
+}
+
+func TestCompositeRouteResolverConditionalRouteFallsBackWhenRequestDoesNotMatch(t *testing.T) {
+	exactRoute := CompositeModelRoute{
+		ID:             1,
+		GroupID:        7,
+		PublicModel:    "gpt-5.6-sol",
+		MatchType:      CompositeRouteMatchExact,
+		TargetPlatform: PlatformAnthropic,
+		UpstreamModel:  "claude-opus-5",
+		Endpoint:       CompositeRouteEndpointResponses,
+		Enabled:        true,
+	}
+	conditionalRoute := CompositeModelRoute{
+		ID:                2,
+		GroupID:           7,
+		PublicModel:       "gpt",
+		MatchType:         CompositeRouteMatchContains,
+		TargetPlatform:    PlatformDeepseek,
+		UpstreamModel:     "DeepSeek-V4-Flash",
+		Endpoint:          CompositeRouteEndpointResponses,
+		UserAgentContains: "codex",
+		BodyContains:      "CONTEXT CHECKPOINT COMPACTION",
+		Enabled:           true,
+	}
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{exactRoute, conditionalRoute},
+	})
+
+	tests := []struct {
+		name  string
+		match CompositeRouteRequestMatch
+	}{
+		{name: "missing request facts"},
+		{
+			name: "wrong user agent",
+			match: CompositeRouteRequestMatch{
+				UserAgent: "curl/8.6.0",
+				Body:      []byte(`CONTEXT CHECKPOINT COMPACTION`),
+			},
+		},
+		{
+			name: "missing body signature",
+			match: CompositeRouteRequestMatch{
+				UserAgent: "Codex Desktop/0.155.0",
+				Body:      []byte(`{"input":[{"text":"hello"}]}`),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision, err := resolver.ResolveWithMatch(
+				context.Background(), 7, "gpt-5.6-sol", CompositeRouteEndpointResponses, tt.match,
+			)
+
+			require.NoError(t, err)
+			require.True(t, decision.Matched)
+			require.NotNil(t, decision.Route)
+			require.Equal(t, int64(1), decision.Route.ID)
+			require.Equal(t, "claude-opus-5", decision.UpstreamModel)
+		})
+	}
+}
+
+func TestCompositeRouteResolverUserAgentConditionIgnoresCase(t *testing.T) {
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{
+			{
+				ID:                1,
+				GroupID:           7,
+				PublicModel:       "claude",
+				MatchType:         CompositeRouteMatchContains,
+				TargetPlatform:    PlatformOpenAI,
+				UpstreamModel:     "gpt-5.4-mini",
+				Endpoint:          CompositeRouteEndpointAny,
+				UserAgentContains: "Codex",
+				Enabled:           true,
+			},
+		},
+	})
+
+	decision, err := resolver.ResolveWithMatch(
+		context.Background(),
+		7,
+		"claude-sonnet-4-6",
+		CompositeRouteEndpointMessages,
+		CompositeRouteRequestMatch{UserAgent: "codex_cli_rs/0.155.0"},
+	)
+
+	require.NoError(t, err)
+	require.True(t, decision.Matched)
+	require.Equal(t, "gpt-5.4-mini", decision.UpstreamModel)
+}
+
+func TestCompositeRouteResolverBodyConditionSupportsEscapedJSONAndMultipleLines(t *testing.T) {
+	pattern := "He said \"hello\"\nsecond signature"
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{
+			{
+				ID:             1,
+				GroupID:        7,
+				PublicModel:    "gpt",
+				MatchType:      CompositeRouteMatchContains,
+				TargetPlatform: PlatformOpenAI,
+				UpstreamModel:  "gpt-5.4-mini",
+				Endpoint:       CompositeRouteEndpointResponses,
+				BodyContains:   "first signature\n" + pattern,
+				Enabled:        true,
+			},
+		},
+	})
+
+	decision, err := resolver.ResolveWithMatch(
+		context.Background(),
+		7,
+		"gpt-5.6-sol",
+		CompositeRouteEndpointResponses,
+		CompositeRouteRequestMatch{Body: []byte(`{"text":"He said \"hello\"\nsecond signature"}`)},
+	)
+
+	require.NoError(t, err)
+	require.True(t, decision.Matched)
+	require.Equal(t, "gpt-5.4-mini", decision.UpstreamModel)
+}
+
 func TestCompositeRouteResolverExplicitExactRouteRewritesModel(t *testing.T) {
 	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
 		routes: []CompositeModelRoute{

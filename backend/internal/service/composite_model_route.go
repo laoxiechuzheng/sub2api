@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	CompositeRouteMatchExact  = "exact"
-	CompositeRouteMatchPrefix = "prefix"
+	CompositeRouteMatchExact    = "exact"
+	CompositeRouteMatchPrefix   = "prefix"
+	CompositeRouteMatchContains = "contains"
 
 	CompositeRouteEndpointAny             = "any"
 	CompositeRouteEndpointMessages        = "messages"
@@ -44,23 +45,38 @@ var (
 // CompositeModelRoute maps one public model identifier in a composite group to
 // the concrete provider/model that should handle the request.
 type CompositeModelRoute struct {
-	ID             int64     `json:"id"`
-	GroupID        int64     `json:"group_id"`
-	PublicModel    string    `json:"public_model"`
-	MatchType      string    `json:"match_type"`
-	TargetPlatform string    `json:"target_platform"`
-	UpstreamModel  string    `json:"upstream_model"`
-	Endpoint       string    `json:"endpoint"`
-	Priority       int       `json:"priority"`
-	Enabled        bool      `json:"enabled"`
-	Notes          string    `json:"notes"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                int64     `json:"id"`
+	GroupID           int64     `json:"group_id"`
+	PublicModel       string    `json:"public_model"`
+	MatchType         string    `json:"match_type"`
+	TargetPlatform    string    `json:"target_platform"`
+	UpstreamModel     string    `json:"upstream_model"`
+	Endpoint          string    `json:"endpoint"`
+	UserAgentContains string    `json:"user_agent_contains"`
+	BodyContains      string    `json:"body_contains"`
+	Priority          int       `json:"priority"`
+	Enabled           bool      `json:"enabled"`
+	Notes             string    `json:"notes"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type CompositeRoutePreviewRequest struct {
-	Model    string `json:"model"`
-	Endpoint string `json:"endpoint"`
+	Model     string `json:"model"`
+	Endpoint  string `json:"endpoint"`
+	UserAgent string `json:"user_agent"`
+	Body      string `json:"body"`
+}
+
+// CompositeRouteRequestMatch carries request-level facts used by conditional
+// routes. Empty conditions never match a conditional rule.
+type CompositeRouteRequestMatch struct {
+	UserAgent string
+	Body      []byte
+	// IgnoreRequestConditions is used by catalog/model-list resolution, which
+	// asks whether a model is routable at all rather than resolving one live
+	// request.
+	IgnoreRequestConditions bool
 }
 
 type CompositeRouteDecision struct {
@@ -76,14 +92,16 @@ type CompositeRouteDecision struct {
 }
 
 type CompositeRouteInput struct {
-	PublicModel    string
-	MatchType      string
-	TargetPlatform string
-	UpstreamModel  string
-	Endpoint       string
-	Priority       int
-	Enabled        bool
-	Notes          string
+	PublicModel       string
+	MatchType         string
+	TargetPlatform    string
+	UpstreamModel     string
+	Endpoint          string
+	UserAgentContains string
+	BodyContains      string
+	Priority          int
+	Enabled           bool
+	Notes             string
 }
 
 type CompositeModelRouteRepository interface {
@@ -118,6 +136,8 @@ func normalizeCompositeRouteMatchType(matchType string) string {
 	switch matchType {
 	case CompositeRouteMatchPrefix:
 		return CompositeRouteMatchPrefix
+	case CompositeRouteMatchContains:
+		return CompositeRouteMatchContains
 	default:
 		return CompositeRouteMatchExact
 	}
@@ -129,14 +149,48 @@ func normalizeCompositeRouteInput(input CompositeRouteInput) CompositeRouteInput
 	input.TargetPlatform = strings.TrimSpace(input.TargetPlatform)
 	input.UpstreamModel = strings.TrimSpace(input.UpstreamModel)
 	input.Endpoint = normalizeCompositeRouteEndpoint(input.Endpoint)
+	input.UserAgentContains = normalizeCompositeRouteConditionPatterns(input.UserAgentContains)
+	input.BodyContains = normalizeCompositeRouteConditionPatterns(input.BodyContains)
 	// 仅对 exact 路由把空 upstream_model 回填成 public_model：exact 命中时请求模型
 	// 恒等于 public_model，回填只影响持久化/后台展示，保留原有契约不变。
-	// prefix 路由留空则不回填——Resolve 会回退到具体请求模型，从而透传原始模型
-	// （否则 public=deepseek-v4 的前缀路由会把 deepseek-v4-flash / deepseek-v4-pro
-	// 都塌缩成固定的 deepseek-v4）。显式填写 upstream_model 时任何模式都原样固定转发。
+	// prefix/contains 路由留空则不回填——Resolve 会回退到具体请求模型，从而透传
+	// 原始模型（否则 public=deepseek-v4 的模糊路由会把 deepseek-v4-flash /
+	// deepseek-v4-pro 都塌缩成固定的 deepseek-v4）。显式填写 upstream_model 时
+	// 任何模式都原样固定转发。
 	if input.UpstreamModel == "" && input.MatchType == CompositeRouteMatchExact {
 		input.UpstreamModel = input.PublicModel
 	}
 	input.Notes = strings.TrimSpace(input.Notes)
 	return input
+}
+
+// normalizeCompositeRouteConditionPatterns turns a multi-line admin input into
+// a stable newline-separated OR list: blank lines are dropped and duplicates
+// are removed in first-seen order.
+func normalizeCompositeRouteConditionPatterns(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	lines := strings.Split(value, "\n")
+	out := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+func splitCompositeRouteConditionPatterns(value string) []string {
+	normalized := normalizeCompositeRouteConditionPatterns(value)
+	if normalized == "" {
+		return nil
+	}
+	return strings.Split(normalized, "\n")
 }

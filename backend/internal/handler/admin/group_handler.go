@@ -330,19 +330,23 @@ type UpdateGroupRequest struct {
 }
 
 type CompositeRouteRequest struct {
-	PublicModel    string `json:"public_model" binding:"required"`
-	MatchType      string `json:"match_type" binding:"omitempty,oneof=exact prefix"`
-	TargetPlatform string `json:"target_platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax opencode_go"`
-	UpstreamModel  string `json:"upstream_model"`
-	Endpoint       string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
-	Priority       int    `json:"priority"`
-	Enabled        *bool  `json:"enabled"`
-	Notes          string `json:"notes"`
+	PublicModel       string `json:"public_model" binding:"required"`
+	MatchType         string `json:"match_type" binding:"omitempty,oneof=exact prefix contains"`
+	TargetPlatform    string `json:"target_platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax opencode_go"`
+	UpstreamModel     string `json:"upstream_model"`
+	Endpoint          string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
+	UserAgentContains string `json:"user_agent_contains" binding:"omitempty,max=2048"`
+	BodyContains      string `json:"body_contains" binding:"omitempty,max=8192"`
+	Priority          int    `json:"priority"`
+	Enabled           *bool  `json:"enabled"`
+	Notes             string `json:"notes"`
 }
 
 type CompositeRoutePreviewRequest struct {
-	Model    string `json:"model" binding:"required"`
-	Endpoint string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
+	Model     string `json:"model" binding:"required"`
+	Endpoint  string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
+	UserAgent string `json:"user_agent" binding:"omitempty,max=2048"`
+	Body      string `json:"body" binding:"omitempty,max=2000000"`
 }
 
 // List handles listing all groups with pagination
@@ -498,8 +502,10 @@ func (h *GroupHandler) PreviewCompositeRoute(c *gin.Context) {
 		return
 	}
 	decision, err := h.adminService.PreviewCompositeRoute(c.Request.Context(), groupID, service.CompositeRoutePreviewRequest{
-		Model:    req.Model,
-		Endpoint: req.Endpoint,
+		Model:     req.Model,
+		Endpoint:  req.Endpoint,
+		UserAgent: req.UserAgent,
+		Body:      req.Body,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -514,14 +520,16 @@ func compositeRouteRequestToInput(req CompositeRouteRequest, defaultEnabled bool
 		enabled = *req.Enabled
 	}
 	return service.CompositeRouteInput{
-		PublicModel:    req.PublicModel,
-		MatchType:      req.MatchType,
-		TargetPlatform: req.TargetPlatform,
-		UpstreamModel:  req.UpstreamModel,
-		Endpoint:       req.Endpoint,
-		Priority:       req.Priority,
-		Enabled:        enabled,
-		Notes:          req.Notes,
+		PublicModel:       req.PublicModel,
+		MatchType:         req.MatchType,
+		TargetPlatform:    req.TargetPlatform,
+		UpstreamModel:     req.UpstreamModel,
+		Endpoint:          req.Endpoint,
+		UserAgentContains: req.UserAgentContains,
+		BodyContains:      req.BodyContains,
+		Priority:          req.Priority,
+		Enabled:           enabled,
+		Notes:             req.Notes,
 	}
 }
 

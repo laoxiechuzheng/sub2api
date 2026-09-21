@@ -3973,6 +3973,12 @@
                         >
                           {{ t("admin.accounts.status.inactive") }}
                         </span>
+                        <span
+                          v-if="route.user_agent_contains || route.body_contains"
+                          class="badge badge-primary"
+                        >
+                          {{ t("admin.groups.compositeRoutes.conditionsBadge") }}
+                        </span>
                       </div>
                     </td>
                     <td class="px-3 py-2">
@@ -4074,6 +4080,43 @@
               </div>
             </div>
 
+            <div class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+              <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                {{ t("admin.groups.compositeRoutes.requestConditions") }}
+              </div>
+              <div class="space-y-3">
+                <div>
+                  <label class="input-label">{{
+                    t("admin.groups.compositeRoutes.userAgentContains")
+                  }}</label>
+                  <input
+                    v-model.trim="compositeRouteForm.user_agent_contains"
+                    type="text"
+                    class="input"
+                    :placeholder="
+                      t('admin.groups.compositeRoutes.userAgentContainsPlaceholder')
+                    "
+                  />
+                </div>
+                <div>
+                  <label class="input-label">{{
+                    t("admin.groups.compositeRoutes.bodyContains")
+                  }}</label>
+                  <textarea
+                    v-model="compositeRouteForm.body_contains"
+                    rows="3"
+                    class="input"
+                    :placeholder="
+                      t('admin.groups.compositeRoutes.bodyContainsPlaceholder')
+                    "
+                  ></textarea>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.groups.compositeRoutes.conditionsHint") }}
+                </p>
+              </div>
+            </div>
+
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label class="input-label">{{
@@ -4161,6 +4204,22 @@
                 placeholder="openrouter/gpt-5"
                 @keyup.enter="previewCompositeRoute"
               />
+              <input
+                v-model.trim="compositePreviewUserAgent"
+                type="text"
+                class="input"
+                :placeholder="
+                  t('admin.groups.compositeRoutes.userAgentContainsPlaceholder')
+                "
+              />
+              <textarea
+                v-model="compositePreviewBody"
+                rows="2"
+                class="input"
+                :placeholder="
+                  t('admin.groups.compositeRoutes.bodyContainsPlaceholder')
+                "
+              ></textarea>
               <div class="flex gap-2">
                 <Select
                   v-model="compositePreviewEndpoint"
@@ -4219,6 +4278,23 @@
                   <div class="break-all">
                     {{ t("admin.groups.compositeRoutes.upstreamModel") }}:
                     {{ compositePreviewDecision.upstream_model }}
+                  </div>
+                  <div
+                    v-if="
+                      compositePreviewDecision.route?.user_agent_contains ||
+                      compositePreviewDecision.route?.body_contains
+                    "
+                    class="break-all text-xs text-gray-500 dark:text-gray-400"
+                  >
+                    <span v-if="compositePreviewDecision.route?.user_agent_contains">
+                      UA: {{ compositePreviewDecision.route.user_agent_contains }}
+                    </span>
+                    <span
+                      v-if="compositePreviewDecision.route?.body_contains"
+                      class="ml-2"
+                    >
+                      Body: {{ compositePreviewDecision.route.body_contains }}
+                    </span>
                   </div>
                 </div>
                 <div
@@ -4646,6 +4722,7 @@ const compositeRouteEndpointOptions = computed(() => [
 const compositeRouteMatchOptions = computed(() => [
   { value: "exact", label: t("admin.groups.compositeRoutes.match.exact") },
   { value: "prefix", label: t("admin.groups.compositeRoutes.match.prefix") },
+  { value: "contains", label: t("admin.groups.compositeRoutes.match.contains") },
 ]);
 
 const editStatusOptions = computed(() => [
@@ -4841,6 +4918,8 @@ type CompositeRouteFormState = {
   target_platform: ConcreteGroupPlatform;
   upstream_model: string;
   endpoint: CompositeRouteEndpoint;
+  user_agent_contains: string;
+  body_contains: string;
   priority: number;
   enabled: boolean;
   notes: string;
@@ -4853,6 +4932,8 @@ const compositeRoutesLoading = ref(false);
 const compositeRouteSaving = ref(false);
 const compositeRouteEditingId = ref<number | null>(null);
 const compositePreviewModel = ref("");
+const compositePreviewUserAgent = ref("");
+const compositePreviewBody = ref("");
 const compositePreviewEndpoint = ref<CompositeRouteEndpoint>("any");
 const compositePreviewLoading = ref(false);
 const compositePreviewDecision = ref<CompositeRouteDecision | null>(null);
@@ -4862,6 +4943,8 @@ const compositeRouteForm = reactive<CompositeRouteFormState>({
   target_platform: "openai",
   upstream_model: "",
   endpoint: "any",
+  user_agent_contains: "",
+  body_contains: "",
   priority: 100,
   enabled: true,
   notes: "",
@@ -6448,6 +6531,8 @@ const resetCompositeRouteForm = () => {
   compositeRouteForm.target_platform = "openai";
   compositeRouteForm.upstream_model = "";
   compositeRouteForm.endpoint = "any";
+  compositeRouteForm.user_agent_contains = "";
+  compositeRouteForm.body_contains = "";
   compositeRouteForm.priority = 100;
   compositeRouteForm.enabled = true;
   compositeRouteForm.notes = "";
@@ -6459,6 +6544,8 @@ const toCompositeRouteInput = (): CompositeModelRouteInput => ({
   target_platform: compositeRouteForm.target_platform,
   upstream_model: compositeRouteForm.upstream_model.trim(),
   endpoint: compositeRouteForm.endpoint,
+  user_agent_contains: compositeRouteForm.user_agent_contains.trim(),
+  body_contains: compositeRouteForm.body_contains.trim(),
   priority: Number(compositeRouteForm.priority) || 100,
   enabled: compositeRouteForm.enabled,
   notes: compositeRouteForm.notes.trim(),
@@ -6490,6 +6577,8 @@ const loadCompositeRoutes = async () => {
 const handleCompositeRoutes = async (group: AdminGroup) => {
   compositeRoutesGroup.value = group;
   compositePreviewModel.value = "";
+  compositePreviewUserAgent.value = "";
+  compositePreviewBody.value = "";
   compositePreviewEndpoint.value = "any";
   compositePreviewDecision.value = null;
   resetCompositeRouteForm();
@@ -6512,6 +6601,8 @@ const editCompositeRoute = (route: CompositeModelRoute) => {
   compositeRouteForm.target_platform = route.target_platform;
   compositeRouteForm.upstream_model = route.upstream_model;
   compositeRouteForm.endpoint = route.endpoint;
+  compositeRouteForm.user_agent_contains = route.user_agent_contains || "";
+  compositeRouteForm.body_contains = route.body_contains || "";
   compositeRouteForm.priority = route.priority || 100;
   compositeRouteForm.enabled = route.enabled;
   compositeRouteForm.notes = route.notes || "";
@@ -6588,6 +6679,8 @@ const previewCompositeRoute = async () => {
       {
         model: compositePreviewModel.value.trim(),
         endpoint: compositePreviewEndpoint.value,
+        user_agent: compositePreviewUserAgent.value.trim(),
+        body: compositePreviewBody.value,
       },
     );
   } catch (error: any) {

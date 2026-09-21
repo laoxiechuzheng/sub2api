@@ -1128,6 +1128,14 @@ export default {
         upstreamModelHint: '留空表示透传原始请求模型：前缀匹配下每个命中模型各自原样转发（如 deepseek-v4-flash、deepseek-v4-pro 分别转发）；填写则所有命中请求都固定转发该模型。',
         notes: '备注',
         enabled: '启用',
+        conditionsBadge: '条件',
+        requestConditions: '请求条件（可选）',
+        userAgentContains: 'User-Agent 包含',
+        userAgentContainsPlaceholder: '例如 codex',
+        bodyContains: '请求正文包含',
+        bodyContainsPlaceholder: '例如 You are performing a CONTEXT CHECKPOINT COMPACTION',
+        conditionsHint:
+          '每行一个特征，任一行命中即可；多个字段之间是“且”关系。User-Agent 不区分大小写，正文区分大小写。带条件的规则会优先于普通路由。',
         preview: '预览',
         matched: '已匹配',
         notMatched: '未匹配',
@@ -1152,7 +1160,8 @@ export default {
         },
         match: {
           exact: '精确',
-          prefix: '前缀'
+          prefix: '前缀',
+          contains: '包含'
         },
         sources: {
           route: '路由',

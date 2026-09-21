@@ -33,6 +33,10 @@ const (
 	FieldUpstreamModel = "upstream_model"
 	// FieldEndpoint holds the string denoting the endpoint field in the database.
 	FieldEndpoint = "endpoint"
+	// FieldUserAgentContains holds the string denoting the user_agent_contains field in the database.
+	FieldUserAgentContains = "user_agent_contains"
+	// FieldBodyContains holds the string denoting the body_contains field in the database.
+	FieldBodyContains = "body_contains"
 	// FieldPriority holds the string denoting the priority field in the database.
 	FieldPriority = "priority"
 	// FieldEnabled holds the string denoting the enabled field in the database.
@@ -64,6 +68,8 @@ var Columns = []string{
 	FieldTargetPlatform,
 	FieldUpstreamModel,
 	FieldEndpoint,
+	FieldUserAgentContains,
+	FieldBodyContains,
 	FieldPriority,
 	FieldEnabled,
 	FieldNotes,
@@ -111,6 +117,10 @@ var (
 	DefaultEndpoint string
 	// EndpointValidator is a validator for the "endpoint" field. It is called by the builders before save.
 	EndpointValidator func(string) error
+	// DefaultUserAgentContains holds the default value on creation for the "user_agent_contains" field.
+	DefaultUserAgentContains string
+	// DefaultBodyContains holds the default value on creation for the "body_contains" field.
+	DefaultBodyContains string
 	// DefaultPriority holds the default value on creation for the "priority" field.
 	DefaultPriority int
 	// DefaultEnabled holds the default value on creation for the "enabled" field.
@@ -168,6 +178,16 @@ func ByUpstreamModel(opts ...sql.OrderTermOption) OrderOption {
 // ByEndpoint orders the results by the endpoint field.
 func ByEndpoint(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldEndpoint, opts...).ToFunc()
+}
+
+// ByUserAgentContains orders the results by the user_agent_contains field.
+func ByUserAgentContains(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUserAgentContains, opts...).ToFunc()
+}
+
+// ByBodyContains orders the results by the body_contains field.
+func ByBodyContains(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBodyContains, opts...).ToFunc()
 }
 
 // ByPriority orders the results by the priority field.

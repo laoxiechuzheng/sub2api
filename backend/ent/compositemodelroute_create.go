@@ -133,6 +133,34 @@ func (_c *CompositeModelRouteCreate) SetNillableEndpoint(v *string) *CompositeMo
 	return _c
 }
 
+// SetUserAgentContains sets the "user_agent_contains" field.
+func (_c *CompositeModelRouteCreate) SetUserAgentContains(v string) *CompositeModelRouteCreate {
+	_c.mutation.SetUserAgentContains(v)
+	return _c
+}
+
+// SetNillableUserAgentContains sets the "user_agent_contains" field if the given value is not nil.
+func (_c *CompositeModelRouteCreate) SetNillableUserAgentContains(v *string) *CompositeModelRouteCreate {
+	if v != nil {
+		_c.SetUserAgentContains(*v)
+	}
+	return _c
+}
+
+// SetBodyContains sets the "body_contains" field.
+func (_c *CompositeModelRouteCreate) SetBodyContains(v string) *CompositeModelRouteCreate {
+	_c.mutation.SetBodyContains(v)
+	return _c
+}
+
+// SetNillableBodyContains sets the "body_contains" field if the given value is not nil.
+func (_c *CompositeModelRouteCreate) SetNillableBodyContains(v *string) *CompositeModelRouteCreate {
+	if v != nil {
+		_c.SetBodyContains(*v)
+	}
+	return _c
+}
+
 // SetPriority sets the "priority" field.
 func (_c *CompositeModelRouteCreate) SetPriority(v int) *CompositeModelRouteCreate {
 	_c.mutation.SetPriority(v)
@@ -247,6 +275,14 @@ func (_c *CompositeModelRouteCreate) defaults() error {
 		v := compositemodelroute.DefaultEndpoint
 		_c.mutation.SetEndpoint(v)
 	}
+	if _, ok := _c.mutation.UserAgentContains(); !ok {
+		v := compositemodelroute.DefaultUserAgentContains
+		_c.mutation.SetUserAgentContains(v)
+	}
+	if _, ok := _c.mutation.BodyContains(); !ok {
+		v := compositemodelroute.DefaultBodyContains
+		_c.mutation.SetBodyContains(v)
+	}
 	if _, ok := _c.mutation.Priority(); !ok {
 		v := compositemodelroute.DefaultPriority
 		_c.mutation.SetPriority(v)
@@ -308,6 +344,12 @@ func (_c *CompositeModelRouteCreate) check() error {
 		if err := compositemodelroute.EndpointValidator(v); err != nil {
 			return &ValidationError{Name: "endpoint", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.endpoint": %w`, err)}
 		}
+	}
+	if _, ok := _c.mutation.UserAgentContains(); !ok {
+		return &ValidationError{Name: "user_agent_contains", err: errors.New(`ent: missing required field "CompositeModelRoute.user_agent_contains"`)}
+	}
+	if _, ok := _c.mutation.BodyContains(); !ok {
+		return &ValidationError{Name: "body_contains", err: errors.New(`ent: missing required field "CompositeModelRoute.body_contains"`)}
 	}
 	if _, ok := _c.mutation.Priority(); !ok {
 		return &ValidationError{Name: "priority", err: errors.New(`ent: missing required field "CompositeModelRoute.priority"`)}
@@ -376,6 +418,14 @@ func (_c *CompositeModelRouteCreate) createSpec() (*CompositeModelRoute, *sqlgra
 	if value, ok := _c.mutation.Endpoint(); ok {
 		_spec.SetField(compositemodelroute.FieldEndpoint, field.TypeString, value)
 		_node.Endpoint = value
+	}
+	if value, ok := _c.mutation.UserAgentContains(); ok {
+		_spec.SetField(compositemodelroute.FieldUserAgentContains, field.TypeString, value)
+		_node.UserAgentContains = value
+	}
+	if value, ok := _c.mutation.BodyContains(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyContains, field.TypeString, value)
+		_node.BodyContains = value
 	}
 	if value, ok := _c.mutation.Priority(); ok {
 		_spec.SetField(compositemodelroute.FieldPriority, field.TypeInt, value)
@@ -557,6 +607,30 @@ func (u *CompositeModelRouteUpsert) SetEndpoint(v string) *CompositeModelRouteUp
 // UpdateEndpoint sets the "endpoint" field to the value that was provided on create.
 func (u *CompositeModelRouteUpsert) UpdateEndpoint() *CompositeModelRouteUpsert {
 	u.SetExcluded(compositemodelroute.FieldEndpoint)
+	return u
+}
+
+// SetUserAgentContains sets the "user_agent_contains" field.
+func (u *CompositeModelRouteUpsert) SetUserAgentContains(v string) *CompositeModelRouteUpsert {
+	u.Set(compositemodelroute.FieldUserAgentContains, v)
+	return u
+}
+
+// UpdateUserAgentContains sets the "user_agent_contains" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsert) UpdateUserAgentContains() *CompositeModelRouteUpsert {
+	u.SetExcluded(compositemodelroute.FieldUserAgentContains)
+	return u
+}
+
+// SetBodyContains sets the "body_contains" field.
+func (u *CompositeModelRouteUpsert) SetBodyContains(v string) *CompositeModelRouteUpsert {
+	u.Set(compositemodelroute.FieldBodyContains, v)
+	return u
+}
+
+// UpdateBodyContains sets the "body_contains" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsert) UpdateBodyContains() *CompositeModelRouteUpsert {
+	u.SetExcluded(compositemodelroute.FieldBodyContains)
 	return u
 }
 
@@ -769,6 +843,34 @@ func (u *CompositeModelRouteUpsertOne) SetEndpoint(v string) *CompositeModelRout
 func (u *CompositeModelRouteUpsertOne) UpdateEndpoint() *CompositeModelRouteUpsertOne {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.UpdateEndpoint()
+	})
+}
+
+// SetUserAgentContains sets the "user_agent_contains" field.
+func (u *CompositeModelRouteUpsertOne) SetUserAgentContains(v string) *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetUserAgentContains(v)
+	})
+}
+
+// UpdateUserAgentContains sets the "user_agent_contains" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertOne) UpdateUserAgentContains() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateUserAgentContains()
+	})
+}
+
+// SetBodyContains sets the "body_contains" field.
+func (u *CompositeModelRouteUpsertOne) SetBodyContains(v string) *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetBodyContains(v)
+	})
+}
+
+// UpdateBodyContains sets the "body_contains" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertOne) UpdateBodyContains() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateBodyContains()
 	})
 }
 
@@ -1155,6 +1257,34 @@ func (u *CompositeModelRouteUpsertBulk) SetEndpoint(v string) *CompositeModelRou
 func (u *CompositeModelRouteUpsertBulk) UpdateEndpoint() *CompositeModelRouteUpsertBulk {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.UpdateEndpoint()
+	})
+}
+
+// SetUserAgentContains sets the "user_agent_contains" field.
+func (u *CompositeModelRouteUpsertBulk) SetUserAgentContains(v string) *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetUserAgentContains(v)
+	})
+}
+
+// UpdateUserAgentContains sets the "user_agent_contains" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertBulk) UpdateUserAgentContains() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateUserAgentContains()
+	})
+}
+
+// SetBodyContains sets the "body_contains" field.
+func (u *CompositeModelRouteUpsertBulk) SetBodyContains(v string) *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetBodyContains(v)
+	})
+}
+
+// UpdateBodyContains sets the "body_contains" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertBulk) UpdateBodyContains() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateBodyContains()
 	})
 }
 

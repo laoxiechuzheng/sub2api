@@ -28,7 +28,7 @@ type CompositeModelRoute struct {
 	GroupID int64 `json:"group_id,omitempty"`
 	// Client-facing model identifier or prefix.
 	PublicModel string `json:"public_model,omitempty"`
-	// exact or prefix.
+	// exact, prefix, or contains.
 	MatchType string `json:"match_type,omitempty"`
 	// Concrete provider platform.
 	TargetPlatform string `json:"target_platform,omitempty"`
@@ -36,6 +36,10 @@ type CompositeModelRoute struct {
 	UpstreamModel string `json:"upstream_model,omitempty"`
 	// Endpoint scope such as any, messages, responses, chat_completions.
 	Endpoint string `json:"endpoint,omitempty"`
+	// Newline-separated User-Agent substrings; empty disables the condition.
+	UserAgentContains string `json:"user_agent_contains,omitempty"`
+	// Newline-separated request-body substrings; empty disables the condition.
+	BodyContains string `json:"body_contains,omitempty"`
 	// Lower values win within the same match strength.
 	Priority int `json:"priority,omitempty"`
 	// Enabled holds the value of the "enabled" field.
@@ -77,7 +81,7 @@ func (*CompositeModelRoute) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case compositemodelroute.FieldID, compositemodelroute.FieldGroupID, compositemodelroute.FieldPriority:
 			values[i] = new(sql.NullInt64)
-		case compositemodelroute.FieldPublicModel, compositemodelroute.FieldMatchType, compositemodelroute.FieldTargetPlatform, compositemodelroute.FieldUpstreamModel, compositemodelroute.FieldEndpoint, compositemodelroute.FieldNotes:
+		case compositemodelroute.FieldPublicModel, compositemodelroute.FieldMatchType, compositemodelroute.FieldTargetPlatform, compositemodelroute.FieldUpstreamModel, compositemodelroute.FieldEndpoint, compositemodelroute.FieldUserAgentContains, compositemodelroute.FieldBodyContains, compositemodelroute.FieldNotes:
 			values[i] = new(sql.NullString)
 		case compositemodelroute.FieldCreatedAt, compositemodelroute.FieldUpdatedAt, compositemodelroute.FieldDeletedAt:
 			values[i] = new(sql.NullTime)
@@ -156,6 +160,18 @@ func (_m *CompositeModelRoute) assignValues(columns []string, values []any) erro
 				return fmt.Errorf("unexpected type %T for field endpoint", values[i])
 			} else if value.Valid {
 				_m.Endpoint = value.String
+			}
+		case compositemodelroute.FieldUserAgentContains:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field user_agent_contains", values[i])
+			} else if value.Valid {
+				_m.UserAgentContains = value.String
+			}
+		case compositemodelroute.FieldBodyContains:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field body_contains", values[i])
+			} else if value.Valid {
+				_m.BodyContains = value.String
 			}
 		case compositemodelroute.FieldPriority:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -245,6 +261,12 @@ func (_m *CompositeModelRoute) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("endpoint=")
 	builder.WriteString(_m.Endpoint)
+	builder.WriteString(", ")
+	builder.WriteString("user_agent_contains=")
+	builder.WriteString(_m.UserAgentContains)
+	builder.WriteString(", ")
+	builder.WriteString("body_contains=")
+	builder.WriteString(_m.BodyContains)
 	builder.WriteString(", ")
 	builder.WriteString("priority=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Priority))
