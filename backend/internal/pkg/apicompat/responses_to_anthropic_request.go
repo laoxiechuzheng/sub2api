@@ -36,8 +36,8 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		out.MaxTokens = *req.MaxOutputTokens
 	}
 	if out.MaxTokens == 0 {
-		// Anthropic requires max_tokens; default to a sensible value.
-		out.MaxTokens = 8192
+		// Anthropic requires max_tokens; default to a model compatible value.
+		out.MaxTokens = defaultMaxTokensForModel(req.Model)
 	}
 
 	// Convert tools
@@ -96,6 +96,26 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 	}
 
 	return out, nil
+}
+
+// 未指定 max_output_tokens 时的兜底 max_tokens。
+//
+// Anthropic 要求必须提供 max_tokens。8192 对开启 adaptive thinking 的
+// Opus 5.5 偏小：reasoning 会把这段预算吃掉，客户端只看到
+// incomplete_details.reason=max_output_tokens 的截断。Claude 系列改用
+// 81920 降低触发概率；DeepSeek / Kimi 等 Anthropic 兼容端点输出上限更小，
+// 保留原值，避免上游直接 400。
+const (
+	defaultMaxTokens       = 8192
+	defaultClaudeMaxTokens = 81920
+)
+
+// defaultMaxTokensForModel 按模型选择兜底 max_tokens。
+func defaultMaxTokensForModel(model string) int {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(model)), "claude") {
+		return defaultClaudeMaxTokens
+	}
+	return defaultMaxTokens
 }
 
 // defaultThinkingBudget returns a sensible thinking budget based on effort level.
