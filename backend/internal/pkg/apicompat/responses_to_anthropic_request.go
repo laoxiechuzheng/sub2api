@@ -287,6 +287,7 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 	messages = mergeConsecutiveMessages(messages)
 	messages = normalizeAnthropicToolPairing(messages)
 	messages = mergeConsecutiveMessages(messages)
+	messages = mergeConsecutiveMessages(stripTrailingAssistantThinking(messages))
 
 	var system json.RawMessage
 	if len(systemParts) > 0 {
@@ -624,6 +625,68 @@ func dataURIToAnthropicImageSource(dataURI string) *AnthropicImageSource {
 		MediaType: mediaType,
 		Data:      data,
 	}
+}
+
+// stripTrailingAssistantThinking removes thinking blocks from the end of each
+// assistant message. Anthropic requires the final assistant content block to be
+// text, tool_use, or another non-thinking block. A truncated reasoning-only
+// turn can round-trip through Responses with thinking (or redacted_thinking) as
+// the final block, so drop that tail before forwarding. If nothing remains in
+// the message, drop the message as well; callers merge the result afterward to
+// restore alternating roles.
+func stripTrailingAssistantThinking(messages []AnthropicMessage) []AnthropicMessage {
+	var out []AnthropicMessage
+	changed := false
+
+	for i, msg := range messages {
+		if msg.Role != "assistant" {
+			if changed {
+				out = append(out, msg)
+			}
+			continue
+		}
+
+		blocks := parseContentBlocks(msg.Content)
+		end := len(blocks)
+		for end > 0 {
+			blockType := blocks[end-1].Type
+			if blockType != "thinking" && blockType != "redacted_thinking" {
+				break
+			}
+			end--
+		}
+
+		if end == len(blocks) {
+			if changed {
+				out = append(out, msg)
+			}
+			continue
+		}
+
+		if !changed {
+			out = make([]AnthropicMessage, 0, len(messages))
+			out = append(out, messages[:i]...)
+			changed = true
+		}
+		if end == 0 {
+			continue
+		}
+
+		content, err := json.Marshal(blocks[:end])
+		if err != nil {
+			// Keep the original message if serialization fails; preserving the
+			// request is safer than emitting a partially rewritten body.
+			out = append(out, msg)
+			continue
+		}
+		msg.Content = content
+		out = append(out, msg)
+	}
+
+	if !changed {
+		return messages
+	}
+	return out
 }
 
 // mergeConsecutiveMessages merges consecutive messages with the same role

@@ -126,6 +126,30 @@ func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, accoun
 	return s.isThinkingBlockSignatureError(respBody) && s.settingService.IsSignatureRectifierEnabled(ctx)
 }
 
+// isAssistantThinkingTailError 匹配 Anthropic 的结构性 400：
+// "The final block in an assistant message cannot be `thinking`"。
+//
+// assistant 消息的末块只能是 text / tool_use 等可结束回合的块；历史里被
+// max_output_tokens 截断的助手回合（只产出 thinking、没有正文）重放时就违反这条约束，
+// 整轮请求会被上游拒收。整流方式唯一且确定（删掉尾部的 thinking 块）。
+func (s *GatewayService) isAssistantThinkingTailError(respBody []byte) bool {
+	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "final block in an assistant message") &&
+		(strings.Contains(msg, "thinking") || strings.Contains(msg, "redacted_thinking"))
+}
+
+// shouldRectifyThinkingTailError 判断是否应对该 400 触发「thinking 尾部」整流重试。
+//
+// 与签名错误不同，这是 Anthropic 的硬性结构约束、整流方式唯一，因此不受面板
+// 「签名整流」开关影响：命中即整流重试，避免整轮请求直接失败。仅在 anthropic-strict
+// 协议族触发；passback-required/unknown 上游（DeepSeek/Kimi/GLM 等）保持原样透传。
+func (s *GatewayService) shouldRectifyThinkingTailError(respBody []byte, mappedModel string) bool {
+	return ShouldRectifyThinkingSignatureError(mappedModel) && s.isAssistantThinkingTailError(respBody)
+}
+
 // isSignatureErrorPattern 仅做模式匹配，不检查开关。
 // 用于已进入重试流程后的二阶段检测（此时开关已在首次调用时验证过）。
 func (s *GatewayService) isSignatureErrorPattern(ctx context.Context, account *Account, respBody []byte) bool {
@@ -166,6 +190,13 @@ func (s *GatewayService) isThinkingBlockSignatureError(respBody []byte) bool {
 	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 	if msg == "" {
 		return false
+	}
+
+	// 结构错误：assistant 消息的最后一块不能是 thinking / redacted_thinking。
+	// 例如: "messages.77: The final block in an assistant message cannot be `thinking`."
+	if s.isAssistantThinkingTailError(respBody) {
+		logger.LegacyPrintf("service.gateway", "[SignatureCheck] Detected assistant thinking tail error")
+		return true
 	}
 
 	// 检测signature相关的错误（更宽松的匹配）

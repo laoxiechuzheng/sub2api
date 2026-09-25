@@ -164,12 +164,13 @@ func (s *GatewayService) ForwardAsResponses(
 	if resp.StatusCode >= 400 {
 		respBody, _ := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
-		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		// thinking 整流重试：转换路径原先没有 /v1/messages 主路径上的整流链，上游因历史
+		// thinking 结构（assistant 末块是 thinking、签名失效等）返回 400 时整轮直接失败。
+		// 这里用同一策略清洗一次请求体重发，仍失败才走下面的错误处理 / failover。
+		if resp.StatusCode == http.StatusBadRequest &&
+			(s.shouldRectifyThinkingTailError(respBody, mappedModel) ||
+				s.shouldRectifySignatureError(ctx, account, respBody, mappedModel)) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				ProxyID:            opsUpstreamProxyID(account),
 				ProxyName:          opsUpstreamProxyName(account),
@@ -178,23 +179,58 @@ func (s *GatewayService) ForwardAsResponses(
 				AccountName:        account.Name,
 				UpstreamStatusCode: resp.StatusCode,
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				Kind:               "failover",
-				Message:            upstreamMsg,
+				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:               "signature_error",
+				Message:            extractUpstreamErrorMessage(respBody),
 			})
-			shouldDisable := false
-			if s.rateLimitService != nil {
-				shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
-			}
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			if retryResp, retryWireBody := s.retryAnthropicBodyAfterThinkingError(
+				ctx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode, proxyURL,
+			); retryResp != nil {
+				resp = retryResp
+				if resp.StatusCode < 400 {
+					forwardedBody = retryWireBody
+					reasoningEffort = NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
+					reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, mappedModel)
+				} else {
+					respBody, _ = s.readUpstreamErrorBody(resp)
+					_ = resp.Body.Close()
+				}
 			}
 		}
 
-		// Non-failover error: return Responses-formatted error to client
-		writeResponsesError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", upstreamMsg)
-		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+		if resp.StatusCode >= 400 {
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
+			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+
+			if s.shouldFailoverUpstreamError(resp.StatusCode) {
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: resp.StatusCode,
+					UpstreamRequestID:  resp.Header.Get("x-request-id"),
+					Kind:               "failover",
+					Message:            upstreamMsg,
+				})
+				shouldDisable := false
+				if s.rateLimitService != nil {
+					shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
+				}
+				return nil, &UpstreamFailoverError{
+					StatusCode:             resp.StatusCode,
+					ResponseBody:           respBody,
+					RetryableOnSameAccount: !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				}
+			}
+
+			// Non-failover error: return Responses-formatted error to client
+			writeResponsesError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", upstreamMsg)
+			return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+		}
 	}
 
 	// 13. Handle normal response (convert Anthropic → Responses)
