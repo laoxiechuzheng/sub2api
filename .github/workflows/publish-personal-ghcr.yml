@@ -6,7 +6,7 @@ on:
       release_version:
         description: Image tag to publish
         required: true
-        default: 0.2.8-compact-routing
+        default: 0.2.11-deploy-20260930
         type: string
 
 permissions:
