@@ -490,6 +490,9 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				}
 			}
 		}
+		if anthropicStreamEventIsTerminal("", payload) {
+			break
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -710,6 +713,9 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 		if processEvent(&event) {
 			return resultWithUsage(), nil
+		}
+		if anthropicStreamEventIsTerminal("", payload) {
+			break
 		}
 	}
 

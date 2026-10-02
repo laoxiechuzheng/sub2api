@@ -533,11 +533,13 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			}
 
 			line := ev.line
+			terminalDataLine := false
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
 				observer.ObserveAnthropic([]byte(trimmed))
 				if anthropicStreamEventIsTerminal("", trimmed) {
 					sawTerminalEvent = true
+					terminalDataLine = true
 				}
 				if firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
 					ms := int(time.Since(startTime).Milliseconds())
@@ -569,11 +571,23 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 					inPartialEvent = true
 				}
 			}
+			if terminalDataLine || (sawTerminalEvent && line == "") {
+				if line != "" && !clientDisconnected {
+					// message_stop is terminal even if the upstream keeps the
+					// connection open. Complete the SSE frame before returning.
+					_, _ = io.WriteString(w, "\n")
+					flusher.Flush()
+				}
+				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, nil
+			}
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
 			if time.Since(lastRead) < streamInterval {
 				continue
+			}
+			if sawTerminalEvent {
+				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, nil
 			}
 			if clientDisconnected {
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, fmt.Errorf("stream usage incomplete after timeout")
