@@ -258,6 +258,9 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 				}
 			}
 		}
+		if anthropicStreamEventIsTerminal("", payload) {
+			break
+		}
 	}
 
 	if finalResp == nil {
@@ -474,6 +477,9 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		}
 
 		processAnthropicEvent(&event)
+		if anthropicStreamEventIsTerminal("", payload) {
+			break
+		}
 	}
 
 	// Finalize state machine（客户端已断开时仍推进，保证 usage 汇总完整；仅在

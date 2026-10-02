@@ -294,6 +294,9 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 				}
 			}
 		}
+		if anthropicStreamEventIsTerminal("", payload) {
+			break
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -490,6 +493,9 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 
 		if processAnthropicEvent(&event) {
 			return resultWithUsage(), nil
+		}
+		if anthropicStreamEventIsTerminal("", payload) {
+			break
 		}
 	}
 

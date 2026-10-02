@@ -256,6 +256,9 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 				}
 			}
 		}
+		if anthropicStreamEventIsTerminal("", payload) {
+			break
+		}
 	}
 
 	if finalResp == nil {
@@ -478,6 +481,9 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 
 		if processAnthropicEvent(&event) {
 			return resultWithUsage(), nil
+		}
+		if anthropicStreamEventIsTerminal("", payload) {
+			break
 		}
 	}
 
