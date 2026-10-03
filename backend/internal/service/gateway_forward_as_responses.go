@@ -684,6 +684,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	// 读取不受下游请求取消影响：上游请求已有 WithoutCancel，脱离取消后的读取
 	// 由闲置超时和 terminal 尾窗口限制。
 	var readErr error
+	explicitStreamError := false
 	for {
 		line, err := drain.next()
 		if err != nil {
@@ -726,12 +727,14 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		}
 		processEvent(&event)
 		if event.Type == "error" {
+			explicitStreamError = true
 			readErr = errors.New("upstream stream error event")
 			break
 		}
 	}
 
-	if drain.terminalSeen() || errors.Is(readErr, io.EOF) {
+	// 成功终态后的传输收尾可忽略，尾窗口内显式上游错误仍须返回。
+	if !explicitStreamError && (drain.terminalSeen() || errors.Is(readErr, io.EOF)) {
 		readErr = nil
 	}
 	if readErr != nil {

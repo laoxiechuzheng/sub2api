@@ -478,6 +478,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	}
 
 	var readErr error
+	explicitStreamError := false
 	for {
 		line, err := drain.next()
 		if err != nil {
@@ -520,12 +521,14 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		}
 		processAnthropicEvent(&event)
 		if event.Type == "error" {
+			explicitStreamError = true
 			readErr = errors.New("upstream stream error event")
 			break
 		}
 	}
 
-	if drain.terminalSeen() || errors.Is(readErr, io.EOF) {
+	// 成功终态后的传输收尾可忽略，尾窗口内显式上游错误仍须返回。
+	if !explicitStreamError && (drain.terminalSeen() || errors.Is(readErr, io.EOF)) {
 		readErr = nil
 	}
 	if readErr != nil {

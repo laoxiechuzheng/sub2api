@@ -501,6 +501,39 @@ func TestGatewayForwardStreamDrain_UpstreamRequestSurvivesDownstreamCancel(t *te
 	}
 }
 
+func TestGatewayForwardStreamDrain_ErrorEventAfterTerminalPreservesFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for name, handle := range gatewayForwardDrainHandlers() {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			visibleText := "event: content_block_start\n" +
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}` + "\n\n" +
+				"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n"
+			// 同一有效流的 stop 后、500ms 尾窗口内出现显式上游错误，不能抹成成功。
+			body := newGatewayForwardDrainBlockingBody(gatewayForwardDrainStart + visibleText + gatewayForwardDrainDelta + gatewayForwardDrainStop +
+				"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"fixture\"}}\n\n")
+			defer body.Close()
+
+			result, err := runGatewayForwardDrainHandler(t, handle, &GatewayService{}, &http.Response{Body: body}, c)
+			require.ErrorContains(t, err, "upstream stream error event")
+			require.NotNil(t, result, "已提交正文后仍需返回部分 usage")
+			require.Equal(t, 27, result.Usage.OutputTokens)
+			require.Equal(t, 12, result.Usage.InputTokens)
+			require.Equal(t, 15, result.Usage.CacheReadInputTokens)
+			require.False(t, result.ClientDisconnect)
+			var failover *UpstreamFailoverError
+			require.False(t, errors.As(err, &failover), "已经提交的请求不能因尾窗口错误而重放")
+			require.Contains(t, rec.Body.String(), "answer")
+			require.NotContains(t, rec.Body.String(), "response.completed", "错误终态不能补发成功 completion")
+			require.NotContains(t, rec.Body.String(), "data: [DONE]", "错误终态不能补发 DONE")
+			requireGatewayForwardDrainBodyStopped(t, body)
+		})
+	}
+}
+
 func TestGatewayForwardStreamDrain_ErrorEventStopsDrain(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for name, handle := range gatewayForwardDrainHandlers() {
