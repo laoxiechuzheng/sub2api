@@ -23,6 +23,26 @@ func resetViperWithJWTSecret(t *testing.T) {
 	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
 }
 
+func TestLoadConcurrencyStartupCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "default"},
+		{name: "rolling deployment", value: "true", want: true},
+		{name: "explicit cleanup", value: "false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			t.Setenv("CONCURRENCY_SKIP_STARTUP_CLEANUP", tc.value)
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.Concurrency.SkipStartupCleanup)
+		})
+	}
+}
+
 func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

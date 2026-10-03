@@ -958,6 +958,8 @@ type CircuitBreakerConfig struct {
 type ConcurrencyConfig struct {
 	// PingInterval: 并发等待期间的 SSE ping 间隔（秒）
 	PingInterval int `mapstructure:"ping_interval"`
+	// 滚动部署时保留共享 Redis 中其他活跃进程的槽位和等待计数；默认仍执行启动清理。
+	SkipStartupCleanup bool `mapstructure:"skip_startup_cleanup"`
 }
 
 type ImageConcurrencyConfig struct {
@@ -2601,6 +2603,7 @@ func setDefaults() {
 
 	viper.SetDefault("gateway.tls_fingerprint.enabled", true)
 	viper.SetDefault("concurrency.ping_interval", 10)
+	viper.SetDefault("concurrency.skip_startup_cleanup", false)
 
 	// TokenRefresh
 	viper.SetDefault("token_refresh.enabled", true)

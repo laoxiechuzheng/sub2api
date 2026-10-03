@@ -840,6 +840,10 @@ concurrency:
   # SSE ping interval during concurrency wait (seconds)
   # 并发等待期间的 SSE ping 间隔（秒）
   ping_interval: 10
+  # 新旧实例共享 Redis 的滚动部署时设为 true，保留另一活跃进程的并发槽位和等待计数。
+  # 仅跳过启动清理；正常并发限制和按 TTL 清理仍启用。默认单实例重启行为不变。
+  # 环境变量：CONCURRENCY_SKIP_STARTUP_CLEANUP
+  skip_startup_cleanup: false
 
 # =============================================================================
 # Database Configuration (PostgreSQL)
