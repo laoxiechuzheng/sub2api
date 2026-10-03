@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/requestdiagnostic"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -90,6 +91,7 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 
 	enc := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding")))
 	if enc == "" || enc == "identity" {
+		captureJSONInbound(req, raw)
 		return raw, nil
 	}
 
@@ -102,7 +104,19 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 	req.Header.Del("Content-Length")
 	req.ContentLength = int64(len(decoded))
 
+	captureJSONInbound(req, decoded)
 	return decoded, nil
+}
+
+// 解压后的原文在 lenient JSON 整流和 Composite 模型改写之前采集。
+func captureJSONInbound(req *http.Request, body []byte) {
+	if capture := requestdiagnostic.FromContext(req.Context()); capture != nil {
+		if len(body) > capture.MaxBytes() {
+			capture.SetInboundOmitted(len(body), requestdiagnostic.OmittedTooLarge)
+		} else {
+			capture.SetInbound(body)
+		}
+	}
 }
 
 // Read bounded chunks as bytes arrive, then assemble the exact-size result.

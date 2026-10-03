@@ -110,6 +110,7 @@ func provideCleanup(
 	emailQueue *service.EmailQueueService,
 	billingCache *service.BillingCacheService,
 	usageRecordWorkerPool *service.UsageRecordWorkerPool,
+	requestDiagnostics *service.RequestDiagnosticService,
 	subscriptionService *service.SubscriptionService,
 	oauth *service.OAuthService,
 	openaiOAuth *service.OpenAIOAuthService,
@@ -307,6 +308,10 @@ func provideCleanup(
 			{"UsageRecordWorkerPool", func() error {
 				if usageRecordWorkerPool != nil {
 					usageRecordWorkerPool.Stop()
+				}
+				// 先完成 usage 绑定，再有界排空或取消诊断写入，等待 writer 退出后关闭数据库。
+				if requestDiagnostics != nil {
+					requestDiagnostics.Stop()
 				}
 				return nil
 			}},

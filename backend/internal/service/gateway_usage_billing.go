@@ -11,6 +11,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/requestdiagnostic"
 )
 
 func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID, groupID int64, groupDefaultMultiplier float64) float64 {
@@ -618,6 +619,8 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 	}
 	usageCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
+	// 冲突兜底 Create 可能回填历史 created_at；正文绑定只能用本次原始时间。
+	diagnosticCreatedAt := usageLog.CreatedAt
 
 	if writer, ok := repo.(usageLogBestEffortWriter); ok {
 		if err := writer.CreateBestEffort(usageCtx, usageLog); err != nil {
@@ -634,13 +637,26 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 			}
 			if _, syncErr := repo.Create(fallbackCtx, usageLog); syncErr != nil {
 				logger.LegacyPrintf(logKey, "Create usage log sync fallback failed: %v", syncErr)
+				return
 			}
 		}
+		bindRequestDiagnosticUsage(ctx, usageLog, diagnosticCreatedAt)
 		return
 	}
 
 	if _, err := repo.Create(usageCtx, usageLog); err != nil {
 		logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
+		return
+	}
+	bindRequestDiagnosticUsage(ctx, usageLog, diagnosticCreatedAt)
+}
+
+// 仅成功落库后绑定计费用量的 canonical ID；不猜测 Ops/client UUID。
+func bindRequestDiagnosticUsage(ctx context.Context, usage *UsageLog, createdAt time.Time) {
+	if usage != nil {
+		if capture := requestdiagnostic.FromContext(ctx); capture != nil {
+			capture.BindUsage(usage.APIKeyID, usage.RequestID, createdAt)
+		}
 	}
 }
 

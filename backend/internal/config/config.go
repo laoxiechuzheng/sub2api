@@ -75,6 +75,7 @@ type Config struct {
 	Database                DatabaseConfig                `mapstructure:"database"`
 	Redis                   RedisConfig                   `mapstructure:"redis"`
 	Ops                     OpsConfig                     `mapstructure:"ops"`
+	RequestDiagnostics      RequestDiagnosticsConfig      `mapstructure:"request_diagnostics"`
 	JWT                     JWTConfig                     `mapstructure:"jwt"`
 	Totp                    TotpConfig                    `mapstructure:"totp"`
 	WebAuthn                WebAuthnConfig                `mapstructure:"webauthn"`
@@ -2299,6 +2300,14 @@ func setDefaults() {
 	viper.SetDefault("image_storage.secret_access_key", "")
 	viper.SetDefault("image_storage.public_base_url", "")
 
+	// 管理员请求诊断默认关闭；正文只短期保留，资源超限不影响转发或计费。
+	viper.SetDefault("request_diagnostics.enabled", false)
+	viper.SetDefault("request_diagnostics.retention_hours", 24)
+	viper.SetDefault("request_diagnostics.max_entry_bytes", 8<<20)
+	viper.SetDefault("request_diagnostics.max_active", 4)
+	viper.SetDefault("request_diagnostics.max_pending_bytes", 32<<20)
+	viper.SetDefault("request_diagnostics.max_storage_bytes", 256<<20)
+
 	// Ops (vNext)
 	viper.SetDefault("ops.enabled", true)
 	viper.SetDefault("ops.use_preaggregated_tables", true)
@@ -2703,6 +2712,9 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if err := c.RequestDiagnostics.validate(); err != nil {
+		return err
+	}
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
 	if err != nil {
 		return fmt.Errorf("security.forwarded_client_ip_headers: %w", err)

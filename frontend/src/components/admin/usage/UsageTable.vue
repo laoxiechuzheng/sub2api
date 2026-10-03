@@ -18,7 +18,7 @@
     </div>
     <div class="overflow-auto">
       <DataTable
-        :columns="columns"
+        :columns="tableColumns"
         :data="data"
         :loading="loading"
         :server-side-sort="serverSideSort"
@@ -302,6 +302,20 @@
             <IpGeoCell :ip="row.ip_address" />
           </div>
           <span v-else class="text-sm text-gray-400 dark:text-gray-500">-</span>
+        </template>
+
+        <template #cell-actions="{ row }">
+          <button
+            v-if="showDiagnostic"
+            type="button"
+            data-testid="usage-diagnostic-button"
+            class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium text-primary-700 transition-colors hover:bg-primary-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:text-primary-300 dark:hover:bg-primary-900/30"
+            :aria-label="`${diagnosticLabel} #${row.id}`"
+            @click.stop="emit('diagnosticClick', row)"
+          >
+            <Icon name="document" size="sm" />
+            {{ diagnosticLabel }}
+          </button>
         </template>
 
         <template #empty><EmptyState :message="t('usage.noRecords')" /></template>
@@ -595,6 +609,8 @@ interface Props {
   defaultSortOrder?: 'asc' | 'desc'
   showAccountBilling?: boolean
   showUpstreamEndpoint?: boolean
+  /** 仅管理员用量页面显式启用，普通用户复用时不提供诊断入口。 */
+  showDiagnostic?: boolean
   /** 嵌入统一卡片内使用：去掉自身卡片外观 */
   flat?: boolean
 }
@@ -606,14 +622,21 @@ const props = withDefaults(defineProps<Props>(), {
   defaultSortOrder: 'asc',
   showAccountBilling: true,
   showUpstreamEndpoint: true,
+  showDiagnostic: false,
   flat: false
 })
 const emit = defineEmits<{
   userClick: [userID: number, email?: string]
   sort: [key: string, order: 'asc' | 'desc']
   ipGeoBatchFailed: []
+  diagnosticClick: [usage: AdminUsageLog]
 }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const diagnosticLabel = computed(() => String(locale?.value ?? 'en').toLowerCase().startsWith('zh') ? '查看诊断' : 'View diagnostic')
+const tableColumns = computed<Column[]>(() => {
+  if (!props.showDiagnostic || props.columns.some((column) => column.key === 'actions')) return props.columns
+  return [...props.columns, { key: 'actions', label: diagnosticLabel.value, sortable: false }]
+})
 const appStore = useAppStore()
 const copiedRequestId = ref<string | null>(null)
 const showAccountBilling = props.showAccountBilling

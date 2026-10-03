@@ -131,7 +131,9 @@
             :server-side-sort="true"
             :default-sort-key="'created_at'"
             :default-sort-order="'desc'"
+            :show-diagnostic="true"
             @sort="handleSort"
+            @diagnosticClick="openUsageDiagnostic"
             @userClick="handleUserClick"
             @ipGeoBatchFailed="handleIpGeoBatchFailed"
           />
@@ -174,6 +176,12 @@
     :end-date="endDate"
     @close="cleanupDialogVisible = false"
   />
+  <UsageDiagnosticModal
+    v-model:show="showUsageDiagnosticModal"
+    :usage-id="selectedDiagnosticUsage?.id ?? null"
+    :usage="selectedDiagnosticUsage"
+    @close="selectedDiagnosticUsage = null"
+  />
   <!-- Balance history modal triggered from usage table user click -->
   <UserBalanceHistoryModal
     :show="showBalanceHistoryModal"
@@ -197,6 +205,7 @@ import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; impo
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
 import UserTokenRanking from '@/components/admin/usage/UserTokenRanking.vue'
 import UsageCleanupDialog from '@/components/admin/usage/UsageCleanupDialog.vue'
+import UsageDiagnosticModal from '@/components/admin/usage/UsageDiagnosticModal.vue'
 import UserBalanceHistoryModal from '@/components/admin/user/UserBalanceHistoryModal.vue'
 import OpsErrorLogTable from '@/views/admin/ops/components/OpsErrorLogTable.vue'
 import OpsErrorDetailModal from '@/views/admin/ops/components/OpsErrorDetailModal.vue'
@@ -235,6 +244,13 @@ let statsReqSeq = 0
 let modelStatsReqSeq = 0
 const exportProgress = reactive({ show: false, progress: 0, current: 0, total: 0, estimatedTime: '' })
 const cleanupDialogVisible = ref(false)
+// 诊断只保存当前选择的用量元数据，大请求体由弹窗按需读取并清理。
+const showUsageDiagnosticModal = ref(false)
+const selectedDiagnosticUsage = ref<AdminUsageLog | null>(null)
+const openUsageDiagnostic = (usage: AdminUsageLog) => {
+  selectedDiagnosticUsage.value = usage
+  showUsageDiagnosticModal.value = true
+}
 // Balance history modal state
 const showBalanceHistoryModal = ref(false)
 const balanceHistoryUser = ref<AdminUser | null>(null)
