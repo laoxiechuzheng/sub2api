@@ -22,7 +22,7 @@ func TestRequestDiagnosticRepositorySaveCanonicalBindingAndCapacity(t *testing.T
 	record := &service.RequestDiagnosticRecord{APIKeyID: 7, UsageRequestID: "client:exact", UsageCreatedAt: now, CapturedAt: now, ExpiresAt: now.Add(time.Hour), PayloadGzip: []byte{1, 2}, PayloadBytes: 123}
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT pg_try_advisory_xact_lock(242, 1)`)).WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(true))
-	mock.ExpectExec(`(?s)INSERT INTO usage_request_diagnostics.*WHERE EXISTS.*api_key_id = \$1 AND request_id = \$2.*created_at = \$3::timestamptz.*ON CONFLICT \(api_key_id, usage_request_id\) DO NOTHING`).WithArgs(record.APIKeyID, record.UsageRequestID, record.UsageCreatedAt, record.CapturedAt, record.ExpiresAt, record.PayloadGzip, record.PayloadBytes).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)INSERT INTO usage_request_diagnostics.*SELECT \$1::bigint, \$2::varchar, \$3::timestamptz, \$4::timestamptz, \$5::timestamptz, \$6::bytea, \$7::integer.*WHERE EXISTS.*api_key_id = \$1 AND request_id = \$2.*created_at = \$3::timestamptz.*ON CONFLICT \(api_key_id, usage_request_id\) DO NOTHING`).WithArgs(record.APIKeyID, record.UsageRequestID, record.UsageCreatedAt, record.CapturedAt, record.ExpiresAt, record.PayloadGzip, record.PayloadBytes).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`(?s)WITH budget AS.*octet_length\(payload_gzip\).*SET payload_gzip = ''::bytea, payload_bytes = 0.*total > \$1`).WithArgs(int64(256 << 20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	require.NoError(t, repo.Save(context.Background(), record, 256<<20))

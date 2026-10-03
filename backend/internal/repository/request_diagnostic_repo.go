@@ -33,10 +33,11 @@ func (r *requestDiagnosticRepository) Save(ctx context.Context, record *service.
 		return errors.New("request diagnostic storage busy")
 	}
 
+	// 固定参数类型，避免 INSERT SELECT 与 WHERE 比较对同一参数推断不一致。
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO usage_request_diagnostics
 			(api_key_id, usage_request_id, usage_created_at, captured_at, expires_at, payload_gzip, payload_bytes)
-		SELECT $1, $2, $3, $4, $5, $6, $7
+		SELECT $1::bigint, $2::varchar, $3::timestamptz, $4::timestamptz, $5::timestamptz, $6::bytea, $7::integer
 		WHERE EXISTS (
 			SELECT 1 FROM usage_logs
 			WHERE api_key_id = $1 AND request_id = $2
