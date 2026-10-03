@@ -6,7 +6,7 @@ on:
       release_version:
         description: Image tag to publish
         required: true
-        default: 0.2.11-deploy-20260930
+        default: 0.2.12-diagnostics-20261003
         type: string
 
 permissions:
@@ -21,7 +21,46 @@ env:
   IMAGE_NAME: ghcr.io/laoxiechuzheng/sub2api
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Backend unit regression tests
+        working-directory: backend
+        run: go test -mod=readonly -p 2 -tags=unit ./... -count=1 -timeout=10m
+      - name: Race regression tests
+        working-directory: backend
+        run: >-
+          go test -mod=readonly -race -tags=unit
+          ./internal/requestdiagnostic ./internal/service ./internal/repository
+          ./internal/handler/admin ./internal/server/middleware ./internal/server/routes
+          ./internal/config ./internal/pkg/httputil
+          -run 'Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|GatewayForwardStreamDrain|CommentOnlySSEOverload'
+          -count=1 -timeout=10m
+      - name: PostgreSQL diagnostic integration tests
+        working-directory: backend
+        run: go test -mod=readonly -tags=integration ./internal/repository -run '^TestRequestDiagnosticRepositoryIntegration' -count=1 -timeout=5m
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Frontend diagnostic regression tests
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run typecheck
+          pnpm exec vitest run src/api/__tests__/admin.usageDiagnostic.spec.ts src/components/admin/usage/__tests__/UsageDiagnosticModal.spec.ts src/components/admin/usage/__tests__/UsageTable.diagnostic.spec.ts src/views/admin/__tests__/UsageView.diagnostic.spec.ts
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
