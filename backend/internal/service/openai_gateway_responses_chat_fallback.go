@@ -30,6 +30,11 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	account *Account,
 	body []byte,
 ) (*OpenAIForwardResult, error) {
+	if openAIRequestNeedsCompactionProtocol(c, body) {
+		err := fmt.Errorf("native Responses compaction cannot be converted to Chat Completions")
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "compact_not_supported", err.Error())
+		return nil, err
+	}
 	startTime := time.Now()
 
 	var responsesReq apicompat.ResponsesRequest

@@ -19,6 +19,11 @@ import (
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	if openAIRequestNeedsCompactionProtocol(c, body) && !CanForwardOpenAICompaction(account, body) {
+		err := fmt.Errorf("native Responses compaction cannot be converted to Chat Completions or Anthropic")
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "compact_not_supported", err.Error())
+		return nil, err
+	}
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {

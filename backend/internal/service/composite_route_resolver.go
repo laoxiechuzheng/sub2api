@@ -32,13 +32,23 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 // inbound request facts. Routes with request conditions are evaluated as an
 // override layer first, so a conditional compaction rule can beat an existing
 // exact model route without changing that route's configuration.
-func (r *CompositeRouteResolver) ResolveWithMatch(ctx context.Context, groupID int64, model, endpoint string, match CompositeRouteRequestMatch) (CompositeRouteDecision, error) {
+func (r *CompositeRouteResolver) ResolveWithMatch(ctx context.Context, groupID int64, model, endpoint string, match CompositeRouteRequestMatch) (decision CompositeRouteDecision, err error) {
 	model = strings.TrimSpace(model)
 	endpoint = normalizeCompositeRouteEndpoint(endpoint)
-	decision := CompositeRouteDecision{
+	decision = CompositeRouteDecision{
 		GroupID:     groupID,
 		PublicModel: model,
 		Endpoint:    endpoint,
+	}
+	match.facts = newCompositeRequestFacts(match)
+	match.facts.endpoint = endpoint
+	var inspectedRoutes []CompositeModelRoute
+	if match.Explain {
+		defer func() {
+			classification := match.facts.classify()
+			decision.RequestClassification = &classification
+			decision.ConditionEvaluations = explainCompositeRoutes(inspectedRoutes, model, endpoint, match, decision.Route)
+		}()
 	}
 	if model == "" {
 		decision.Reason = "model is required"
@@ -50,6 +60,7 @@ func (r *CompositeRouteResolver) ResolveWithMatch(ctx context.Context, groupID i
 		if err != nil {
 			return decision, fmt.Errorf("list composite routes: %w", err)
 		}
+		inspectedRoutes = routes
 		if route, ok := matchCompositeRoute(routes, model, endpoint, match); ok {
 			upstreamModel := strings.TrimSpace(route.UpstreamModel)
 			if upstreamModel == "" {
@@ -133,7 +144,8 @@ func matchCompositeRoute(routes []CompositeModelRoute, model, endpoint string, m
 }
 
 func compositeRouteHasRequestConditions(route CompositeModelRoute) bool {
-	return strings.TrimSpace(route.UserAgentContains) != "" || strings.TrimSpace(route.BodyContains) != ""
+	return strings.TrimSpace(route.UserAgentContains) != "" || strings.TrimSpace(route.BodyContains) != "" ||
+		strings.TrimSpace(route.BodyNotContains) != "" || compositeConditionDefault(route.RequestKind, "any") != "any"
 }
 
 func bestCompositeRoute(routes []CompositeModelRoute, model, endpoint string, match CompositeRouteRequestMatch) (CompositeModelRoute, bool) {
@@ -218,45 +230,7 @@ func bestCompositeRoute(routes []CompositeModelRoute, model, endpoint string, ma
 }
 
 func compositeRouteRequestConditionsMatch(route CompositeModelRoute, match CompositeRouteRequestMatch) bool {
-	if match.IgnoreRequestConditions {
-		return true
-	}
-	uaPatterns := splitCompositeRouteConditionPatterns(route.UserAgentContains)
-	if len(uaPatterns) > 0 {
-		userAgent := strings.TrimSpace(match.UserAgent)
-		if userAgent == "" {
-			return false
-		}
-		userAgent = strings.ToLower(userAgent)
-		matched := false
-		for _, pattern := range uaPatterns {
-			if strings.Contains(userAgent, strings.ToLower(pattern)) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-
-	bodyPatterns := splitCompositeRouteConditionPatterns(route.BodyContains)
-	if len(bodyPatterns) > 0 {
-		if len(match.Body) == 0 {
-			return false
-		}
-		matched := false
-		for _, pattern := range bodyPatterns {
-			if requestBodyContainsPattern(match.Body, pattern) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-	return true
+	return evaluateCompositeRouteConditions(route, match).Matched
 }
 
 func requestBodyContainsPattern(body []byte, pattern string) bool {

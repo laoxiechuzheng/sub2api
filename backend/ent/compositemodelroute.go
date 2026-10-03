@@ -40,6 +40,14 @@ type CompositeModelRoute struct {
 	UserAgentContains string `json:"user_agent_contains,omitempty"`
 	// Newline-separated request-body substrings; empty disables the condition.
 	BodyContains string `json:"body_contains,omitempty"`
+	// Request classification: any, compaction, or conversation.
+	RequestKind string `json:"request_kind,omitempty"`
+	// Body scope: full_body, instructions, last_message, or current_turn.
+	BodyMatchScope string `json:"body_match_scope,omitempty"`
+	// Body substring matching: any, all, or prefix.
+	BodyMatchMode string `json:"body_match_mode,omitempty"`
+	// Newline-separated body exclusions; any match rejects the route.
+	BodyNotContains string `json:"body_not_contains,omitempty"`
 	// Lower values win within the same match strength.
 	Priority int `json:"priority,omitempty"`
 	// Enabled holds the value of the "enabled" field.
@@ -81,7 +89,7 @@ func (*CompositeModelRoute) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case compositemodelroute.FieldID, compositemodelroute.FieldGroupID, compositemodelroute.FieldPriority:
 			values[i] = new(sql.NullInt64)
-		case compositemodelroute.FieldPublicModel, compositemodelroute.FieldMatchType, compositemodelroute.FieldTargetPlatform, compositemodelroute.FieldUpstreamModel, compositemodelroute.FieldEndpoint, compositemodelroute.FieldUserAgentContains, compositemodelroute.FieldBodyContains, compositemodelroute.FieldNotes:
+		case compositemodelroute.FieldPublicModel, compositemodelroute.FieldMatchType, compositemodelroute.FieldTargetPlatform, compositemodelroute.FieldUpstreamModel, compositemodelroute.FieldEndpoint, compositemodelroute.FieldUserAgentContains, compositemodelroute.FieldBodyContains, compositemodelroute.FieldRequestKind, compositemodelroute.FieldBodyMatchScope, compositemodelroute.FieldBodyMatchMode, compositemodelroute.FieldBodyNotContains, compositemodelroute.FieldNotes:
 			values[i] = new(sql.NullString)
 		case compositemodelroute.FieldCreatedAt, compositemodelroute.FieldUpdatedAt, compositemodelroute.FieldDeletedAt:
 			values[i] = new(sql.NullTime)
@@ -172,6 +180,30 @@ func (_m *CompositeModelRoute) assignValues(columns []string, values []any) erro
 				return fmt.Errorf("unexpected type %T for field body_contains", values[i])
 			} else if value.Valid {
 				_m.BodyContains = value.String
+			}
+		case compositemodelroute.FieldRequestKind:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field request_kind", values[i])
+			} else if value.Valid {
+				_m.RequestKind = value.String
+			}
+		case compositemodelroute.FieldBodyMatchScope:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field body_match_scope", values[i])
+			} else if value.Valid {
+				_m.BodyMatchScope = value.String
+			}
+		case compositemodelroute.FieldBodyMatchMode:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field body_match_mode", values[i])
+			} else if value.Valid {
+				_m.BodyMatchMode = value.String
+			}
+		case compositemodelroute.FieldBodyNotContains:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field body_not_contains", values[i])
+			} else if value.Valid {
+				_m.BodyNotContains = value.String
 			}
 		case compositemodelroute.FieldPriority:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -267,6 +299,18 @@ func (_m *CompositeModelRoute) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("body_contains=")
 	builder.WriteString(_m.BodyContains)
+	builder.WriteString(", ")
+	builder.WriteString("request_kind=")
+	builder.WriteString(_m.RequestKind)
+	builder.WriteString(", ")
+	builder.WriteString("body_match_scope=")
+	builder.WriteString(_m.BodyMatchScope)
+	builder.WriteString(", ")
+	builder.WriteString("body_match_mode=")
+	builder.WriteString(_m.BodyMatchMode)
+	builder.WriteString(", ")
+	builder.WriteString("body_not_contains=")
+	builder.WriteString(_m.BodyNotContains)
 	builder.WriteString(", ")
 	builder.WriteString("priority=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Priority))

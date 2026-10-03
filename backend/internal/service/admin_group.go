@@ -176,10 +176,22 @@ func (s *adminServiceImpl) UpdateCompositeRoute(ctx context.Context, groupID, ro
 	if s.compositeRouteRepo == nil {
 		return nil, fmt.Errorf("composite route repository is not configured")
 	}
-	if ok, err := s.compositeRouteBelongsToGroup(ctx, groupID, routeID); err != nil {
+	existing, err := s.compositeRouteInGroup(ctx, groupID, routeID)
+	if err != nil {
 		return nil, err
-	} else if !ok {
-		return nil, ErrCompositeRouteNotFound
+	}
+	// Legacy PUT clients omit these conditions; only the new fields preserve omitted values.
+	if !input.RequestKindProvided && input.RequestKind == "" {
+		input.RequestKind = existing.RequestKind
+	}
+	if !input.BodyMatchScopeProvided && input.BodyMatchScope == "" {
+		input.BodyMatchScope = existing.BodyMatchScope
+	}
+	if !input.BodyMatchModeProvided && input.BodyMatchMode == "" {
+		input.BodyMatchMode = existing.BodyMatchMode
+	}
+	if !input.BodyNotContainsProvided && input.BodyNotContains == "" {
+		input.BodyNotContains = existing.BodyNotContains
 	}
 	route, err := compositeRouteFromInput(groupID, input)
 	if err != nil {
@@ -202,10 +214,8 @@ func (s *adminServiceImpl) DeleteCompositeRoute(ctx context.Context, groupID, ro
 	if s.compositeRouteRepo == nil {
 		return fmt.Errorf("composite route repository is not configured")
 	}
-	if ok, err := s.compositeRouteBelongsToGroup(ctx, groupID, routeID); err != nil {
+	if _, err := s.compositeRouteInGroup(ctx, groupID, routeID); err != nil {
 		return err
-	} else if !ok {
-		return ErrCompositeRouteNotFound
 	}
 	return s.compositeRouteRepo.Delete(ctx, routeID)
 }
@@ -217,13 +227,18 @@ func (s *adminServiceImpl) PreviewCompositeRoute(ctx context.Context, groupID in
 	if err := s.requireCompositeGroup(ctx, groupID); err != nil {
 		return nil, err
 	}
+	if input.NativeCompaction && normalizeCompositeRouteEndpoint(input.Endpoint) != CompositeRouteEndpointResponses {
+		return nil, infraerrors.BadRequest("INVALID_NATIVE_COMPACTION_ENDPOINT", "native_compaction requires endpoint responses")
+	}
 	resolver := s.compositeResolver
 	if resolver == nil {
 		resolver = NewCompositeRouteResolver(s.compositeRouteRepo)
 	}
 	decision, err := resolver.ResolveWithMatch(ctx, groupID, input.Model, input.Endpoint, CompositeRouteRequestMatch{
-		UserAgent: input.UserAgent,
-		Body:      []byte(input.Body),
+		UserAgent:        input.UserAgent,
+		Body:             []byte(input.Body),
+		NativeCompaction: input.NativeCompaction,
+		Explain:          true,
 	})
 	if err != nil {
 		return nil, err
@@ -242,22 +257,23 @@ func (s *adminServiceImpl) requireCompositeGroup(ctx context.Context, groupID in
 	return nil
 }
 
-func (s *adminServiceImpl) compositeRouteBelongsToGroup(ctx context.Context, groupID, routeID int64) (bool, error) {
+func (s *adminServiceImpl) compositeRouteInGroup(ctx context.Context, groupID, routeID int64) (*CompositeModelRoute, error) {
 	routes, err := s.compositeRouteRepo.ListByGroup(ctx, groupID, true)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	for i := range routes {
 		if routes[i].ID == routeID {
-			return true, nil
+			return &routes[i], nil
 		}
 	}
-	return false, nil
+	return nil, ErrCompositeRouteNotFound
 }
 
 const (
 	maxCompositeRouteUserAgentConditionBytes = 2048
 	maxCompositeRouteBodyConditionBytes      = 8192
+	maxCompositeRouteConditionPatterns       = 128
 )
 
 func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*CompositeModelRoute, error) {
@@ -268,11 +284,38 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 	if !isConcreteRequestPlatform(input.TargetPlatform) {
 		return nil, fmt.Errorf("target_platform must be a concrete provider")
 	}
+	switch input.RequestKind {
+	case CompositeRouteRequestKindAny, CompositeRouteRequestKindCompaction, CompositeRouteRequestKindConversation:
+	default:
+		return nil, infraerrors.BadRequest("INVALID_COMPOSITE_ROUTE_REQUEST_KIND", "request_kind must be any, compaction, or conversation")
+	}
+	switch input.BodyMatchScope {
+	case CompositeRouteBodyScopeFullBody, CompositeRouteBodyScopeInstructions, CompositeRouteBodyScopeLastMessage, CompositeRouteBodyScopeCurrentTurn:
+	default:
+		return nil, infraerrors.BadRequest("INVALID_COMPOSITE_ROUTE_BODY_MATCH_SCOPE", "body_match_scope must be full_body, instructions, last_message, or current_turn")
+	}
+	switch input.BodyMatchMode {
+	case CompositeRouteBodyMatchAny, CompositeRouteBodyMatchAll, CompositeRouteBodyMatchPrefix:
+	default:
+		return nil, infraerrors.BadRequest("INVALID_COMPOSITE_ROUTE_BODY_MATCH_MODE", "body_match_mode must be any, all, or prefix")
+	}
 	if len(input.UserAgentContains) > maxCompositeRouteUserAgentConditionBytes {
 		return nil, fmt.Errorf("user_agent_contains is too long (max %d bytes)", maxCompositeRouteUserAgentConditionBytes)
 	}
 	if len(input.BodyContains) > maxCompositeRouteBodyConditionBytes {
 		return nil, fmt.Errorf("body_contains is too long (max %d bytes)", maxCompositeRouteBodyConditionBytes)
+	}
+	if len(input.BodyNotContains) > maxCompositeRouteBodyConditionBytes {
+		return nil, infraerrors.BadRequest("COMPOSITE_ROUTE_BODY_NOT_CONTAINS_TOO_LONG", fmt.Sprintf("body_not_contains is too long (max %d bytes)", maxCompositeRouteBodyConditionBytes))
+	}
+	for _, condition := range []struct{ name, value string }{
+		{"user_agent_contains", input.UserAgentContains},
+		{"body_contains", input.BodyContains},
+		{"body_not_contains", input.BodyNotContains},
+	} {
+		if len(splitCompositeRouteConditionPatterns(condition.value)) > maxCompositeRouteConditionPatterns {
+			return nil, infraerrors.BadRequest("COMPOSITE_ROUTE_CONDITION_TOO_MANY_PATTERNS", fmt.Sprintf("%s has too many patterns (max %d distinct patterns)", condition.name, maxCompositeRouteConditionPatterns))
+		}
 	}
 	if input.Priority == 0 {
 		input.Priority = 100
@@ -286,6 +329,10 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 		Endpoint:          input.Endpoint,
 		UserAgentContains: input.UserAgentContains,
 		BodyContains:      input.BodyContains,
+		RequestKind:       input.RequestKind,
+		BodyMatchScope:    input.BodyMatchScope,
+		BodyMatchMode:     input.BodyMatchMode,
+		BodyNotContains:   input.BodyNotContains,
 		Priority:          input.Priority,
 		Enabled:           input.Enabled,
 		Notes:             input.Notes,

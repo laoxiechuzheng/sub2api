@@ -35,15 +35,15 @@ jobs:
       - name: Race regression tests
         working-directory: backend
         run: >-
-          go test -mod=readonly -race -tags=unit
+          go test -mod=readonly -p 2 -race -tags=unit
           ./internal/requestdiagnostic ./internal/service ./internal/repository
-          ./internal/handler/admin ./internal/server/middleware ./internal/server/routes
+          ./internal/handler ./internal/handler/admin ./internal/server/middleware ./internal/server/routes
           ./internal/config ./internal/pkg/httputil
-          -run 'Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|GatewayForwardStreamDrain|CommentOnlySSEOverload'
+          -run 'Composite|NativeCompaction|ResponsesChatFallback|ResponsesNativeGuard|Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|GatewayForwardStreamDrain|CommentOnlySSEOverload'
           -count=1 -timeout=10m
-      - name: PostgreSQL diagnostic integration tests
+      - name: PostgreSQL diagnostic and precise routing integration tests
         working-directory: backend
-        run: go test -mod=readonly -tags=integration ./internal/repository -run '^TestRequestDiagnosticRepositoryIntegration' -count=1 -timeout=5m
+        run: go test -mod=readonly -tags=integration ./internal/repository -run '^Test(RequestDiagnosticRepositoryIntegration|CompositeRoutePreciseConditions)' -count=1 -timeout=5m
       - uses: pnpm/action-setup@v6
         with:
           version: 9
@@ -57,7 +57,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm run typecheck
-          pnpm exec vitest run src/api/__tests__/admin.usageDiagnostic.spec.ts src/components/admin/usage/__tests__/UsageDiagnosticModal.spec.ts src/components/admin/usage/__tests__/UsageTable.diagnostic.spec.ts src/views/admin/__tests__/UsageView.diagnostic.spec.ts
+          pnpm exec vitest run src/api/__tests__/admin.usageDiagnostic.spec.ts src/components/admin/usage/__tests__/UsageDiagnosticModal.spec.ts src/components/admin/usage/__tests__/UsageTable.diagnostic.spec.ts src/views/admin/__tests__/UsageView.diagnostic.spec.ts src/views/admin/__tests__/GroupsView.compositePlatforms.spec.ts
 
   publish:
     needs: verify

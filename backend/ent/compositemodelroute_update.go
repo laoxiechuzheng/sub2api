@@ -167,6 +167,62 @@ func (_u *CompositeModelRouteUpdate) SetNillableBodyContains(v *string) *Composi
 	return _u
 }
 
+// SetRequestKind sets the "request_kind" field.
+func (_u *CompositeModelRouteUpdate) SetRequestKind(v string) *CompositeModelRouteUpdate {
+	_u.mutation.SetRequestKind(v)
+	return _u
+}
+
+// SetNillableRequestKind sets the "request_kind" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdate) SetNillableRequestKind(v *string) *CompositeModelRouteUpdate {
+	if v != nil {
+		_u.SetRequestKind(*v)
+	}
+	return _u
+}
+
+// SetBodyMatchScope sets the "body_match_scope" field.
+func (_u *CompositeModelRouteUpdate) SetBodyMatchScope(v string) *CompositeModelRouteUpdate {
+	_u.mutation.SetBodyMatchScope(v)
+	return _u
+}
+
+// SetNillableBodyMatchScope sets the "body_match_scope" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdate) SetNillableBodyMatchScope(v *string) *CompositeModelRouteUpdate {
+	if v != nil {
+		_u.SetBodyMatchScope(*v)
+	}
+	return _u
+}
+
+// SetBodyMatchMode sets the "body_match_mode" field.
+func (_u *CompositeModelRouteUpdate) SetBodyMatchMode(v string) *CompositeModelRouteUpdate {
+	_u.mutation.SetBodyMatchMode(v)
+	return _u
+}
+
+// SetNillableBodyMatchMode sets the "body_match_mode" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdate) SetNillableBodyMatchMode(v *string) *CompositeModelRouteUpdate {
+	if v != nil {
+		_u.SetBodyMatchMode(*v)
+	}
+	return _u
+}
+
+// SetBodyNotContains sets the "body_not_contains" field.
+func (_u *CompositeModelRouteUpdate) SetBodyNotContains(v string) *CompositeModelRouteUpdate {
+	_u.mutation.SetBodyNotContains(v)
+	return _u
+}
+
+// SetNillableBodyNotContains sets the "body_not_contains" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdate) SetNillableBodyNotContains(v *string) *CompositeModelRouteUpdate {
+	if v != nil {
+		_u.SetBodyNotContains(*v)
+	}
+	return _u
+}
+
 // SetPriority sets the "priority" field.
 func (_u *CompositeModelRouteUpdate) SetPriority(v int) *CompositeModelRouteUpdate {
 	_u.mutation.ResetPriority()
@@ -307,6 +363,26 @@ func (_u *CompositeModelRouteUpdate) check() error {
 			return &ValidationError{Name: "endpoint", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.endpoint": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.RequestKind(); ok {
+		if err := compositemodelroute.RequestKindValidator(v); err != nil {
+			return &ValidationError{Name: "request_kind", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.request_kind": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.BodyMatchScope(); ok {
+		if err := compositemodelroute.BodyMatchScopeValidator(v); err != nil {
+			return &ValidationError{Name: "body_match_scope", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.body_match_scope": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.BodyMatchMode(); ok {
+		if err := compositemodelroute.BodyMatchModeValidator(v); err != nil {
+			return &ValidationError{Name: "body_match_mode", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.body_match_mode": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.BodyNotContains(); ok {
+		if err := compositemodelroute.BodyNotContainsValidator(v); err != nil {
+			return &ValidationError{Name: "body_not_contains", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.body_not_contains": %w`, err)}
+		}
+	}
 	if _u.mutation.GroupCleared() && len(_u.mutation.GroupIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "CompositeModelRoute.group"`)
 	}
@@ -354,6 +430,18 @@ func (_u *CompositeModelRouteUpdate) sqlSave(ctx context.Context) (_node int, er
 	}
 	if value, ok := _u.mutation.BodyContains(); ok {
 		_spec.SetField(compositemodelroute.FieldBodyContains, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.RequestKind(); ok {
+		_spec.SetField(compositemodelroute.FieldRequestKind, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BodyMatchScope(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyMatchScope, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BodyMatchMode(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyMatchMode, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BodyNotContains(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyNotContains, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.Priority(); ok {
 		_spec.SetField(compositemodelroute.FieldPriority, field.TypeInt, value)
@@ -557,6 +645,62 @@ func (_u *CompositeModelRouteUpdateOne) SetNillableBodyContains(v *string) *Comp
 	return _u
 }
 
+// SetRequestKind sets the "request_kind" field.
+func (_u *CompositeModelRouteUpdateOne) SetRequestKind(v string) *CompositeModelRouteUpdateOne {
+	_u.mutation.SetRequestKind(v)
+	return _u
+}
+
+// SetNillableRequestKind sets the "request_kind" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdateOne) SetNillableRequestKind(v *string) *CompositeModelRouteUpdateOne {
+	if v != nil {
+		_u.SetRequestKind(*v)
+	}
+	return _u
+}
+
+// SetBodyMatchScope sets the "body_match_scope" field.
+func (_u *CompositeModelRouteUpdateOne) SetBodyMatchScope(v string) *CompositeModelRouteUpdateOne {
+	_u.mutation.SetBodyMatchScope(v)
+	return _u
+}
+
+// SetNillableBodyMatchScope sets the "body_match_scope" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdateOne) SetNillableBodyMatchScope(v *string) *CompositeModelRouteUpdateOne {
+	if v != nil {
+		_u.SetBodyMatchScope(*v)
+	}
+	return _u
+}
+
+// SetBodyMatchMode sets the "body_match_mode" field.
+func (_u *CompositeModelRouteUpdateOne) SetBodyMatchMode(v string) *CompositeModelRouteUpdateOne {
+	_u.mutation.SetBodyMatchMode(v)
+	return _u
+}
+
+// SetNillableBodyMatchMode sets the "body_match_mode" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdateOne) SetNillableBodyMatchMode(v *string) *CompositeModelRouteUpdateOne {
+	if v != nil {
+		_u.SetBodyMatchMode(*v)
+	}
+	return _u
+}
+
+// SetBodyNotContains sets the "body_not_contains" field.
+func (_u *CompositeModelRouteUpdateOne) SetBodyNotContains(v string) *CompositeModelRouteUpdateOne {
+	_u.mutation.SetBodyNotContains(v)
+	return _u
+}
+
+// SetNillableBodyNotContains sets the "body_not_contains" field if the given value is not nil.
+func (_u *CompositeModelRouteUpdateOne) SetNillableBodyNotContains(v *string) *CompositeModelRouteUpdateOne {
+	if v != nil {
+		_u.SetBodyNotContains(*v)
+	}
+	return _u
+}
+
 // SetPriority sets the "priority" field.
 func (_u *CompositeModelRouteUpdateOne) SetPriority(v int) *CompositeModelRouteUpdateOne {
 	_u.mutation.ResetPriority()
@@ -710,6 +854,26 @@ func (_u *CompositeModelRouteUpdateOne) check() error {
 			return &ValidationError{Name: "endpoint", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.endpoint": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.RequestKind(); ok {
+		if err := compositemodelroute.RequestKindValidator(v); err != nil {
+			return &ValidationError{Name: "request_kind", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.request_kind": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.BodyMatchScope(); ok {
+		if err := compositemodelroute.BodyMatchScopeValidator(v); err != nil {
+			return &ValidationError{Name: "body_match_scope", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.body_match_scope": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.BodyMatchMode(); ok {
+		if err := compositemodelroute.BodyMatchModeValidator(v); err != nil {
+			return &ValidationError{Name: "body_match_mode", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.body_match_mode": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.BodyNotContains(); ok {
+		if err := compositemodelroute.BodyNotContainsValidator(v); err != nil {
+			return &ValidationError{Name: "body_not_contains", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.body_not_contains": %w`, err)}
+		}
+	}
 	if _u.mutation.GroupCleared() && len(_u.mutation.GroupIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "CompositeModelRoute.group"`)
 	}
@@ -774,6 +938,18 @@ func (_u *CompositeModelRouteUpdateOne) sqlSave(ctx context.Context) (_node *Com
 	}
 	if value, ok := _u.mutation.BodyContains(); ok {
 		_spec.SetField(compositemodelroute.FieldBodyContains, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.RequestKind(); ok {
+		_spec.SetField(compositemodelroute.FieldRequestKind, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BodyMatchScope(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyMatchScope, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BodyMatchMode(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyMatchMode, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BodyNotContains(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyNotContains, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.Priority(); ok {
 		_spec.SetField(compositemodelroute.FieldPriority, field.TypeInt, value)

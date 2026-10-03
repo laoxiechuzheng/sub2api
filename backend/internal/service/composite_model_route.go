@@ -22,6 +22,19 @@ const (
 	CompositeRouteEndpointImages          = "images"
 	CompositeRouteEndpointGemini          = "gemini"
 
+	CompositeRouteRequestKindAny          = "any"
+	CompositeRouteRequestKindCompaction   = "compaction"
+	CompositeRouteRequestKindConversation = "conversation"
+
+	CompositeRouteBodyScopeFullBody     = "full_body"
+	CompositeRouteBodyScopeInstructions = "instructions"
+	CompositeRouteBodyScopeLastMessage  = "last_message"
+	CompositeRouteBodyScopeCurrentTurn  = "current_turn"
+
+	CompositeRouteBodyMatchAny    = "any"
+	CompositeRouteBodyMatchAll    = "all"
+	CompositeRouteBodyMatchPrefix = "prefix"
+
 	CompositeRouteSourceExplicit = "route"
 	CompositeRouteSourceDetector = "detector"
 	CompositeRouteSourceAccount  = "account_model"
@@ -54,6 +67,10 @@ type CompositeModelRoute struct {
 	Endpoint          string    `json:"endpoint"`
 	UserAgentContains string    `json:"user_agent_contains"`
 	BodyContains      string    `json:"body_contains"`
+	RequestKind       string    `json:"request_kind"`
+	BodyMatchScope    string    `json:"body_match_scope"`
+	BodyMatchMode     string    `json:"body_match_mode"`
+	BodyNotContains   string    `json:"body_not_contains"`
 	Priority          int       `json:"priority"`
 	Enabled           bool      `json:"enabled"`
 	Notes             string    `json:"notes"`
@@ -62,17 +79,21 @@ type CompositeModelRoute struct {
 }
 
 type CompositeRoutePreviewRequest struct {
-	Model     string `json:"model"`
-	Endpoint  string `json:"endpoint"`
-	UserAgent string `json:"user_agent"`
-	Body      string `json:"body"`
+	Model            string `json:"model"`
+	Endpoint         string `json:"endpoint"`
+	UserAgent        string `json:"user_agent"`
+	Body             string `json:"body"`
+	NativeCompaction bool   `json:"native_compaction"`
 }
 
 // CompositeRouteRequestMatch carries request-level facts used by conditional
 // routes. Empty conditions never match a conditional rule.
 type CompositeRouteRequestMatch struct {
-	UserAgent string
-	Body      []byte
+	UserAgent        string
+	Body             []byte
+	NativeCompaction bool
+	Explain          bool
+	facts            *compositeRequestFacts
 	// IgnoreRequestConditions is used by catalog/model-list resolution, which
 	// asks whether a model is routable at all rather than resolving one live
 	// request.
@@ -80,15 +101,17 @@ type CompositeRouteRequestMatch struct {
 }
 
 type CompositeRouteDecision struct {
-	Matched        bool                 `json:"matched"`
-	Source         string               `json:"source"`
-	GroupID        int64                `json:"group_id"`
-	PublicModel    string               `json:"public_model"`
-	TargetPlatform string               `json:"target_platform"`
-	UpstreamModel  string               `json:"upstream_model"`
-	Endpoint       string               `json:"endpoint"`
-	Route          *CompositeModelRoute `json:"route,omitempty"`
-	Reason         string               `json:"reason,omitempty"`
+	Matched               bool                                `json:"matched"`
+	Source                string                              `json:"source"`
+	GroupID               int64                               `json:"group_id"`
+	PublicModel           string                              `json:"public_model"`
+	TargetPlatform        string                              `json:"target_platform"`
+	UpstreamModel         string                              `json:"upstream_model"`
+	Endpoint              string                              `json:"endpoint"`
+	Route                 *CompositeModelRoute                `json:"route,omitempty"`
+	Reason                string                              `json:"reason,omitempty"`
+	RequestClassification *CompositeRequestClassification     `json:"request_classification,omitempty"`
+	ConditionEvaluations  []CompositeRouteConditionEvaluation `json:"condition_evaluations,omitempty"`
 }
 
 type CompositeRouteInput struct {
@@ -99,9 +122,18 @@ type CompositeRouteInput struct {
 	Endpoint          string
 	UserAgentContains string
 	BodyContains      string
+	RequestKind       string `json:"request_kind"`
+	BodyMatchScope    string `json:"body_match_scope"`
+	BodyMatchMode     string `json:"body_match_mode"`
+	BodyNotContains   string `json:"body_not_contains"`
 	Priority          int
 	Enabled           bool
 	Notes             string
+	// Nonempty values are provided; these flags additionally allow explicit empty updates.
+	RequestKindProvided     bool `json:"-"`
+	BodyMatchScopeProvided  bool `json:"-"`
+	BodyMatchModeProvided   bool `json:"-"`
+	BodyNotContainsProvided bool `json:"-"`
 }
 
 type CompositeModelRouteRepository interface {
@@ -151,6 +183,10 @@ func normalizeCompositeRouteInput(input CompositeRouteInput) CompositeRouteInput
 	input.Endpoint = normalizeCompositeRouteEndpoint(input.Endpoint)
 	input.UserAgentContains = normalizeCompositeRouteConditionPatterns(input.UserAgentContains)
 	input.BodyContains = normalizeCompositeRouteConditionPatterns(input.BodyContains)
+	input.RequestKind = normalizeCompositeRouteRequestKind(input.RequestKind)
+	input.BodyMatchScope = normalizeCompositeRouteBodyMatchScope(input.BodyMatchScope)
+	input.BodyMatchMode = normalizeCompositeRouteBodyMatchMode(input.BodyMatchMode)
+	input.BodyNotContains = normalizeCompositeRouteConditionPatterns(input.BodyNotContains)
 	// 仅对 exact 路由把空 upstream_model 回填成 public_model：exact 命中时请求模型
 	// 恒等于 public_model，回填只影响持久化/后台展示，保留原有契约不变。
 	// prefix/contains 路由留空则不回填——Resolve 会回退到具体请求模型，从而透传
@@ -164,8 +200,33 @@ func normalizeCompositeRouteInput(input CompositeRouteInput) CompositeRouteInput
 	return input
 }
 
+// Keep unknown values so admin validation can reject them without widening a rule.
+func normalizeCompositeRouteRequestKind(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return CompositeRouteRequestKindAny
+	}
+	return value
+}
+
+func normalizeCompositeRouteBodyMatchScope(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return CompositeRouteBodyScopeFullBody
+	}
+	return value
+}
+
+func normalizeCompositeRouteBodyMatchMode(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return CompositeRouteBodyMatchAny
+	}
+	return value
+}
+
 // normalizeCompositeRouteConditionPatterns turns a multi-line admin input into
-// a stable newline-separated OR list: blank lines are dropped and duplicates
+// a stable newline-separated pattern list: blank lines are dropped and duplicates
 // are removed in first-seen order.
 func normalizeCompositeRouteConditionPatterns(value string) string {
 	value = strings.ReplaceAll(value, "\r\n", "\n")

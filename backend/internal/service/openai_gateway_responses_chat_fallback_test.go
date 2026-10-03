@@ -126,6 +126,13 @@ func TestForwardResponses_PassthroughFlagWithUnsupportedResponsesUsesAccountMapp
 			}
 
 			result, err := svc.Forward(context.Background(), c, account, body)
+			if path == "/v1/responses/compact" {
+				require.ErrorContains(t, err, "compaction")
+				require.Nil(t, result)
+				require.Nil(t, upstream.lastReq, "compact must not fall back to Chat Completions")
+				require.Equal(t, http.StatusBadRequest, rec.Code)
+				return
+			}
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.lastReq.URL.String())

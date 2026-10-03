@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
@@ -50,6 +51,10 @@ func (r *compositeModelRouteRepository) Create(ctx context.Context, route *servi
 		SetEndpoint(route.Endpoint).
 		SetUserAgentContains(route.UserAgentContains).
 		SetBodyContains(route.BodyContains).
+		SetRequestKind(compositeRouteConditionOrDefault(route.RequestKind, service.CompositeRouteRequestKindAny)).
+		SetBodyMatchScope(compositeRouteConditionOrDefault(route.BodyMatchScope, service.CompositeRouteBodyScopeFullBody)).
+		SetBodyMatchMode(compositeRouteConditionOrDefault(route.BodyMatchMode, service.CompositeRouteBodyMatchAny)).
+		SetBodyNotContains(route.BodyNotContains).
 		SetPriority(route.Priority).
 		SetEnabled(route.Enabled).
 		SetNotes(route.Notes).
@@ -73,6 +78,10 @@ func (r *compositeModelRouteRepository) Update(ctx context.Context, route *servi
 		SetEndpoint(route.Endpoint).
 		SetUserAgentContains(route.UserAgentContains).
 		SetBodyContains(route.BodyContains).
+		SetRequestKind(compositeRouteConditionOrDefault(route.RequestKind, service.CompositeRouteRequestKindAny)).
+		SetBodyMatchScope(compositeRouteConditionOrDefault(route.BodyMatchScope, service.CompositeRouteBodyScopeFullBody)).
+		SetBodyMatchMode(compositeRouteConditionOrDefault(route.BodyMatchMode, service.CompositeRouteBodyMatchAny)).
+		SetBodyNotContains(route.BodyNotContains).
 		SetPriority(route.Priority).
 		SetEnabled(route.Enabled).
 		SetNotes(route.Notes).
@@ -110,10 +119,22 @@ func compositeModelRouteEntityToService(row *dbent.CompositeModelRoute) *service
 		Endpoint:          row.Endpoint,
 		UserAgentContains: row.UserAgentContains,
 		BodyContains:      row.BodyContains,
+		RequestKind:       compositeRouteConditionOrDefault(row.RequestKind, service.CompositeRouteRequestKindAny),
+		BodyMatchScope:    compositeRouteConditionOrDefault(row.BodyMatchScope, service.CompositeRouteBodyScopeFullBody),
+		BodyMatchMode:     compositeRouteConditionOrDefault(row.BodyMatchMode, service.CompositeRouteBodyMatchAny),
+		BodyNotContains:   row.BodyNotContains,
 		Priority:          row.Priority,
 		Enabled:           row.Enabled,
 		Notes:             derefString(row.Notes),
 		CreatedAt:         row.CreatedAt,
 		UpdatedAt:         row.UpdatedAt,
 	}
+}
+
+func compositeRouteConditionOrDefault(value, fallback string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return fallback
+	}
+	return value
 }

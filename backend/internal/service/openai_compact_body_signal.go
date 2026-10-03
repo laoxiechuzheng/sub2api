@@ -180,3 +180,55 @@ func HasCompactionTriggerInInput(body []byte) bool {
 	})
 	return found
 }
+
+// IsBareOpenAIResponsesPath excludes forwardable /responses subpaths.
+func IsBareOpenAIResponsesPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	switch strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/") {
+	case "/v1/responses", "/openai/v1/responses", "/responses", "/backend-api/codex/responses":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsOpenAICompactionRequest shares the handler's legacy and native body-signal
+// boundary. Non-streaming trigger requests are promoted to legacy compact.
+func IsOpenAICompactionRequest(c *gin.Context, body []byte) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	if IsOpenAIResponsesCompactPath(c) {
+		return true
+	}
+	if !IsBareOpenAIResponsesPath(c) || !HasCompactionTriggerInInput(body) {
+		return false
+	}
+	stream := gjson.GetBytes(body, "stream")
+	return !stream.Exists() || stream.Type == gjson.True || stream.Type == gjson.False
+}
+
+// Conversion must never silently discard a native compaction trigger, even
+// when a malformed stream flag would otherwise prevent request classification.
+func openAIRequestNeedsCompactionProtocol(c *gin.Context, body []byte) bool {
+	return IsOpenAINativeCompactionV2(c) || IsOpenAIResponsesCompactPath(c) ||
+		(IsBareOpenAIResponsesPath(c) && HasCompactionTriggerInInput(body))
+}
+
+// CanForwardOpenAICompaction checks the protocol actually used after model
+// mapping, not asynchronous capability probes that may still be unknown.
+func CanForwardOpenAICompaction(account *Account, body []byte) bool {
+	if account == nil {
+		return false
+	}
+	if account.Platform == PlatformGrok {
+		return true // Grok has a dedicated compaction bridge.
+	}
+	if account.IsOpenCodeGo() {
+		model := resolveOpenCodeGoMappedModel(account, body, "")
+		return openCodeGoNativeProtocol(account, model) == APIProtocolResponses
+	}
+	return !account.IsAnthropicProtocol() && !shouldForwardOpenAIResponsesViaRawChatCompletions(account)
+}

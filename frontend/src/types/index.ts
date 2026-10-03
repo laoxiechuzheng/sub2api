@@ -671,6 +671,10 @@ export interface CodexModelsManifestConfig {
 
 export type CompositeRouteMatchType = 'exact' | 'prefix' | 'contains'
 
+export type CompositeRouteRequestKind = 'any' | 'compaction' | 'conversation'
+export type CompositeRouteBodyMatchScope = 'full_body' | 'instructions' | 'last_message' | 'current_turn'
+export type CompositeRouteBodyMatchMode = 'any' | 'all' | 'prefix'
+
 export type CompositeRouteEndpoint =
   | 'any'
   | 'messages'
@@ -693,6 +697,10 @@ export interface CompositeModelRoute {
   endpoint: CompositeRouteEndpoint
   user_agent_contains: string
   body_contains: string
+  request_kind?: CompositeRouteRequestKind | '' | null
+  body_match_scope?: CompositeRouteBodyMatchScope | '' | null
+  body_match_mode?: CompositeRouteBodyMatchMode | '' | null
+  body_not_contains?: string | null
   priority: number
   enabled: boolean
   notes: string
@@ -708,6 +716,10 @@ export interface CompositeModelRouteInput {
   endpoint: CompositeRouteEndpoint
   user_agent_contains?: string
   body_contains?: string
+  request_kind?: CompositeRouteRequestKind
+  body_match_scope?: CompositeRouteBodyMatchScope
+  body_match_mode?: CompositeRouteBodyMatchMode
+  body_not_contains?: string
   priority?: number
   enabled?: boolean
   notes?: string
@@ -718,6 +730,27 @@ export interface CompositeRoutePreviewRequest {
   endpoint: CompositeRouteEndpoint
   user_agent?: string
   body?: string
+  native_compaction?: boolean
+}
+
+export interface RequestClassification {
+  kind: string
+  source: string
+  reason: string
+}
+
+export interface CompositeRouteConditionCheck {
+  field: string
+  matched: boolean
+  reason: string
+}
+
+export interface CompositeRouteConditionEvaluation {
+  route_id: number
+  matched: boolean
+  selected: boolean
+  body_match_scope: string
+  checks: CompositeRouteConditionCheck[]
 }
 
 export interface CompositeRouteDecision {
@@ -730,6 +763,8 @@ export interface CompositeRouteDecision {
   endpoint: CompositeRouteEndpoint
   route?: CompositeModelRoute
   reason?: string
+  request_classification?: RequestClassification
+  condition_evaluations?: CompositeRouteConditionEvaluation[]
 }
 
 export interface ApiKey {

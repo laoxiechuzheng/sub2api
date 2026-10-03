@@ -3974,7 +3974,7 @@
                           {{ t("admin.accounts.status.inactive") }}
                         </span>
                         <span
-                          v-if="route.user_agent_contains || route.body_contains"
+                          v-if="hasCompositeRouteConditions(route)"
                           class="badge badge-primary"
                         >
                           {{ t("admin.groups.compositeRoutes.conditionsBadge") }}
@@ -4026,7 +4026,7 @@
           </div>
         </section>
 
-        <section class="space-y-5">
+        <section class="min-w-0 space-y-5">
           <form class="space-y-3" @submit.prevent="saveCompositeRoute">
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
@@ -4038,6 +4038,7 @@
               </h3>
               <button
                 v-if="compositeRouteEditingId"
+                data-testid="composite-route-cancel"
                 type="button"
                 class="text-xs font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                 @click="resetCompositeRouteForm"
@@ -4081,10 +4082,32 @@
             </div>
 
             <div class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
-              <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                {{ t("admin.groups.compositeRoutes.requestConditions") }}
+              <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <span class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                  {{ t("admin.groups.compositeRoutes.requestConditions") }}
+                </span>
+                <button
+                  type="button"
+                  data-testid="composite-compaction-preset"
+                  class="btn btn-secondary btn-sm gap-1.5"
+                  @click="applyCompositeCompactionPreset"
+                >
+                  <Icon name="sparkles" size="sm" />
+                  {{ t("admin.groups.compositeRoutes.compactionPreset") }}
+                </button>
               </div>
               <div class="space-y-3">
+                <div>
+                  <label for="composite-request-kind" class="input-label">{{
+                    t("admin.groups.compositeRoutes.requestKind")
+                  }}</label>
+                  <Select
+                    id="composite-request-kind"
+                    v-model="compositeRouteForm.request_kind"
+                    :aria-label="t('admin.groups.compositeRoutes.requestKind')"
+                    :options="compositeRequestKindOptions"
+                  />
+                </div>
                 <div>
                   <label class="input-label">{{
                     t("admin.groups.compositeRoutes.userAgentContains")
@@ -4098,11 +4121,37 @@
                     "
                   />
                 </div>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div class="min-w-0">
+                    <label for="composite-body-scope" class="input-label">{{
+                      t("admin.groups.compositeRoutes.bodyMatchScope")
+                    }}</label>
+                    <Select
+                      id="composite-body-scope"
+                      v-model="compositeRouteForm.body_match_scope"
+                      :aria-label="t('admin.groups.compositeRoutes.bodyMatchScope')"
+                      :options="compositeBodyScopeOptions"
+                    />
+                  </div>
+                  <div class="min-w-0">
+                    <label for="composite-body-mode" class="input-label">{{
+                      t("admin.groups.compositeRoutes.bodyMatchMode")
+                    }}</label>
+                    <Select
+                      id="composite-body-mode"
+                      v-model="compositeRouteForm.body_match_mode"
+                      :aria-label="t('admin.groups.compositeRoutes.bodyMatchMode')"
+                      :options="compositeBodyModeOptions"
+                    />
+                  </div>
+                </div>
                 <div>
-                  <label class="input-label">{{
+                  <label for="composite-body-contains" class="input-label">{{
                     t("admin.groups.compositeRoutes.bodyContains")
                   }}</label>
                   <textarea
+                    id="composite-body-contains"
+                    data-testid="composite-body-contains"
                     v-model="compositeRouteForm.body_contains"
                     rows="3"
                     class="input"
@@ -4111,8 +4160,29 @@
                     "
                   ></textarea>
                 </div>
+                <div>
+                  <label for="composite-body-not-contains" class="input-label">{{
+                    t("admin.groups.compositeRoutes.bodyNotContains")
+                  }}</label>
+                  <textarea
+                    id="composite-body-not-contains"
+                    data-testid="composite-body-not-contains"
+                    v-model="compositeRouteForm.body_not_contains"
+                    rows="2"
+                    class="input"
+                    :placeholder="t('admin.groups.compositeRoutes.bodyNotContainsPlaceholder')"
+                  ></textarea>
+                </div>
                 <p class="text-xs text-gray-500 dark:text-gray-400">
                   {{ t("admin.groups.compositeRoutes.conditionsHint") }}
+                </p>
+                <p
+                  v-if="compositeBodyWarning"
+                  role="alert"
+                  class="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400"
+                >
+                  <Icon name="exclamationTriangle" size="sm" class="shrink-0" />
+                  {{ compositeBodyWarning }}
                 </p>
               </div>
             </div>
@@ -4198,6 +4268,7 @@
             </h3>
             <div class="space-y-3">
               <input
+                data-testid="composite-preview-model"
                 v-model.trim="compositePreviewModel"
                 type="text"
                 class="input"
@@ -4205,6 +4276,7 @@
                 @keyup.enter="previewCompositeRoute"
               />
               <input
+                data-testid="composite-preview-user-agent"
                 v-model.trim="compositePreviewUserAgent"
                 type="text"
                 class="input"
@@ -4213,6 +4285,7 @@
                 "
               />
               <textarea
+                data-testid="composite-preview-body"
                 v-model="compositePreviewBody"
                 rows="2"
                 class="input"
@@ -4220,15 +4293,29 @@
                   t('admin.groups.compositeRoutes.bodyContainsPlaceholder')
                 "
               ></textarea>
+              <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <input
+                  v-model="compositePreviewNativeCompaction"
+                  data-testid="composite-preview-native-compaction"
+                  :disabled="compositePreviewEndpoint !== 'responses'"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:opacity-50 dark:border-dark-600 dark:bg-dark-700"
+                />
+                {{ t("admin.groups.compositeRoutes.nativeCompaction") }}
+              </label>
               <div class="flex gap-2">
                 <Select
+                  id="composite-preview-endpoint"
                   v-model="compositePreviewEndpoint"
                   :options="compositeRouteEndpointOptions"
                   class="min-w-0 flex-1"
                 />
                 <button
                   type="button"
+                  data-testid="composite-preview-run"
                   class="btn btn-secondary"
+                  :title="t('admin.groups.compositeRoutes.preview')"
+                  :aria-label="t('admin.groups.compositeRoutes.preview')"
                   :disabled="compositePreviewLoading || !compositePreviewModel"
                   @click="previewCompositeRoute"
                 >
@@ -4238,6 +4325,7 @@
 
               <div
                 v-if="compositePreviewDecision"
+                data-testid="composite-preview-result"
                 class="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm dark:border-dark-600 dark:bg-dark-800"
               >
                 <div class="mb-2 flex items-center gap-2">
@@ -4281,8 +4369,8 @@
                   </div>
                   <div
                     v-if="
-                      compositePreviewDecision.route?.user_agent_contains ||
-                      compositePreviewDecision.route?.body_contains
+                      compositePreviewDecision.route &&
+                      hasCompositeRouteConditions(compositePreviewDecision.route)
                     "
                     class="break-all text-xs text-gray-500 dark:text-gray-400"
                   >
@@ -4295,13 +4383,83 @@
                     >
                       Body: {{ compositePreviewDecision.route.body_contains }}
                     </span>
+                    <span
+                      v-if="compositePreviewDecision.route?.request_kind && compositePreviewDecision.route.request_kind !== 'any'"
+                      class="ml-2"
+                    >
+                      {{ t("admin.groups.compositeRoutes.requestKind") }}:
+                      {{ compositeDiagnosticLabel('requestKinds', compositePreviewDecision.route.request_kind) }}
+                    </span>
+                    <span v-if="compositePreviewDecision.route?.body_not_contains" class="ml-2">
+                      {{ t("admin.groups.compositeRoutes.bodyNotContains") }}:
+                      {{ compositePreviewDecision.route.body_not_contains }}
+                    </span>
                   </div>
                 </div>
                 <div
                   v-else
                   class="text-gray-500 dark:text-gray-400"
                 >
-                  {{ compositePreviewDecision.reason }}
+                  {{ compositeDiagnosticLabel('reasons', compositePreviewDecision.reason || '') }}
+                </div>
+                <dl
+                  v-if="compositePreviewDecision.request_classification"
+                  data-testid="composite-request-classification"
+                  class="mt-3 space-y-1 border-t border-gray-200 pt-3 text-gray-700 dark:border-dark-600 dark:text-gray-300"
+                >
+                  <div class="flex flex-wrap gap-x-2">
+                    <dt class="font-medium">{{ t("admin.groups.compositeRoutes.requestKind") }}:</dt>
+                    <dd class="break-words">{{ compositeDiagnosticLabel('requestKinds', compositePreviewDecision.request_classification.kind) }}</dd>
+                  </div>
+                  <div class="flex flex-wrap gap-x-2">
+                    <dt class="font-medium">{{ t("admin.groups.compositeRoutes.classificationSource") }}:</dt>
+                    <dd class="break-words">{{ compositeDiagnosticLabel('classificationSources', compositePreviewDecision.request_classification.source) }}</dd>
+                  </div>
+                  <div
+                    v-if="compositePreviewDecision.request_classification.reason && compositePreviewDecision.request_classification.reason !== compositePreviewDecision.request_classification.source"
+                    class="break-words text-xs text-gray-500 dark:text-gray-400"
+                  >
+                    {{ compositeDiagnosticLabel('reasons', compositePreviewDecision.request_classification.reason) }}
+                  </div>
+                </dl>
+                <div
+                  v-if="compositePreviewDecision.condition_evaluations?.length"
+                  class="mt-3 border-t border-gray-200 pt-3 dark:border-dark-600"
+                >
+                  <h4 class="mb-2 text-xs font-semibold text-gray-700 dark:text-gray-300">
+                    {{ t("admin.groups.compositeRoutes.conditionEvaluations") }}
+                  </h4>
+                  <div class="divide-y divide-gray-200 dark:divide-dark-600">
+                    <div
+                      v-for="evaluation in compositePreviewDecision.condition_evaluations"
+                      :key="evaluation.route_id"
+                      :data-testid="'composite-condition-evaluation-' + evaluation.route_id"
+                      class="py-2 first:pt-0 last:pb-0"
+                    >
+                      <div class="mb-1 flex flex-wrap items-center gap-1.5 text-xs">
+                        <span class="font-medium">{{ t('admin.groups.compositeRoutes.routeLabel', { id: evaluation.route_id }) }}</span>
+                        <span :class="['badge', evaluation.selected ? 'badge-success' : evaluation.matched ? 'badge-gray' : 'badge-danger']">
+                          {{ evaluation.selected ? t('admin.groups.compositeRoutes.selected') : evaluation.matched ? t('admin.groups.compositeRoutes.matched') : t('admin.groups.compositeRoutes.rejected') }}
+                        </span>
+                        <span class="text-gray-500 dark:text-gray-400">{{ compositeDiagnosticLabel('bodyScopes', evaluation.body_match_scope || 'full_body') }}</span>
+                      </div>
+                      <ul class="space-y-1 text-xs">
+                        <li
+                          v-for="(check, index) in evaluation.checks"
+                          :key="index"
+                          class="flex items-start gap-1.5 break-words"
+                          :class="check.matched ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'"
+                        >
+                          <Icon :name="check.matched ? 'checkCircle' : 'xCircle'" size="sm" class="shrink-0" />
+                          <span class="min-w-0">
+                            <span class="sr-only">{{ check.matched ? t('admin.groups.compositeRoutes.checkPassed') : t('admin.groups.compositeRoutes.rejected') }}: </span>
+                            <span class="font-medium">{{ compositeDiagnosticLabel('conditionFields', check.field) }}:</span>
+                            {{ compositeDiagnosticLabel('reasons', check.reason) }}
+                          </span>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -4314,6 +4472,7 @@
           <button
             type="button"
             class="btn btn-secondary"
+            data-testid="composite-routes-close"
             @click="closeCompositeRoutesModal"
           >
             {{ t("common.close") }}
@@ -4352,9 +4511,12 @@ import type {
   CodexModelsManifestConfig,
   CompositeModelRoute,
   CompositeModelRouteInput,
+  CompositeRouteBodyMatchMode,
+  CompositeRouteBodyMatchScope,
   CompositeRouteDecision,
   CompositeRouteEndpoint,
   CompositeRouteMatchType,
+  CompositeRouteRequestKind,
   GroupPlatform,
   SubscriptionType,
 } from "@/types";
@@ -4524,7 +4686,7 @@ const groupPricingToAPI = (
       time_pricing: null,
     }));
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 const appStore = useAppStore();
 const authStore = useAuthStore();
 const onboardingStore = useOnboardingStore();
@@ -4734,6 +4896,27 @@ const compositeRouteMatchOptions = computed(() => [
   { value: "contains", label: t("admin.groups.compositeRoutes.match.contains") },
 ]);
 
+const compositeRequestKindOptions = computed(() =>
+  (['any', 'compaction', 'conversation'] as const).map((value) => ({
+    value,
+    label: t('admin.groups.compositeRoutes.requestKinds.' + value),
+  })),
+);
+
+const compositeBodyScopeOptions = computed(() =>
+  (['current_turn', 'last_message', 'instructions', 'full_body'] as const).map((value) => ({
+    value,
+    label: t('admin.groups.compositeRoutes.bodyScopes.' + value),
+  })),
+);
+
+const compositeBodyModeOptions = computed(() =>
+  (['any', 'all', 'prefix'] as const).map((value) => ({
+    value,
+    label: t('admin.groups.compositeRoutes.bodyModes.' + value),
+  })),
+);
+
 const editStatusOptions = computed(() => [
   { value: "active", label: t("admin.accounts.status.active") },
   { value: "inactive", label: t("admin.accounts.status.inactive") },
@@ -4929,6 +5112,10 @@ type CompositeRouteFormState = {
   endpoint: CompositeRouteEndpoint;
   user_agent_contains: string;
   body_contains: string;
+  request_kind: CompositeRouteRequestKind;
+  body_match_scope: CompositeRouteBodyMatchScope;
+  body_match_mode: CompositeRouteBodyMatchMode;
+  body_not_contains: string;
   priority: number;
   enabled: boolean;
   notes: string;
@@ -4944,8 +5131,13 @@ const compositePreviewModel = ref("");
 const compositePreviewUserAgent = ref("");
 const compositePreviewBody = ref("");
 const compositePreviewEndpoint = ref<CompositeRouteEndpoint>("any");
+const compositePreviewNativeCompaction = ref(false);
 const compositePreviewLoading = ref(false);
+let compositePreviewRequestSequence = 0;
 const compositePreviewDecision = ref<CompositeRouteDecision | null>(null);
+watch(compositePreviewEndpoint, (endpoint) => {
+  if (endpoint !== "responses") compositePreviewNativeCompaction.value = false;
+});
 const compositeRouteForm = reactive<CompositeRouteFormState>({
   public_model: "",
   match_type: "exact",
@@ -4954,6 +5146,10 @@ const compositeRouteForm = reactive<CompositeRouteFormState>({
   endpoint: "any",
   user_agent_contains: "",
   body_contains: "",
+  request_kind: "any",
+  body_match_scope: "current_turn",
+  body_match_mode: "any",
+  body_not_contains: "",
   priority: 100,
   enabled: true,
   notes: "",
@@ -6546,6 +6742,36 @@ const compositeRouteSourceLabel = (source: string) => {
   return source || "—";
 };
 
+const compositeDiagnosticLabel = (category: string, code: string) => {
+  const key = 'admin.groups.compositeRoutes.' + category + '.' + code;
+  return te?.(key) ? t(key) : code.replace(/_/g, ' ');
+};
+
+const hasCompositeRouteConditions = (route: CompositeModelRoute) =>
+  Boolean(
+    route.user_agent_contains || route.body_contains || route.body_not_contains ||
+    (route.request_kind && route.request_kind !== 'any'),
+  );
+
+const compositeBodyWarning = computed(() => {
+  if (compositeRouteForm.body_match_scope !== 'full_body') return '';
+  const signatures = [compositeRouteForm.body_contains, compositeRouteForm.body_not_contains]
+    .flatMap((value) => value.split(/\r?\n/).map((line) => line.trim()))
+    .filter(Boolean);
+  if (signatures.some((line) => /^[a-z]{1,2}$/i.test(line))) {
+    return t('admin.groups.compositeRoutes.shortBodyWarning');
+  }
+  return signatures.length ? t('admin.groups.compositeRoutes.historyBodyWarning') : '';
+});
+
+const applyCompositeCompactionPreset = () => {
+  compositeRouteForm.request_kind = 'compaction';
+  compositeRouteForm.body_match_scope = 'current_turn';
+  compositeRouteForm.body_match_mode = 'any';
+  compositeRouteForm.body_contains = '';
+  compositeRouteForm.body_not_contains = '';
+};
+
 const resetCompositeRouteForm = () => {
   compositeRouteEditingId.value = null;
   compositeRouteForm.public_model = "";
@@ -6555,6 +6781,10 @@ const resetCompositeRouteForm = () => {
   compositeRouteForm.endpoint = "any";
   compositeRouteForm.user_agent_contains = "";
   compositeRouteForm.body_contains = "";
+  compositeRouteForm.request_kind = "any";
+  compositeRouteForm.body_match_scope = "current_turn";
+  compositeRouteForm.body_match_mode = "any";
+  compositeRouteForm.body_not_contains = "";
   compositeRouteForm.priority = 100;
   compositeRouteForm.enabled = true;
   compositeRouteForm.notes = "";
@@ -6568,6 +6798,10 @@ const toCompositeRouteInput = (): CompositeModelRouteInput => ({
   endpoint: compositeRouteForm.endpoint,
   user_agent_contains: compositeRouteForm.user_agent_contains.trim(),
   body_contains: compositeRouteForm.body_contains.trim(),
+  request_kind: compositeRouteForm.request_kind,
+  body_match_scope: compositeRouteForm.body_match_scope,
+  body_match_mode: compositeRouteForm.body_match_mode,
+  body_not_contains: compositeRouteForm.body_not_contains.trim(),
   priority: Number(compositeRouteForm.priority) || 100,
   enabled: compositeRouteForm.enabled,
   notes: compositeRouteForm.notes.trim(),
@@ -6597,11 +6831,14 @@ const loadCompositeRoutes = async () => {
 };
 
 const handleCompositeRoutes = async (group: AdminGroup) => {
+  compositePreviewRequestSequence += 1;
+  compositePreviewLoading.value = false;
   compositeRoutesGroup.value = group;
   compositePreviewModel.value = "";
   compositePreviewUserAgent.value = "";
   compositePreviewBody.value = "";
   compositePreviewEndpoint.value = "any";
+  compositePreviewNativeCompaction.value = false;
   compositePreviewDecision.value = null;
   resetCompositeRouteForm();
   showCompositeRoutesModal.value = true;
@@ -6609,6 +6846,8 @@ const handleCompositeRoutes = async (group: AdminGroup) => {
 };
 
 const closeCompositeRoutesModal = () => {
+  compositePreviewRequestSequence += 1;
+  compositePreviewLoading.value = false;
   showCompositeRoutesModal.value = false;
   compositeRoutesGroup.value = null;
   compositeRoutes.value = [];
@@ -6625,6 +6864,10 @@ const editCompositeRoute = (route: CompositeModelRoute) => {
   compositeRouteForm.endpoint = route.endpoint;
   compositeRouteForm.user_agent_contains = route.user_agent_contains || "";
   compositeRouteForm.body_contains = route.body_contains || "";
+  compositeRouteForm.request_kind = route.request_kind || "any";
+  compositeRouteForm.body_match_scope = route.body_match_scope || "full_body";
+  compositeRouteForm.body_match_mode = route.body_match_mode || "any";
+  compositeRouteForm.body_not_contains = route.body_not_contains || "";
   compositeRouteForm.priority = route.priority || 100;
   compositeRouteForm.enabled = route.enabled;
   compositeRouteForm.notes = route.notes || "";
@@ -6695,17 +6938,23 @@ const previewCompositeRoute = async () => {
     return;
   }
   compositePreviewLoading.value = true;
+  const requestSequence = ++compositePreviewRequestSequence;
   try {
-    compositePreviewDecision.value = await adminAPI.groups.previewCompositeRoute(
+    const decision = await adminAPI.groups.previewCompositeRoute(
       compositeRoutesGroup.value.id,
       {
         model: compositePreviewModel.value.trim(),
         endpoint: compositePreviewEndpoint.value,
         user_agent: compositePreviewUserAgent.value.trim(),
         body: compositePreviewBody.value,
+        native_compaction: compositePreviewEndpoint.value === "responses" && compositePreviewNativeCompaction.value,
       },
     );
+    if (requestSequence === compositePreviewRequestSequence) {
+      compositePreviewDecision.value = decision;
+    }
   } catch (error: any) {
+    if (requestSequence !== compositePreviewRequestSequence) return;
     appStore.showError(
       error.response?.data?.detail ||
         error.response?.data?.message ||
@@ -6713,7 +6962,9 @@ const previewCompositeRoute = async () => {
     );
     console.error("Error previewing composite route:", error);
   } finally {
-    compositePreviewLoading.value = false;
+    if (requestSequence === compositePreviewRequestSequence) {
+      compositePreviewLoading.value = false;
+    }
   }
 };
 

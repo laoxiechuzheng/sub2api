@@ -1,0 +1,490 @@
+package service
+
+import (
+	"strings"
+	"unicode"
+
+	"github.com/tidwall/gjson"
+)
+
+type CompositeRequestClassification struct {
+	Kind   string `json:"kind"`
+	Source string `json:"source"`
+	Reason string `json:"reason"`
+}
+
+func explainCompositeRoutes(routes []CompositeModelRoute, model, endpoint string, match CompositeRouteRequestMatch, selected *CompositeModelRoute) []CompositeRouteConditionEvaluation {
+	evaluations := make([]CompositeRouteConditionEvaluation, 0, len(routes))
+	for _, route := range routes {
+		if !route.Enabled {
+			continue
+		}
+		evaluation := evaluateCompositeRouteConditions(route, match)
+		routeEndpoint := normalizeCompositeRouteEndpoint(route.Endpoint)
+		if routeEndpoint != endpoint && routeEndpoint != CompositeRouteEndpointAny {
+			evaluation.Matched = false
+			evaluation.Checks = append(evaluation.Checks, CompositeRouteConditionCheck{Field: "endpoint", Matched: false, Reason: "endpoint_mismatch"})
+		}
+		publicModel := strings.TrimSpace(route.PublicModel)
+		modelMatch := publicModel != ""
+		switch normalizeCompositeRouteMatchType(route.MatchType) {
+		case CompositeRouteMatchExact:
+			modelMatch = modelMatch && publicModel == model
+		case CompositeRouteMatchPrefix:
+			modelMatch = modelMatch && strings.HasPrefix(model, publicModel)
+		case CompositeRouteMatchContains:
+			modelMatch = modelMatch && strings.Contains(model, publicModel)
+		}
+		if !modelMatch {
+			evaluation.Matched = false
+			evaluation.Checks = append(evaluation.Checks, CompositeRouteConditionCheck{Field: "public_model", Matched: false, Reason: "model_mismatch"})
+		}
+		evaluation.Selected = selected != nil && selected.ID == route.ID
+		evaluations = append(evaluations, evaluation)
+	}
+	return evaluations
+}
+
+type CompositeRouteConditionCheck struct {
+	Field   string `json:"field"`
+	Matched bool   `json:"matched"`
+	Reason  string `json:"reason"`
+}
+
+type CompositeRouteConditionEvaluation struct {
+	RouteID        int64                          `json:"route_id"`
+	Matched        bool                           `json:"matched"`
+	Selected       bool                           `json:"selected"`
+	BodyMatchScope string                         `json:"body_match_scope"`
+	Checks         []CompositeRouteConditionCheck `json:"checks"`
+}
+
+// Facts are shared across all candidate rules and parsed only when a scoped
+// condition or request-kind check needs them. No request content enters traces.
+type compositeRequestFacts struct {
+	body             []byte
+	endpoint         string
+	nativeCompaction bool
+	parsed           bool
+	valid            bool
+	invalidReason    string
+	instructions     []string
+	terminal         []string
+}
+
+func newCompositeRequestFacts(match CompositeRouteRequestMatch) *compositeRequestFacts {
+	return &compositeRequestFacts{body: match.Body, nativeCompaction: match.NativeCompaction}
+}
+
+func (f *compositeRequestFacts) parse() {
+	if f.parsed {
+		return
+	}
+	f.parsed = true
+	f.invalidReason = "invalid_json"
+	if !gjson.ValidBytes(f.body) {
+		return
+	}
+	root := gjson.ParseBytes(f.body)
+	if !root.IsObject() {
+		return
+	}
+	if compositeEnvelopeAmbiguous(root) {
+		f.invalidReason = "ambiguous_json"
+		return
+	}
+	var messages gjson.Result
+	switch f.endpoint {
+	case CompositeRouteEndpointResponses:
+		// Share the forwarding contract: native input wins over messages;
+		// legacy messages/prompt are accepted only through the ingress adapter.
+		normalized, _, err := normalizeOpenAIResponsesLegacyIngress(f.body)
+		if err != nil {
+			return
+		}
+		root = gjson.ParseBytes(normalized)
+		// Responses root instructions are a string, unlike Anthropic system
+		// blocks. Unsupported types must not contribute routing evidence.
+		if instructions := root.Get("instructions"); instructions.Type == gjson.String {
+			f.instructions = []string{instructions.String()}
+		}
+		messages = root.Get("input")
+	case CompositeRouteEndpointMessages, CompositeRouteEndpointCountTokens:
+		f.instructions = compositeDirectText(root.Get("system"), f.endpoint)
+		messages = root.Get("messages")
+	case CompositeRouteEndpointChatCompletions:
+		messages = root.Get("messages")
+	default:
+		f.invalidReason = "unsupported_endpoint"
+		return
+	}
+	f.valid = true
+	if messages.Type == gjson.String {
+		f.terminal = append(f.terminal, messages.String())
+		return
+	}
+	if !messages.IsArray() {
+		return
+	}
+	items := messages.Array()
+	for _, item := range items {
+		itemType := item.Get("type").String()
+		if itemType != "" && itemType != "message" {
+			break
+		}
+		role := item.Get("role").String()
+		if role != "system" && role != "developer" {
+			break
+		}
+		f.instructions = append(f.instructions, compositeDirectText(item.Get("content"), f.endpoint)...)
+	}
+	if len(items) == 0 {
+		return
+	}
+	last := items[len(items)-1]
+	if last.Get("role").String() != "user" {
+		return
+	}
+	// A function/tool item cannot masquerade as a user message by adding role.
+	itemType := last.Get("type").String()
+	if itemType != "" && itemType != "message" {
+		return
+	}
+	f.terminal = compositeDirectText(last.Get("content"), f.endpoint)
+}
+
+func compositeObjectAmbiguous(value gjson.Result) bool {
+	if !value.IsObject() {
+		return false
+	}
+	keys := make(map[string]struct{})
+	ambiguous := false
+	value.ForEach(func(key, _ gjson.Result) bool {
+		name := compositeFoldedJSONKey(key.String())
+		if _, exists := keys[name]; exists {
+			ambiguous = true
+			return false
+		}
+		keys[name] = struct{}{}
+		return true
+	})
+	return ambiguous
+}
+
+// Use the same Unicode equivalence classes as encoding/json struct fields,
+// including long s and the Kelvin sign; lowercasing alone is not equivalent.
+func compositeFoldedJSONKey(key string) string {
+	var folded strings.Builder
+	folded.Grow(len(key))
+	for _, r := range key {
+		for {
+			next := unicode.SimpleFold(r)
+			if next <= r {
+				folded.WriteRune(next)
+				break
+			}
+			r = next
+		}
+	}
+	return folded.String()
+}
+
+// Inspect only routing envelopes and direct content blocks, not tool schemas
+// or arbitrary nested output. GJSON and encoding/json differ on duplicate keys.
+func compositeEnvelopeAmbiguous(root gjson.Result) bool {
+	if compositeObjectAmbiguous(root) {
+		return true
+	}
+	contentAmbiguous := func(content gjson.Result) bool {
+		if content.IsArray() {
+			for _, block := range content.Array() {
+				if compositeObjectAmbiguous(block) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, field := range []string{"instructions", "system"} {
+		if contentAmbiguous(root.Get(field)) {
+			return true
+		}
+	}
+	for _, field := range []string{"messages", "input"} {
+		if items := root.Get(field); items.IsArray() {
+			for _, item := range items.Array() {
+				if compositeObjectAmbiguous(item) || contentAmbiguous(item.Get("content")) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func compositeDirectText(content gjson.Result, endpoint string) []string {
+	if content.Type == gjson.String {
+		return []string{content.String()}
+	}
+	if !content.IsArray() {
+		return nil
+	}
+	var text []string
+	for _, block := range content.Array() {
+		switch block.Get("type").String() {
+		case "text":
+		case "input_text":
+			if endpoint != CompositeRouteEndpointResponses {
+				continue
+			}
+		default:
+			continue
+		}
+		value := block.Get("text")
+		if value.Type == gjson.String {
+			text = append(text, value.String())
+		}
+	}
+	if len(text) == 0 {
+		return nil
+	}
+	// Preserve a message as one instruction. A quoted directive in a later
+	// text block must not gain a new artificial beginning of the request.
+	return []string{strings.Join(text, "\n")}
+}
+
+func (f *compositeRequestFacts) classify() CompositeRequestClassification {
+	f.parse()
+	if !f.valid {
+		return CompositeRequestClassification{Kind: "unknown", Source: f.invalidReason, Reason: f.invalidReason}
+	}
+	if f.nativeCompaction {
+		return CompositeRequestClassification{Kind: "compaction", Source: "native_endpoint", Reason: "native_endpoint"}
+	}
+	for _, text := range f.terminal {
+		if source := compositeCompactionSignature(text, false); source != "" {
+			return CompositeRequestClassification{Kind: "compaction", Source: source, Reason: source}
+		}
+	}
+	for _, text := range f.instructions {
+		if source := compositeCompactionSignature(text, true); source != "" {
+			return CompositeRequestClassification{Kind: "compaction", Source: source, Reason: source}
+		}
+	}
+	return CompositeRequestClassification{Kind: "conversation", Source: "no_compaction_signature", Reason: "no_compaction_signature"}
+}
+
+func compositeCompactionSignature(text string, instructions bool) string {
+	text = strings.TrimSpace(text)
+	// Anchor full, known directives at the beginning. A mention in a quote,
+	// tool result, summary or explanatory paragraph is not a compaction signal.
+	if !instructions &&
+		(strings.HasPrefix(text, "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.") ||
+			strings.HasPrefix(text, "Your task is to create a detailed summary of the conversation so far")) &&
+		strings.Contains(text, "Your task is to create a detailed summary of the conversation so far") {
+		return "claude_terminal_prompt"
+	}
+	codexPrefixes := []string{
+		"You are a context summarization and handoff agent. Produce one accurate, self-contained record that allows another coding agent to continue the work without losing the user's intent, constraints, technical context, or latest working state.",
+		"You are a context summarization agent. Based on the current conversation, produce a structured summary so another coding agent can continue the work.",
+	}
+	for _, prefix := range codexPrefixes {
+		if strings.HasPrefix(text, prefix) {
+			if instructions {
+				return "codex_instructions"
+			}
+			return "codex_terminal_prompt"
+		}
+	}
+	if (strings.HasPrefix(text, "You are performing a CONTEXT CHECKPOINT COMPACTION") ||
+		strings.HasPrefix(text, "You are doing a CONTEXT CHECKPOINT COMPACTION")) &&
+		strings.Contains(strings.ToLower(text), "summary") && strings.Contains(strings.ToLower(text), "another") {
+		if instructions {
+			return "codex_instructions"
+		}
+		return "codex_terminal_prompt"
+	}
+	opencodePrefixes := []string{
+		"You are a context summarization agent. You are given a conversation between a user and an agent. Your goal is to produce a structured summary matching the format specified so another coding agent can continue the work.",
+		"You are a helpful AI assistant tasked with summarizing conversations.",
+	}
+	for _, prefix := range opencodePrefixes {
+		if strings.HasPrefix(text, prefix) {
+			if instructions {
+				return "opencode_instructions"
+			}
+			return "opencode_terminal_prompt"
+		}
+	}
+	return ""
+}
+
+func compositeConditionDefault(value, fallback string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func evaluateCompositeRouteConditions(route CompositeModelRoute, match CompositeRouteRequestMatch) CompositeRouteConditionEvaluation {
+	scope := compositeConditionDefault(route.BodyMatchScope, "full_body")
+	evaluation := CompositeRouteConditionEvaluation{RouteID: route.ID, Matched: true, BodyMatchScope: scope}
+	if match.IgnoreRequestConditions {
+		return evaluation
+	}
+	add := func(field string, matched bool, reason string) {
+		evaluation.Matched = evaluation.Matched && matched
+		if match.Explain {
+			evaluation.Checks = append(evaluation.Checks, CompositeRouteConditionCheck{Field: field, Matched: matched, Reason: reason})
+		}
+	}
+	facts := match.facts
+	if facts == nil {
+		facts = newCompositeRequestFacts(match)
+	}
+	uaPatterns := splitCompositeRouteConditionPatterns(route.UserAgentContains)
+	if len(uaPatterns) > 0 {
+		ua := strings.ToLower(strings.TrimSpace(match.UserAgent))
+		ok := false
+		for _, pattern := range uaPatterns {
+			if ua != "" && strings.Contains(ua, strings.ToLower(pattern)) {
+				ok = true
+				break
+			}
+		}
+		reason := "user_agent_match"
+		if !ok {
+			reason = "user_agent_mismatch"
+		}
+		add("user_agent_contains", ok, reason)
+	}
+	if !evaluation.Matched && !match.Explain {
+		return evaluation
+	}
+	kind := compositeConditionDefault(route.RequestKind, "any")
+	switch kind {
+	case "any":
+	case "compaction", "conversation":
+		ok := facts.classify().Kind == kind
+		reason := "request_kind_match"
+		if !ok {
+			reason = "request_kind_mismatch"
+		}
+		add("request_kind", ok, reason)
+	default:
+		add("request_kind", false, "unknown_request_kind")
+	}
+	if !evaluation.Matched && !match.Explain {
+		return evaluation
+	}
+	mode := compositeConditionDefault(route.BodyMatchMode, "any")
+	switch mode {
+	case "any", "all", "prefix":
+	default:
+		add("body_match_mode", false, "unknown_body_mode")
+		return evaluation
+	}
+	switch scope {
+	case "full_body", "instructions", "last_message", "current_turn":
+	default:
+		add("body_match_scope", false, "unknown_body_scope")
+		return evaluation
+	}
+	positive := splitCompositeRouteConditionPatterns(route.BodyContains)
+	negative := splitCompositeRouteConditionPatterns(route.BodyNotContains)
+	if len(positive) == 0 && len(negative) == 0 {
+		if match.Explain && len(evaluation.Checks) == 0 {
+			add("conditions", true, "no_conditions")
+		}
+		return evaluation
+	}
+	var texts []string
+	if scope == "full_body" {
+		if len(match.Body) == 0 {
+			add("body_match_scope", false, "scope_empty")
+			return evaluation
+		}
+	} else {
+		facts.parse()
+		if !facts.valid {
+			add("body_match_scope", false, facts.invalidReason)
+			return evaluation
+		}
+		switch scope {
+		case "instructions":
+			texts = facts.instructions
+		case "last_message":
+			texts = facts.terminal
+		case "current_turn":
+			texts = make([]string, 0, len(facts.instructions)+len(facts.terminal))
+			texts = append(texts, facts.instructions...)
+			texts = append(texts, facts.terminal...)
+		}
+		hasText := false
+		for _, text := range texts {
+			if strings.TrimSpace(text) != "" {
+				hasText = true
+				break
+			}
+		}
+		if !hasText {
+			add("body_match_scope", false, "scope_empty")
+			return evaluation
+		}
+	}
+	contains := func(pattern string, prefix bool) bool {
+		if scope == "full_body" {
+			if prefix {
+				return strings.HasPrefix(strings.TrimSpace(string(match.Body)), pattern)
+			}
+			return requestBodyContainsPattern(match.Body, pattern)
+		}
+		for _, text := range texts {
+			if prefix && strings.HasPrefix(strings.TrimSpace(text), pattern) {
+				return true
+			}
+			if !prefix && strings.Contains(text, pattern) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(positive) > 0 {
+		ok := mode == "all"
+		for _, pattern := range positive {
+			found := contains(pattern, mode == "prefix")
+			if mode == "all" && !found {
+				ok = false
+				break
+			}
+			if mode != "all" && found {
+				ok = true
+				break
+			}
+		}
+		reason := "body_contains_match"
+		if !ok {
+			reason = "body_contains_missing"
+		}
+		add("body_contains", ok, reason)
+	}
+	if !evaluation.Matched && !match.Explain {
+		return evaluation
+	}
+	if len(negative) > 0 {
+		clear := true
+		for _, pattern := range negative {
+			if contains(pattern, false) {
+				clear = false
+				break
+			}
+		}
+		reason := "body_not_contains_clear"
+		if !clear {
+			reason = "body_not_contains_excluded"
+		}
+		add("body_not_contains", clear, reason)
+	}
+	return evaluation
+}

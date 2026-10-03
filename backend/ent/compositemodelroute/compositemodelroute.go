@@ -37,6 +37,14 @@ const (
 	FieldUserAgentContains = "user_agent_contains"
 	// FieldBodyContains holds the string denoting the body_contains field in the database.
 	FieldBodyContains = "body_contains"
+	// FieldRequestKind holds the string denoting the request_kind field in the database.
+	FieldRequestKind = "request_kind"
+	// FieldBodyMatchScope holds the string denoting the body_match_scope field in the database.
+	FieldBodyMatchScope = "body_match_scope"
+	// FieldBodyMatchMode holds the string denoting the body_match_mode field in the database.
+	FieldBodyMatchMode = "body_match_mode"
+	// FieldBodyNotContains holds the string denoting the body_not_contains field in the database.
+	FieldBodyNotContains = "body_not_contains"
 	// FieldPriority holds the string denoting the priority field in the database.
 	FieldPriority = "priority"
 	// FieldEnabled holds the string denoting the enabled field in the database.
@@ -70,6 +78,10 @@ var Columns = []string{
 	FieldEndpoint,
 	FieldUserAgentContains,
 	FieldBodyContains,
+	FieldRequestKind,
+	FieldBodyMatchScope,
+	FieldBodyMatchMode,
+	FieldBodyNotContains,
 	FieldPriority,
 	FieldEnabled,
 	FieldNotes,
@@ -121,6 +133,22 @@ var (
 	DefaultUserAgentContains string
 	// DefaultBodyContains holds the default value on creation for the "body_contains" field.
 	DefaultBodyContains string
+	// DefaultRequestKind holds the default value on creation for the "request_kind" field.
+	DefaultRequestKind string
+	// RequestKindValidator is a validator for the "request_kind" field. It is called by the builders before save.
+	RequestKindValidator func(string) error
+	// DefaultBodyMatchScope holds the default value on creation for the "body_match_scope" field.
+	DefaultBodyMatchScope string
+	// BodyMatchScopeValidator is a validator for the "body_match_scope" field. It is called by the builders before save.
+	BodyMatchScopeValidator func(string) error
+	// DefaultBodyMatchMode holds the default value on creation for the "body_match_mode" field.
+	DefaultBodyMatchMode string
+	// BodyMatchModeValidator is a validator for the "body_match_mode" field. It is called by the builders before save.
+	BodyMatchModeValidator func(string) error
+	// DefaultBodyNotContains holds the default value on creation for the "body_not_contains" field.
+	DefaultBodyNotContains string
+	// BodyNotContainsValidator is a validator for the "body_not_contains" field. It is called by the builders before save.
+	BodyNotContainsValidator func(string) error
 	// DefaultPriority holds the default value on creation for the "priority" field.
 	DefaultPriority int
 	// DefaultEnabled holds the default value on creation for the "enabled" field.
@@ -188,6 +216,26 @@ func ByUserAgentContains(opts ...sql.OrderTermOption) OrderOption {
 // ByBodyContains orders the results by the body_contains field.
 func ByBodyContains(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldBodyContains, opts...).ToFunc()
+}
+
+// ByRequestKind orders the results by the request_kind field.
+func ByRequestKind(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRequestKind, opts...).ToFunc()
+}
+
+// ByBodyMatchScope orders the results by the body_match_scope field.
+func ByBodyMatchScope(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBodyMatchScope, opts...).ToFunc()
+}
+
+// ByBodyMatchMode orders the results by the body_match_mode field.
+func ByBodyMatchMode(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBodyMatchMode, opts...).ToFunc()
+}
+
+// ByBodyNotContains orders the results by the body_not_contains field.
+func ByBodyNotContains(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBodyNotContains, opts...).ToFunc()
 }
 
 // ByPriority orders the results by the priority field.

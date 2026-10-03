@@ -19720,6 +19720,10 @@ type CompositeModelRouteMutation struct {
 	endpoint            *string
 	user_agent_contains *string
 	body_contains       *string
+	request_kind        *string
+	body_match_scope    *string
+	body_match_mode     *string
+	body_not_contains   *string
 	priority            *int
 	addpriority         *int
 	enabled             *bool
@@ -20239,6 +20243,150 @@ func (m *CompositeModelRouteMutation) ResetBodyContains() {
 	m.body_contains = nil
 }
 
+// SetRequestKind sets the "request_kind" field.
+func (m *CompositeModelRouteMutation) SetRequestKind(s string) {
+	m.request_kind = &s
+}
+
+// RequestKind returns the value of the "request_kind" field in the mutation.
+func (m *CompositeModelRouteMutation) RequestKind() (r string, exists bool) {
+	v := m.request_kind
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRequestKind returns the old "request_kind" field's value of the CompositeModelRoute entity.
+// If the CompositeModelRoute object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CompositeModelRouteMutation) OldRequestKind(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRequestKind is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRequestKind requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRequestKind: %w", err)
+	}
+	return oldValue.RequestKind, nil
+}
+
+// ResetRequestKind resets all changes to the "request_kind" field.
+func (m *CompositeModelRouteMutation) ResetRequestKind() {
+	m.request_kind = nil
+}
+
+// SetBodyMatchScope sets the "body_match_scope" field.
+func (m *CompositeModelRouteMutation) SetBodyMatchScope(s string) {
+	m.body_match_scope = &s
+}
+
+// BodyMatchScope returns the value of the "body_match_scope" field in the mutation.
+func (m *CompositeModelRouteMutation) BodyMatchScope() (r string, exists bool) {
+	v := m.body_match_scope
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldBodyMatchScope returns the old "body_match_scope" field's value of the CompositeModelRoute entity.
+// If the CompositeModelRoute object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CompositeModelRouteMutation) OldBodyMatchScope(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldBodyMatchScope is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldBodyMatchScope requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldBodyMatchScope: %w", err)
+	}
+	return oldValue.BodyMatchScope, nil
+}
+
+// ResetBodyMatchScope resets all changes to the "body_match_scope" field.
+func (m *CompositeModelRouteMutation) ResetBodyMatchScope() {
+	m.body_match_scope = nil
+}
+
+// SetBodyMatchMode sets the "body_match_mode" field.
+func (m *CompositeModelRouteMutation) SetBodyMatchMode(s string) {
+	m.body_match_mode = &s
+}
+
+// BodyMatchMode returns the value of the "body_match_mode" field in the mutation.
+func (m *CompositeModelRouteMutation) BodyMatchMode() (r string, exists bool) {
+	v := m.body_match_mode
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldBodyMatchMode returns the old "body_match_mode" field's value of the CompositeModelRoute entity.
+// If the CompositeModelRoute object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CompositeModelRouteMutation) OldBodyMatchMode(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldBodyMatchMode is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldBodyMatchMode requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldBodyMatchMode: %w", err)
+	}
+	return oldValue.BodyMatchMode, nil
+}
+
+// ResetBodyMatchMode resets all changes to the "body_match_mode" field.
+func (m *CompositeModelRouteMutation) ResetBodyMatchMode() {
+	m.body_match_mode = nil
+}
+
+// SetBodyNotContains sets the "body_not_contains" field.
+func (m *CompositeModelRouteMutation) SetBodyNotContains(s string) {
+	m.body_not_contains = &s
+}
+
+// BodyNotContains returns the value of the "body_not_contains" field in the mutation.
+func (m *CompositeModelRouteMutation) BodyNotContains() (r string, exists bool) {
+	v := m.body_not_contains
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldBodyNotContains returns the old "body_not_contains" field's value of the CompositeModelRoute entity.
+// If the CompositeModelRoute object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CompositeModelRouteMutation) OldBodyNotContains(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldBodyNotContains is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldBodyNotContains requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldBodyNotContains: %w", err)
+	}
+	return oldValue.BodyNotContains, nil
+}
+
+// ResetBodyNotContains resets all changes to the "body_not_contains" field.
+func (m *CompositeModelRouteMutation) ResetBodyNotContains() {
+	m.body_not_contains = nil
+}
+
 // SetPriority sets the "priority" field.
 func (m *CompositeModelRouteMutation) SetPriority(i int) {
 	m.priority = &i
@@ -20441,7 +20589,7 @@ func (m *CompositeModelRouteMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *CompositeModelRouteMutation) Fields() []string {
-	fields := make([]string, 0, 14)
+	fields := make([]string, 0, 18)
 	if m.created_at != nil {
 		fields = append(fields, compositemodelroute.FieldCreatedAt)
 	}
@@ -20474,6 +20622,18 @@ func (m *CompositeModelRouteMutation) Fields() []string {
 	}
 	if m.body_contains != nil {
 		fields = append(fields, compositemodelroute.FieldBodyContains)
+	}
+	if m.request_kind != nil {
+		fields = append(fields, compositemodelroute.FieldRequestKind)
+	}
+	if m.body_match_scope != nil {
+		fields = append(fields, compositemodelroute.FieldBodyMatchScope)
+	}
+	if m.body_match_mode != nil {
+		fields = append(fields, compositemodelroute.FieldBodyMatchMode)
+	}
+	if m.body_not_contains != nil {
+		fields = append(fields, compositemodelroute.FieldBodyNotContains)
 	}
 	if m.priority != nil {
 		fields = append(fields, compositemodelroute.FieldPriority)
@@ -20514,6 +20674,14 @@ func (m *CompositeModelRouteMutation) Field(name string) (ent.Value, bool) {
 		return m.UserAgentContains()
 	case compositemodelroute.FieldBodyContains:
 		return m.BodyContains()
+	case compositemodelroute.FieldRequestKind:
+		return m.RequestKind()
+	case compositemodelroute.FieldBodyMatchScope:
+		return m.BodyMatchScope()
+	case compositemodelroute.FieldBodyMatchMode:
+		return m.BodyMatchMode()
+	case compositemodelroute.FieldBodyNotContains:
+		return m.BodyNotContains()
 	case compositemodelroute.FieldPriority:
 		return m.Priority()
 	case compositemodelroute.FieldEnabled:
@@ -20551,6 +20719,14 @@ func (m *CompositeModelRouteMutation) OldField(ctx context.Context, name string)
 		return m.OldUserAgentContains(ctx)
 	case compositemodelroute.FieldBodyContains:
 		return m.OldBodyContains(ctx)
+	case compositemodelroute.FieldRequestKind:
+		return m.OldRequestKind(ctx)
+	case compositemodelroute.FieldBodyMatchScope:
+		return m.OldBodyMatchScope(ctx)
+	case compositemodelroute.FieldBodyMatchMode:
+		return m.OldBodyMatchMode(ctx)
+	case compositemodelroute.FieldBodyNotContains:
+		return m.OldBodyNotContains(ctx)
 	case compositemodelroute.FieldPriority:
 		return m.OldPriority(ctx)
 	case compositemodelroute.FieldEnabled:
@@ -20642,6 +20818,34 @@ func (m *CompositeModelRouteMutation) SetField(name string, value ent.Value) err
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetBodyContains(v)
+		return nil
+	case compositemodelroute.FieldRequestKind:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRequestKind(v)
+		return nil
+	case compositemodelroute.FieldBodyMatchScope:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetBodyMatchScope(v)
+		return nil
+	case compositemodelroute.FieldBodyMatchMode:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetBodyMatchMode(v)
+		return nil
+	case compositemodelroute.FieldBodyNotContains:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetBodyNotContains(v)
 		return nil
 	case compositemodelroute.FieldPriority:
 		v, ok := value.(int)
@@ -20775,6 +20979,18 @@ func (m *CompositeModelRouteMutation) ResetField(name string) error {
 		return nil
 	case compositemodelroute.FieldBodyContains:
 		m.ResetBodyContains()
+		return nil
+	case compositemodelroute.FieldRequestKind:
+		m.ResetRequestKind()
+		return nil
+	case compositemodelroute.FieldBodyMatchScope:
+		m.ResetBodyMatchScope()
+		return nil
+	case compositemodelroute.FieldBodyMatchMode:
+		m.ResetBodyMatchMode()
+		return nil
+	case compositemodelroute.FieldBodyNotContains:
+		m.ResetBodyNotContains()
 		return nil
 	case compositemodelroute.FieldPriority:
 		m.ResetPriority()

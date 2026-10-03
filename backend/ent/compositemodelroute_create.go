@@ -161,6 +161,62 @@ func (_c *CompositeModelRouteCreate) SetNillableBodyContains(v *string) *Composi
 	return _c
 }
 
+// SetRequestKind sets the "request_kind" field.
+func (_c *CompositeModelRouteCreate) SetRequestKind(v string) *CompositeModelRouteCreate {
+	_c.mutation.SetRequestKind(v)
+	return _c
+}
+
+// SetNillableRequestKind sets the "request_kind" field if the given value is not nil.
+func (_c *CompositeModelRouteCreate) SetNillableRequestKind(v *string) *CompositeModelRouteCreate {
+	if v != nil {
+		_c.SetRequestKind(*v)
+	}
+	return _c
+}
+
+// SetBodyMatchScope sets the "body_match_scope" field.
+func (_c *CompositeModelRouteCreate) SetBodyMatchScope(v string) *CompositeModelRouteCreate {
+	_c.mutation.SetBodyMatchScope(v)
+	return _c
+}
+
+// SetNillableBodyMatchScope sets the "body_match_scope" field if the given value is not nil.
+func (_c *CompositeModelRouteCreate) SetNillableBodyMatchScope(v *string) *CompositeModelRouteCreate {
+	if v != nil {
+		_c.SetBodyMatchScope(*v)
+	}
+	return _c
+}
+
+// SetBodyMatchMode sets the "body_match_mode" field.
+func (_c *CompositeModelRouteCreate) SetBodyMatchMode(v string) *CompositeModelRouteCreate {
+	_c.mutation.SetBodyMatchMode(v)
+	return _c
+}
+
+// SetNillableBodyMatchMode sets the "body_match_mode" field if the given value is not nil.
+func (_c *CompositeModelRouteCreate) SetNillableBodyMatchMode(v *string) *CompositeModelRouteCreate {
+	if v != nil {
+		_c.SetBodyMatchMode(*v)
+	}
+	return _c
+}
+
+// SetBodyNotContains sets the "body_not_contains" field.
+func (_c *CompositeModelRouteCreate) SetBodyNotContains(v string) *CompositeModelRouteCreate {
+	_c.mutation.SetBodyNotContains(v)
+	return _c
+}
+
+// SetNillableBodyNotContains sets the "body_not_contains" field if the given value is not nil.
+func (_c *CompositeModelRouteCreate) SetNillableBodyNotContains(v *string) *CompositeModelRouteCreate {
+	if v != nil {
+		_c.SetBodyNotContains(*v)
+	}
+	return _c
+}
+
 // SetPriority sets the "priority" field.
 func (_c *CompositeModelRouteCreate) SetPriority(v int) *CompositeModelRouteCreate {
 	_c.mutation.SetPriority(v)
@@ -283,6 +339,22 @@ func (_c *CompositeModelRouteCreate) defaults() error {
 		v := compositemodelroute.DefaultBodyContains
 		_c.mutation.SetBodyContains(v)
 	}
+	if _, ok := _c.mutation.RequestKind(); !ok {
+		v := compositemodelroute.DefaultRequestKind
+		_c.mutation.SetRequestKind(v)
+	}
+	if _, ok := _c.mutation.BodyMatchScope(); !ok {
+		v := compositemodelroute.DefaultBodyMatchScope
+		_c.mutation.SetBodyMatchScope(v)
+	}
+	if _, ok := _c.mutation.BodyMatchMode(); !ok {
+		v := compositemodelroute.DefaultBodyMatchMode
+		_c.mutation.SetBodyMatchMode(v)
+	}
+	if _, ok := _c.mutation.BodyNotContains(); !ok {
+		v := compositemodelroute.DefaultBodyNotContains
+		_c.mutation.SetBodyNotContains(v)
+	}
 	if _, ok := _c.mutation.Priority(); !ok {
 		v := compositemodelroute.DefaultPriority
 		_c.mutation.SetPriority(v)
@@ -350,6 +422,38 @@ func (_c *CompositeModelRouteCreate) check() error {
 	}
 	if _, ok := _c.mutation.BodyContains(); !ok {
 		return &ValidationError{Name: "body_contains", err: errors.New(`ent: missing required field "CompositeModelRoute.body_contains"`)}
+	}
+	if _, ok := _c.mutation.RequestKind(); !ok {
+		return &ValidationError{Name: "request_kind", err: errors.New(`ent: missing required field "CompositeModelRoute.request_kind"`)}
+	}
+	if v, ok := _c.mutation.RequestKind(); ok {
+		if err := compositemodelroute.RequestKindValidator(v); err != nil {
+			return &ValidationError{Name: "request_kind", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.request_kind": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.BodyMatchScope(); !ok {
+		return &ValidationError{Name: "body_match_scope", err: errors.New(`ent: missing required field "CompositeModelRoute.body_match_scope"`)}
+	}
+	if v, ok := _c.mutation.BodyMatchScope(); ok {
+		if err := compositemodelroute.BodyMatchScopeValidator(v); err != nil {
+			return &ValidationError{Name: "body_match_scope", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.body_match_scope": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.BodyMatchMode(); !ok {
+		return &ValidationError{Name: "body_match_mode", err: errors.New(`ent: missing required field "CompositeModelRoute.body_match_mode"`)}
+	}
+	if v, ok := _c.mutation.BodyMatchMode(); ok {
+		if err := compositemodelroute.BodyMatchModeValidator(v); err != nil {
+			return &ValidationError{Name: "body_match_mode", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.body_match_mode": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.BodyNotContains(); !ok {
+		return &ValidationError{Name: "body_not_contains", err: errors.New(`ent: missing required field "CompositeModelRoute.body_not_contains"`)}
+	}
+	if v, ok := _c.mutation.BodyNotContains(); ok {
+		if err := compositemodelroute.BodyNotContainsValidator(v); err != nil {
+			return &ValidationError{Name: "body_not_contains", err: fmt.Errorf(`ent: validator failed for field "CompositeModelRoute.body_not_contains": %w`, err)}
+		}
 	}
 	if _, ok := _c.mutation.Priority(); !ok {
 		return &ValidationError{Name: "priority", err: errors.New(`ent: missing required field "CompositeModelRoute.priority"`)}
@@ -426,6 +530,22 @@ func (_c *CompositeModelRouteCreate) createSpec() (*CompositeModelRoute, *sqlgra
 	if value, ok := _c.mutation.BodyContains(); ok {
 		_spec.SetField(compositemodelroute.FieldBodyContains, field.TypeString, value)
 		_node.BodyContains = value
+	}
+	if value, ok := _c.mutation.RequestKind(); ok {
+		_spec.SetField(compositemodelroute.FieldRequestKind, field.TypeString, value)
+		_node.RequestKind = value
+	}
+	if value, ok := _c.mutation.BodyMatchScope(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyMatchScope, field.TypeString, value)
+		_node.BodyMatchScope = value
+	}
+	if value, ok := _c.mutation.BodyMatchMode(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyMatchMode, field.TypeString, value)
+		_node.BodyMatchMode = value
+	}
+	if value, ok := _c.mutation.BodyNotContains(); ok {
+		_spec.SetField(compositemodelroute.FieldBodyNotContains, field.TypeString, value)
+		_node.BodyNotContains = value
 	}
 	if value, ok := _c.mutation.Priority(); ok {
 		_spec.SetField(compositemodelroute.FieldPriority, field.TypeInt, value)
@@ -631,6 +751,54 @@ func (u *CompositeModelRouteUpsert) SetBodyContains(v string) *CompositeModelRou
 // UpdateBodyContains sets the "body_contains" field to the value that was provided on create.
 func (u *CompositeModelRouteUpsert) UpdateBodyContains() *CompositeModelRouteUpsert {
 	u.SetExcluded(compositemodelroute.FieldBodyContains)
+	return u
+}
+
+// SetRequestKind sets the "request_kind" field.
+func (u *CompositeModelRouteUpsert) SetRequestKind(v string) *CompositeModelRouteUpsert {
+	u.Set(compositemodelroute.FieldRequestKind, v)
+	return u
+}
+
+// UpdateRequestKind sets the "request_kind" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsert) UpdateRequestKind() *CompositeModelRouteUpsert {
+	u.SetExcluded(compositemodelroute.FieldRequestKind)
+	return u
+}
+
+// SetBodyMatchScope sets the "body_match_scope" field.
+func (u *CompositeModelRouteUpsert) SetBodyMatchScope(v string) *CompositeModelRouteUpsert {
+	u.Set(compositemodelroute.FieldBodyMatchScope, v)
+	return u
+}
+
+// UpdateBodyMatchScope sets the "body_match_scope" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsert) UpdateBodyMatchScope() *CompositeModelRouteUpsert {
+	u.SetExcluded(compositemodelroute.FieldBodyMatchScope)
+	return u
+}
+
+// SetBodyMatchMode sets the "body_match_mode" field.
+func (u *CompositeModelRouteUpsert) SetBodyMatchMode(v string) *CompositeModelRouteUpsert {
+	u.Set(compositemodelroute.FieldBodyMatchMode, v)
+	return u
+}
+
+// UpdateBodyMatchMode sets the "body_match_mode" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsert) UpdateBodyMatchMode() *CompositeModelRouteUpsert {
+	u.SetExcluded(compositemodelroute.FieldBodyMatchMode)
+	return u
+}
+
+// SetBodyNotContains sets the "body_not_contains" field.
+func (u *CompositeModelRouteUpsert) SetBodyNotContains(v string) *CompositeModelRouteUpsert {
+	u.Set(compositemodelroute.FieldBodyNotContains, v)
+	return u
+}
+
+// UpdateBodyNotContains sets the "body_not_contains" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsert) UpdateBodyNotContains() *CompositeModelRouteUpsert {
+	u.SetExcluded(compositemodelroute.FieldBodyNotContains)
 	return u
 }
 
@@ -871,6 +1039,62 @@ func (u *CompositeModelRouteUpsertOne) SetBodyContains(v string) *CompositeModel
 func (u *CompositeModelRouteUpsertOne) UpdateBodyContains() *CompositeModelRouteUpsertOne {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.UpdateBodyContains()
+	})
+}
+
+// SetRequestKind sets the "request_kind" field.
+func (u *CompositeModelRouteUpsertOne) SetRequestKind(v string) *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetRequestKind(v)
+	})
+}
+
+// UpdateRequestKind sets the "request_kind" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertOne) UpdateRequestKind() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateRequestKind()
+	})
+}
+
+// SetBodyMatchScope sets the "body_match_scope" field.
+func (u *CompositeModelRouteUpsertOne) SetBodyMatchScope(v string) *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetBodyMatchScope(v)
+	})
+}
+
+// UpdateBodyMatchScope sets the "body_match_scope" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertOne) UpdateBodyMatchScope() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateBodyMatchScope()
+	})
+}
+
+// SetBodyMatchMode sets the "body_match_mode" field.
+func (u *CompositeModelRouteUpsertOne) SetBodyMatchMode(v string) *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetBodyMatchMode(v)
+	})
+}
+
+// UpdateBodyMatchMode sets the "body_match_mode" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertOne) UpdateBodyMatchMode() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateBodyMatchMode()
+	})
+}
+
+// SetBodyNotContains sets the "body_not_contains" field.
+func (u *CompositeModelRouteUpsertOne) SetBodyNotContains(v string) *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetBodyNotContains(v)
+	})
+}
+
+// UpdateBodyNotContains sets the "body_not_contains" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertOne) UpdateBodyNotContains() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateBodyNotContains()
 	})
 }
 
@@ -1285,6 +1509,62 @@ func (u *CompositeModelRouteUpsertBulk) SetBodyContains(v string) *CompositeMode
 func (u *CompositeModelRouteUpsertBulk) UpdateBodyContains() *CompositeModelRouteUpsertBulk {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.UpdateBodyContains()
+	})
+}
+
+// SetRequestKind sets the "request_kind" field.
+func (u *CompositeModelRouteUpsertBulk) SetRequestKind(v string) *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetRequestKind(v)
+	})
+}
+
+// UpdateRequestKind sets the "request_kind" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertBulk) UpdateRequestKind() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateRequestKind()
+	})
+}
+
+// SetBodyMatchScope sets the "body_match_scope" field.
+func (u *CompositeModelRouteUpsertBulk) SetBodyMatchScope(v string) *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetBodyMatchScope(v)
+	})
+}
+
+// UpdateBodyMatchScope sets the "body_match_scope" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertBulk) UpdateBodyMatchScope() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateBodyMatchScope()
+	})
+}
+
+// SetBodyMatchMode sets the "body_match_mode" field.
+func (u *CompositeModelRouteUpsertBulk) SetBodyMatchMode(v string) *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetBodyMatchMode(v)
+	})
+}
+
+// UpdateBodyMatchMode sets the "body_match_mode" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertBulk) UpdateBodyMatchMode() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateBodyMatchMode()
+	})
+}
+
+// SetBodyNotContains sets the "body_not_contains" field.
+func (u *CompositeModelRouteUpsertBulk) SetBodyNotContains(v string) *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetBodyNotContains(v)
+	})
+}
+
+// UpdateBodyNotContains sets the "body_not_contains" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertBulk) UpdateBodyNotContains() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateBodyNotContains()
 	})
 }
 

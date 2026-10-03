@@ -51,6 +51,75 @@ func (s compositeRouteRepoStub) DeleteByGroup(ctx context.Context, groupID int64
 	return nil
 }
 
+func TestCompositeTargetPlatformMiddlewareCompactionUsesActualEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	compact := service.CompositeModelRoute{ID: 9, GroupID: 6, PublicModel: "gpt", MatchType: "contains", TargetPlatform: service.PlatformDeepseek, UpstreamModel: "deepseek-v4.1-flash", Endpoint: "responses", RequestKind: "compaction", Enabled: true}
+	for _, path := range []string{"/v1/responses/compact", "/v1/responses"} {
+		t.Run(path, func(t *testing.T) {
+			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				id := int64(6)
+				c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{GroupID: &id, Group: &service.Group{ID: id, Platform: service.PlatformComposite}})
+				c.Next()
+			})
+			router.Use(compositeTargetPlatformMiddleware(service.NewCompositeRouteResolver(compositeRouteRepoStub{routes: []service.CompositeModelRoute{compact}})))
+			router.POST(path, func(c *gin.Context) {
+				target, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context())
+				require.True(t, ok)
+				if path == "/v1/responses/compact" {
+					require.Equal(t, service.PlatformDeepseek, target)
+				} else {
+					require.Equal(t, service.PlatformOpenAI, target)
+				}
+				c.Status(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-6","input":"normal text","request_kind":"compaction","native_compaction":true}`))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			require.Equal(t, http.StatusNoContent, recorder.Code)
+		})
+	}
+}
+
+func TestCompositeTargetPlatformMiddlewareNativeCompactionBoundaries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	compact := service.CompositeModelRoute{ID: 9, GroupID: 6, PublicModel: "gpt", MatchType: "contains", TargetPlatform: service.PlatformDeepseek, Endpoint: "responses", RequestKind: "compaction", Enabled: true}
+	for _, tt := range []struct {
+		name, path, body string
+		want             string
+	}{
+		{"native v2", "/v1/responses", `{"model":"gpt-6","stream":true,"input":[{"role":"user","content":"hello"},{"type":"compaction_trigger"}]}`, service.PlatformDeepseek},
+		{"legacy trailing slash", "/v1/responses/compact/", `{"model":"gpt-6","input":"hello"}`, service.PlatformDeepseek},
+		{"legacy subpath", "/v1/responses/compact/detail", `{"model":"gpt-6","input":"hello"}`, service.PlatformDeepseek},
+		{"headers alone", "/v1/responses", `{"model":"gpt-6","stream":true,"input":"hello"}`, service.PlatformOpenAI},
+		{"tool output is not trigger", "/v1/responses", `{"model":"gpt-6","stream":true,"input":[{"type":"function_call_output","output":"compaction_trigger"}]}`, service.PlatformOpenAI},
+		{"ambiguous native JSON", "/v1/responses", `{"model":"gpt-6","stream":true,"stream":false,"input":[{"type":"compaction_trigger"}]}`, service.PlatformOpenAI},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				id := int64(6)
+				c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{GroupID: &id, Group: &service.Group{ID: id, Platform: service.PlatformComposite}})
+				c.Next()
+			})
+			router.Use(compositeTargetPlatformMiddleware(service.NewCompositeRouteResolver(compositeRouteRepoStub{routes: []service.CompositeModelRoute{compact}})))
+			router.POST(tt.path, func(c *gin.Context) {
+				target, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context())
+				require.True(t, ok)
+				require.Equal(t, tt.want, target)
+				c.Status(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("x-codex-beta-features", "remote_compaction_v2")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			require.Equal(t, http.StatusNoContent, recorder.Code)
+		})
+	}
+}
+
 func TestCompositeTargetPlatformMiddlewareResolvesModelAndRestoresBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

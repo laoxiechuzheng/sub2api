@@ -203,6 +203,12 @@ func resolveOpenAIMessagesDispatchMappedModel(c *gin.Context, apiKey *service.AP
 	// composite 解析到 grok/CN/OpenCode 目标时调度级映射不适用（Group 级映射的
 	// gpt-5.x 默认值是 openai 专属,发给这些上游必错）,模型改写交给账号级 model_mapping。
 	if apiKey.Group.Platform == service.PlatformComposite && c != nil && c.Request != nil {
+		if source, ok := service.CompositeRouteSourceFromContext(c.Request.Context()); ok &&
+			(source == service.CompositeRouteSourceExplicit || source == service.CompositeRouteSourceAccount) {
+			// Explicit routes and account-owned aliases already have a target.
+			// Preserve Messages permission without injecting group defaults.
+			return ""
+		}
 		if platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok &&
 			(platform == service.PlatformGrok || service.IsMultiProtocolAPIKeyProvider(platform)) {
 			return ""
@@ -298,6 +304,9 @@ func openAIResponsesRequiredCapability(imageIntent bool, platform string) servic
 // required by an image or Responses request. needsResponses includes both the
 // legacy /responses/compact endpoint and native remote compaction v2.
 func openAIResponsesRequiredCapabilityForRequest(imageIntent bool, needsResponses bool, platform string) service.OpenAIEndpointCapability {
+	// CN and OpenCode Go select protocols from explicit configuration/model
+	// rules. Their generic probe can be stale; the effective-protocol admission
+	// check below is authoritative for compaction.
 	if needsResponses && platform == service.PlatformOpenAI {
 		return service.OpenAIEndpointCapabilityResponses
 	}
@@ -696,6 +705,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Error(openAICompatibleSelectionErrorForLog(err, requestPlatform)),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
+			if needsResponses && lastFailoverErr == nil &&
+				(errors.Is(err, service.ErrNoAvailableAccounts) || errors.Is(err, service.ErrNoAvailableCompactAccounts)) {
+				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "compact_not_supported", "No available accounts preserve native Responses compaction", streamStarted)
+				return
+			}
 			if len(failedAccountIDs) == 0 {
 				if legacyCompact && errors.Is(err, service.ErrNoAvailableCompactAccounts) {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -738,6 +753,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
 		)
 		account := selection.Account
+		if needsResponses && !service.CanForwardOpenAICompaction(account, forwardBody) {
+			// Reject incompatible protocols before entering a wait queue. The
+			// scheduler may already hold a slot, so release it before reselecting.
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+				selection.ReleaseFunc = nil
+			}
+			failedAccountIDs[account.ID] = struct{}{}
+			reqLog.Debug("openai.account_skipped_compaction_protocol", zap.Int64("account_id", account.ID))
+			continue
+		}
 		if previousResponseID != "" && requestPlatform == service.PlatformOpenAI && !account.IsOpenAIApiKey() {
 			// The public Responses HTTP API supports previous_response_id on API-key
 			// accounts. OAuth/SetupToken upstreams do not, so keep searching instead
@@ -777,6 +803,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		if slotResult != openAISlotAcquireOK {
 			return
+		}
+		if needsResponses {
+			// Admission refreshes the account. Recheck its effective protocol
+			// before forwarding, releasing the slot when the account is vetoed.
+			account = selection.Account
+			if !service.CanForwardOpenAICompaction(account, forwardBody) {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				failedAccountIDs[account.ID] = struct{}{}
+				reqLog.Debug("openai.account_skipped_compaction_protocol", zap.Int64("account_id", account.ID))
+				continue
+			}
 		}
 
 		// Forward request
@@ -1012,16 +1051,7 @@ func isOpenAILegacyCompactPath(c *gin.Context) bool {
 // isBareOpenAIResponsesPath 仅匹配裸 /responses 端点（无 /compact 等子路径），
 // body-signal 提升只允许发生在这里，避免误伤 /responses/{id}/... 形态的请求。
 func isBareOpenAIResponsesPath(c *gin.Context) bool {
-	if c == nil || c.Request == nil || c.Request.URL == nil {
-		return false
-	}
-	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
-	switch normalizedPath {
-	case EndpointResponses, "/openai/v1/responses", "/responses", "/backend-api/codex/responses":
-		return true
-	default:
-		return false
-	}
+	return service.IsBareOpenAIResponsesPath(c)
 }
 
 func isOpenAIRemoteCompactionV2Request(body []byte) bool {

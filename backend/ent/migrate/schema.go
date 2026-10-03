@@ -814,6 +814,10 @@ var (
 		{Name: "endpoint", Type: field.TypeString, Size: 50, Default: "any"},
 		{Name: "user_agent_contains", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "body_contains", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "request_kind", Type: field.TypeString, Size: 20, Default: "any"},
+		{Name: "body_match_scope", Type: field.TypeString, Size: 32, Default: "full_body"},
+		{Name: "body_match_mode", Type: field.TypeString, Size: 20, Default: "any"},
+		{Name: "body_not_contains", Type: field.TypeString, Size: 8192, Default: "", SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "priority", Type: field.TypeInt, Default: 100},
 		{Name: "enabled", Type: field.TypeBool, Default: true},
 		{Name: "notes", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
@@ -827,7 +831,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "composite_model_routes_groups_group",
-				Columns:    []*schema.Column{CompositeModelRoutesColumns[14]},
+				Columns:    []*schema.Column{CompositeModelRoutesColumns[18]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -836,22 +840,22 @@ var (
 			{
 				Name:    "compositemodelroute_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{CompositeModelRoutesColumns[14]},
+				Columns: []*schema.Column{CompositeModelRoutesColumns[18]},
 			},
 			{
 				Name:    "compositemodelroute_group_id_enabled",
 				Unique:  false,
-				Columns: []*schema.Column{CompositeModelRoutesColumns[14], CompositeModelRoutesColumns[12]},
+				Columns: []*schema.Column{CompositeModelRoutesColumns[18], CompositeModelRoutesColumns[16]},
 			},
 			{
 				Name:    "compositemodelroute_group_id_endpoint",
 				Unique:  false,
-				Columns: []*schema.Column{CompositeModelRoutesColumns[14], CompositeModelRoutesColumns[8]},
+				Columns: []*schema.Column{CompositeModelRoutesColumns[18], CompositeModelRoutesColumns[8]},
 			},
 			{
 				Name:    "compositemodelroute_group_id_target_platform",
 				Unique:  false,
-				Columns: []*schema.Column{CompositeModelRoutesColumns[14], CompositeModelRoutesColumns[6]},
+				Columns: []*schema.Column{CompositeModelRoutesColumns[18], CompositeModelRoutesColumns[6]},
 			},
 			{
 				Name:    "compositemodelroute_deleted_at",
@@ -861,7 +865,7 @@ var (
 			{
 				Name:    "compositemodelroute_priority",
 				Unique:  false,
-				Columns: []*schema.Column{CompositeModelRoutesColumns[11]},
+				Columns: []*schema.Column{CompositeModelRoutesColumns[15]},
 			},
 		},
 	}

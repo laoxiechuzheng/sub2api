@@ -62,6 +62,23 @@ func (CompositeModelRoute) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "text"}).
 			Default("").
 			Comment("Newline-separated request-body substrings; empty disables the condition."),
+		field.String("request_kind").
+			MaxLen(20).
+			Default("any").
+			Comment("Request classification: any, compaction, or conversation."),
+		field.String("body_match_scope").
+			MaxLen(32).
+			Default("full_body").
+			Comment("Body scope: full_body, instructions, last_message, or current_turn."),
+		field.String("body_match_mode").
+			MaxLen(20).
+			Default("any").
+			Comment("Body substring matching: any, all, or prefix."),
+		field.String("body_not_contains").
+			SchemaType(map[string]string{dialect.Postgres: "text"}).
+			MaxLen(8192).
+			Default("").
+			Comment("Newline-separated body exclusions; any match rejects the route."),
 		field.Int("priority").
 			Default(100).
 			Comment("Lower values win within the same match strength."),

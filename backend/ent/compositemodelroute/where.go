@@ -110,6 +110,26 @@ func BodyContains(v string) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldEQ(FieldBodyContains, v))
 }
 
+// RequestKind applies equality check predicate on the "request_kind" field. It's identical to RequestKindEQ.
+func RequestKind(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldRequestKind, v))
+}
+
+// BodyMatchScope applies equality check predicate on the "body_match_scope" field. It's identical to BodyMatchScopeEQ.
+func BodyMatchScope(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldBodyMatchScope, v))
+}
+
+// BodyMatchMode applies equality check predicate on the "body_match_mode" field. It's identical to BodyMatchModeEQ.
+func BodyMatchMode(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldBodyMatchMode, v))
+}
+
+// BodyNotContains applies equality check predicate on the "body_not_contains" field. It's identical to BodyNotContainsEQ.
+func BodyNotContains(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldBodyNotContains, v))
+}
+
 // Priority applies equality check predicate on the "priority" field. It's identical to PriorityEQ.
 func Priority(v int) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldEQ(FieldPriority, v))
@@ -728,6 +748,266 @@ func BodyContainsEqualFold(v string) predicate.CompositeModelRoute {
 // BodyContainsContainsFold applies the ContainsFold predicate on the "body_contains" field.
 func BodyContainsContainsFold(v string) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldContainsFold(FieldBodyContains, v))
+}
+
+// RequestKindEQ applies the EQ predicate on the "request_kind" field.
+func RequestKindEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldRequestKind, v))
+}
+
+// RequestKindNEQ applies the NEQ predicate on the "request_kind" field.
+func RequestKindNEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNEQ(FieldRequestKind, v))
+}
+
+// RequestKindIn applies the In predicate on the "request_kind" field.
+func RequestKindIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldIn(FieldRequestKind, vs...))
+}
+
+// RequestKindNotIn applies the NotIn predicate on the "request_kind" field.
+func RequestKindNotIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNotIn(FieldRequestKind, vs...))
+}
+
+// RequestKindGT applies the GT predicate on the "request_kind" field.
+func RequestKindGT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGT(FieldRequestKind, v))
+}
+
+// RequestKindGTE applies the GTE predicate on the "request_kind" field.
+func RequestKindGTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGTE(FieldRequestKind, v))
+}
+
+// RequestKindLT applies the LT predicate on the "request_kind" field.
+func RequestKindLT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLT(FieldRequestKind, v))
+}
+
+// RequestKindLTE applies the LTE predicate on the "request_kind" field.
+func RequestKindLTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLTE(FieldRequestKind, v))
+}
+
+// RequestKindContains applies the Contains predicate on the "request_kind" field.
+func RequestKindContains(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContains(FieldRequestKind, v))
+}
+
+// RequestKindHasPrefix applies the HasPrefix predicate on the "request_kind" field.
+func RequestKindHasPrefix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasPrefix(FieldRequestKind, v))
+}
+
+// RequestKindHasSuffix applies the HasSuffix predicate on the "request_kind" field.
+func RequestKindHasSuffix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasSuffix(FieldRequestKind, v))
+}
+
+// RequestKindEqualFold applies the EqualFold predicate on the "request_kind" field.
+func RequestKindEqualFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEqualFold(FieldRequestKind, v))
+}
+
+// RequestKindContainsFold applies the ContainsFold predicate on the "request_kind" field.
+func RequestKindContainsFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContainsFold(FieldRequestKind, v))
+}
+
+// BodyMatchScopeEQ applies the EQ predicate on the "body_match_scope" field.
+func BodyMatchScopeEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeNEQ applies the NEQ predicate on the "body_match_scope" field.
+func BodyMatchScopeNEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNEQ(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeIn applies the In predicate on the "body_match_scope" field.
+func BodyMatchScopeIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldIn(FieldBodyMatchScope, vs...))
+}
+
+// BodyMatchScopeNotIn applies the NotIn predicate on the "body_match_scope" field.
+func BodyMatchScopeNotIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNotIn(FieldBodyMatchScope, vs...))
+}
+
+// BodyMatchScopeGT applies the GT predicate on the "body_match_scope" field.
+func BodyMatchScopeGT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGT(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeGTE applies the GTE predicate on the "body_match_scope" field.
+func BodyMatchScopeGTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGTE(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeLT applies the LT predicate on the "body_match_scope" field.
+func BodyMatchScopeLT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLT(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeLTE applies the LTE predicate on the "body_match_scope" field.
+func BodyMatchScopeLTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLTE(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeContains applies the Contains predicate on the "body_match_scope" field.
+func BodyMatchScopeContains(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContains(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeHasPrefix applies the HasPrefix predicate on the "body_match_scope" field.
+func BodyMatchScopeHasPrefix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasPrefix(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeHasSuffix applies the HasSuffix predicate on the "body_match_scope" field.
+func BodyMatchScopeHasSuffix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasSuffix(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeEqualFold applies the EqualFold predicate on the "body_match_scope" field.
+func BodyMatchScopeEqualFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEqualFold(FieldBodyMatchScope, v))
+}
+
+// BodyMatchScopeContainsFold applies the ContainsFold predicate on the "body_match_scope" field.
+func BodyMatchScopeContainsFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContainsFold(FieldBodyMatchScope, v))
+}
+
+// BodyMatchModeEQ applies the EQ predicate on the "body_match_mode" field.
+func BodyMatchModeEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeNEQ applies the NEQ predicate on the "body_match_mode" field.
+func BodyMatchModeNEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNEQ(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeIn applies the In predicate on the "body_match_mode" field.
+func BodyMatchModeIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldIn(FieldBodyMatchMode, vs...))
+}
+
+// BodyMatchModeNotIn applies the NotIn predicate on the "body_match_mode" field.
+func BodyMatchModeNotIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNotIn(FieldBodyMatchMode, vs...))
+}
+
+// BodyMatchModeGT applies the GT predicate on the "body_match_mode" field.
+func BodyMatchModeGT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGT(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeGTE applies the GTE predicate on the "body_match_mode" field.
+func BodyMatchModeGTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGTE(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeLT applies the LT predicate on the "body_match_mode" field.
+func BodyMatchModeLT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLT(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeLTE applies the LTE predicate on the "body_match_mode" field.
+func BodyMatchModeLTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLTE(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeContains applies the Contains predicate on the "body_match_mode" field.
+func BodyMatchModeContains(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContains(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeHasPrefix applies the HasPrefix predicate on the "body_match_mode" field.
+func BodyMatchModeHasPrefix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasPrefix(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeHasSuffix applies the HasSuffix predicate on the "body_match_mode" field.
+func BodyMatchModeHasSuffix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasSuffix(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeEqualFold applies the EqualFold predicate on the "body_match_mode" field.
+func BodyMatchModeEqualFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEqualFold(FieldBodyMatchMode, v))
+}
+
+// BodyMatchModeContainsFold applies the ContainsFold predicate on the "body_match_mode" field.
+func BodyMatchModeContainsFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContainsFold(FieldBodyMatchMode, v))
+}
+
+// BodyNotContainsEQ applies the EQ predicate on the "body_not_contains" field.
+func BodyNotContainsEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEQ(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsNEQ applies the NEQ predicate on the "body_not_contains" field.
+func BodyNotContainsNEQ(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNEQ(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsIn applies the In predicate on the "body_not_contains" field.
+func BodyNotContainsIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldIn(FieldBodyNotContains, vs...))
+}
+
+// BodyNotContainsNotIn applies the NotIn predicate on the "body_not_contains" field.
+func BodyNotContainsNotIn(vs ...string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNotIn(FieldBodyNotContains, vs...))
+}
+
+// BodyNotContainsGT applies the GT predicate on the "body_not_contains" field.
+func BodyNotContainsGT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGT(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsGTE applies the GTE predicate on the "body_not_contains" field.
+func BodyNotContainsGTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldGTE(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsLT applies the LT predicate on the "body_not_contains" field.
+func BodyNotContainsLT(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLT(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsLTE applies the LTE predicate on the "body_not_contains" field.
+func BodyNotContainsLTE(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldLTE(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsContains applies the Contains predicate on the "body_not_contains" field.
+func BodyNotContainsContains(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContains(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsHasPrefix applies the HasPrefix predicate on the "body_not_contains" field.
+func BodyNotContainsHasPrefix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasPrefix(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsHasSuffix applies the HasSuffix predicate on the "body_not_contains" field.
+func BodyNotContainsHasSuffix(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldHasSuffix(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsEqualFold applies the EqualFold predicate on the "body_not_contains" field.
+func BodyNotContainsEqualFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldEqualFold(FieldBodyNotContains, v))
+}
+
+// BodyNotContainsContainsFold applies the ContainsFold predicate on the "body_not_contains" field.
+func BodyNotContainsContainsFold(v string) predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldContainsFold(FieldBodyNotContains, v))
 }
 
 // PriorityEQ applies the EQ predicate on the "priority" field.

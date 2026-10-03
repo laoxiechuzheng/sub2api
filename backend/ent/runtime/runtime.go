@@ -927,12 +927,36 @@ func init() {
 	compositemodelrouteDescBodyContains := compositemodelrouteFields[7].Descriptor()
 	// compositemodelroute.DefaultBodyContains holds the default value on creation for the body_contains field.
 	compositemodelroute.DefaultBodyContains = compositemodelrouteDescBodyContains.Default.(string)
+	// compositemodelrouteDescRequestKind is the schema descriptor for request_kind field.
+	compositemodelrouteDescRequestKind := compositemodelrouteFields[8].Descriptor()
+	// compositemodelroute.DefaultRequestKind holds the default value on creation for the request_kind field.
+	compositemodelroute.DefaultRequestKind = compositemodelrouteDescRequestKind.Default.(string)
+	// compositemodelroute.RequestKindValidator is a validator for the "request_kind" field. It is called by the builders before save.
+	compositemodelroute.RequestKindValidator = compositemodelrouteDescRequestKind.Validators[0].(func(string) error)
+	// compositemodelrouteDescBodyMatchScope is the schema descriptor for body_match_scope field.
+	compositemodelrouteDescBodyMatchScope := compositemodelrouteFields[9].Descriptor()
+	// compositemodelroute.DefaultBodyMatchScope holds the default value on creation for the body_match_scope field.
+	compositemodelroute.DefaultBodyMatchScope = compositemodelrouteDescBodyMatchScope.Default.(string)
+	// compositemodelroute.BodyMatchScopeValidator is a validator for the "body_match_scope" field. It is called by the builders before save.
+	compositemodelroute.BodyMatchScopeValidator = compositemodelrouteDescBodyMatchScope.Validators[0].(func(string) error)
+	// compositemodelrouteDescBodyMatchMode is the schema descriptor for body_match_mode field.
+	compositemodelrouteDescBodyMatchMode := compositemodelrouteFields[10].Descriptor()
+	// compositemodelroute.DefaultBodyMatchMode holds the default value on creation for the body_match_mode field.
+	compositemodelroute.DefaultBodyMatchMode = compositemodelrouteDescBodyMatchMode.Default.(string)
+	// compositemodelroute.BodyMatchModeValidator is a validator for the "body_match_mode" field. It is called by the builders before save.
+	compositemodelroute.BodyMatchModeValidator = compositemodelrouteDescBodyMatchMode.Validators[0].(func(string) error)
+	// compositemodelrouteDescBodyNotContains is the schema descriptor for body_not_contains field.
+	compositemodelrouteDescBodyNotContains := compositemodelrouteFields[11].Descriptor()
+	// compositemodelroute.DefaultBodyNotContains holds the default value on creation for the body_not_contains field.
+	compositemodelroute.DefaultBodyNotContains = compositemodelrouteDescBodyNotContains.Default.(string)
+	// compositemodelroute.BodyNotContainsValidator is a validator for the "body_not_contains" field. It is called by the builders before save.
+	compositemodelroute.BodyNotContainsValidator = compositemodelrouteDescBodyNotContains.Validators[0].(func(string) error)
 	// compositemodelrouteDescPriority is the schema descriptor for priority field.
-	compositemodelrouteDescPriority := compositemodelrouteFields[8].Descriptor()
+	compositemodelrouteDescPriority := compositemodelrouteFields[12].Descriptor()
 	// compositemodelroute.DefaultPriority holds the default value on creation for the priority field.
 	compositemodelroute.DefaultPriority = compositemodelrouteDescPriority.Default.(int)
 	// compositemodelrouteDescEnabled is the schema descriptor for enabled field.
-	compositemodelrouteDescEnabled := compositemodelrouteFields[9].Descriptor()
+	compositemodelrouteDescEnabled := compositemodelrouteFields[13].Descriptor()
 	// compositemodelroute.DefaultEnabled holds the default value on creation for the enabled field.
 	compositemodelroute.DefaultEnabled = compositemodelrouteDescEnabled.Default.(bool)
 	errorpassthroughruleMixin := schema.ErrorPassthroughRule{}.Mixin()

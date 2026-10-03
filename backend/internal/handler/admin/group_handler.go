@@ -330,23 +330,28 @@ type UpdateGroupRequest struct {
 }
 
 type CompositeRouteRequest struct {
-	PublicModel       string `json:"public_model" binding:"required"`
-	MatchType         string `json:"match_type" binding:"omitempty,oneof=exact prefix contains"`
-	TargetPlatform    string `json:"target_platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax opencode_go typesafe"`
-	UpstreamModel     string `json:"upstream_model"`
-	Endpoint          string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
-	UserAgentContains string `json:"user_agent_contains" binding:"omitempty,max=2048"`
-	BodyContains      string `json:"body_contains" binding:"omitempty,max=8192"`
-	Priority          int    `json:"priority"`
-	Enabled           *bool  `json:"enabled"`
-	Notes             string `json:"notes"`
+	PublicModel       string  `json:"public_model" binding:"required"`
+	MatchType         string  `json:"match_type" binding:"omitempty,oneof=exact prefix contains"`
+	TargetPlatform    string  `json:"target_platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax opencode_go typesafe"`
+	UpstreamModel     string  `json:"upstream_model"`
+	Endpoint          string  `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
+	UserAgentContains string  `json:"user_agent_contains" binding:"omitempty,max=2048"`
+	BodyContains      string  `json:"body_contains" binding:"omitempty,max=8192"`
+	RequestKind       *string `json:"request_kind" binding:"omitempty,oneof=any compaction conversation"`
+	BodyMatchScope    *string `json:"body_match_scope" binding:"omitempty,oneof=full_body instructions last_message current_turn"`
+	BodyMatchMode     *string `json:"body_match_mode" binding:"omitempty,oneof=any all prefix"`
+	BodyNotContains   *string `json:"body_not_contains" binding:"omitempty,max=8192"`
+	Priority          int     `json:"priority"`
+	Enabled           *bool   `json:"enabled"`
+	Notes             string  `json:"notes"`
 }
 
 type CompositeRoutePreviewRequest struct {
-	Model     string `json:"model" binding:"required"`
-	Endpoint  string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
-	UserAgent string `json:"user_agent" binding:"omitempty,max=2048"`
-	Body      string `json:"body" binding:"omitempty,max=2000000"`
+	Model            string `json:"model" binding:"required"`
+	Endpoint         string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
+	UserAgent        string `json:"user_agent" binding:"omitempty,max=2048"`
+	Body             string `json:"body" binding:"omitempty,max=2000000"`
+	NativeCompaction bool   `json:"native_compaction"`
 }
 
 // List handles listing all groups with pagination
@@ -502,10 +507,11 @@ func (h *GroupHandler) PreviewCompositeRoute(c *gin.Context) {
 		return
 	}
 	decision, err := h.adminService.PreviewCompositeRoute(c.Request.Context(), groupID, service.CompositeRoutePreviewRequest{
-		Model:     req.Model,
-		Endpoint:  req.Endpoint,
-		UserAgent: req.UserAgent,
-		Body:      req.Body,
+		Model:            req.Model,
+		Endpoint:         req.Endpoint,
+		UserAgent:        req.UserAgent,
+		Body:             req.Body,
+		NativeCompaction: req.NativeCompaction,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -519,7 +525,7 @@ func compositeRouteRequestToInput(req CompositeRouteRequest, defaultEnabled bool
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	return service.CompositeRouteInput{
+	input := service.CompositeRouteInput{
 		PublicModel:       req.PublicModel,
 		MatchType:         req.MatchType,
 		TargetPlatform:    req.TargetPlatform,
@@ -531,6 +537,23 @@ func compositeRouteRequestToInput(req CompositeRouteRequest, defaultEnabled bool
 		Enabled:           enabled,
 		Notes:             req.Notes,
 	}
+	if req.RequestKind != nil {
+		input.RequestKind = *req.RequestKind
+		input.RequestKindProvided = true
+	}
+	if req.BodyMatchScope != nil {
+		input.BodyMatchScope = *req.BodyMatchScope
+		input.BodyMatchScopeProvided = true
+	}
+	if req.BodyMatchMode != nil {
+		input.BodyMatchMode = *req.BodyMatchMode
+		input.BodyMatchModeProvided = true
+	}
+	if req.BodyNotContains != nil {
+		input.BodyNotContains = *req.BodyNotContains
+		input.BodyNotContainsProvided = true
+	}
+	return input
 }
 
 func parsePositiveIDParam(c *gin.Context, name string) (int64, bool) {
