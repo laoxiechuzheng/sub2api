@@ -392,6 +392,47 @@ func compositeLastDirectTextBlock(content gjson.Result, endpoint string) string 
 	return ""
 }
 
+func compositeClaudeTerminalPromptLayout(blocks []string) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	seenControl := false
+	for _, block := range blocks[:len(blocks)-1] {
+		trimmed := strings.TrimSpace(block)
+		if trimmed == "" {
+			continue
+		}
+		if compositeClaudeControlBlock(trimmed) {
+			seenControl = true
+			continue
+		}
+		// Claude Code may place historical user text after its local-command
+		// transport blocks. Arbitrary text before the first control block is
+		// treated as quoted or explanatory content and fails closed.
+		if !seenControl {
+			return false
+		}
+	}
+	return true
+}
+
+func compositeClaudeControlBlock(text string) bool {
+	for _, prefix := range []string{
+		"<local-command-caveat>",
+		"<local-command-stdout>",
+		"<local-command-stderr>",
+		"<command-name>",
+		"<command-message>",
+		"<command-args>",
+	} {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return strings.HasPrefix(text, "<system-reminder>") &&
+		strings.HasSuffix(text, "</system-reminder>")
+}
+
 func (f *compositeRequestFacts) classify() CompositeRequestClassification {
 	f.parse()
 	if !f.valid {
@@ -421,7 +462,8 @@ func (f *compositeRequestFacts) classify() CompositeRequestClassification {
 		// Accept only the final effective text block when the complete official
 		// template starts at byte zero; short signatures and quoted prompts stay out.
 		if len(text) >= compositeClaudeCompactionStandaloneMinBytes &&
-			compositeClaudeCompleteCompactionPrompt(text, true) {
+			compositeClaudeCompleteCompactionPrompt(text, true) &&
+			compositeClaudeTerminalPromptLayout(f.terminalBlocks) {
 			return CompositeRequestClassification{Kind: "compaction", Source: "claude_terminal_prompt", Reason: "claude_terminal_prompt"}
 		}
 	}

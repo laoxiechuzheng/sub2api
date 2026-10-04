@@ -57,6 +57,8 @@ func TestCompositeClaudeCompactionCurrentMessageBoundaries(t *testing.T) {
 		{"template inside leading reminder is not directive", claudeCompactionTestUA, "messages", []map[string]any{user("<system-reminder>\n" + full + "\n</system-reminder>\nContinue the implementation."), system(reminder)}, false},
 		{"unclosed reminder fails closed", claudeCompactionTestUA, "messages", []map[string]any{user("<system-reminder>\n" + full)}, false},
 		{"quoted later block stays ordinary", claudeCompactionTestUA, "messages", []map[string]any{user([]any{text("Explain this template:"), text(full)}), system(reminder)}, false},
+		{"quoted complete later block stays ordinary", claudeCompactionTestUA, "messages", []map[string]any{user([]any{text("Explain this template:"), text(completeFull)}), system(reminder)}, false},
+		{"arbitrary text before local command stays ordinary", claudeCompactionTestUA, "messages", []map[string]any{user([]any{text("Explain this template:"), text("<command-name>/model</command-name>"), text(completeFull)}), system(reminder)}, false},
 		{"unmarked arbitrary prefix stays conservative", claudeCompactionTestUA, "messages", []map[string]any{user("Previous request.\n" + full)}, false},
 		{"only critical warning is not compaction", claudeCompactionTestUA, "messages", []map[string]any{user("CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.")}, false},
 		{"only vague partial phrase is not compaction", claudeCompactionTestUA, "messages", []map[string]any{user("Your task is to create a detailed summary of this conversation.")}, false},
@@ -148,6 +150,7 @@ func TestCompositeClaudeCompactionMergedBlockSupportsLastMessagePrefix(t *testin
 		strings.Repeat("Context detail.\n", 300)
 	body, err := json.Marshal(map[string]any{"messages": []map[string]any{
 		{"role": "user", "content": []map[string]any{
+			{"type": "text", "text": "<local-command-caveat>transport context</local-command-caveat>"},
 			{"type": "text", "text": "Previous user message"},
 			{"type": "text", "text": complete},
 		}},
