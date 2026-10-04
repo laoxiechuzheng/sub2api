@@ -73,6 +73,8 @@ type compositeRequestFacts struct {
 	invalidReason        string
 	instructions         []string
 	terminal             []string
+	terminalBlocks       []string
+	terminalTailBlock    string
 }
 
 func newCompositeRequestFacts(match CompositeRouteRequestMatch) *compositeRequestFacts {
@@ -160,6 +162,8 @@ func (f *compositeRequestFacts) parse() {
 	f.valid = true
 	if messages.Type == gjson.String {
 		f.terminal = append(f.terminal, messages.String())
+		f.terminalBlocks = append(f.terminalBlocks, messages.String())
+		f.terminalTailBlock = messages.String()
 		return
 	}
 	if !messages.IsArray() {
@@ -201,6 +205,8 @@ func (f *compositeRequestFacts) parse() {
 		return
 	}
 	f.terminal = compositeDirectText(last.Get("content"), f.endpoint)
+	f.terminalBlocks = compositeDirectTextBlocks(last.Get("content"), f.endpoint)
+	f.terminalTailBlock = compositeLastDirectTextBlock(last.Get("content"), f.endpoint)
 }
 
 func compositeClaudeSystemCarrier(item gjson.Result) bool {
@@ -323,6 +329,16 @@ func compositeEnvelopeAmbiguous(root gjson.Result) bool {
 }
 
 func compositeDirectText(content gjson.Result, endpoint string) []string {
+	blocks := compositeDirectTextBlocks(content, endpoint)
+	if len(blocks) == 0 {
+		return nil
+	}
+	// Preserve a message as one instruction. A quoted directive in a later
+	// text block must not gain a new artificial beginning for general rules.
+	return []string{strings.Join(blocks, "\n")}
+}
+
+func compositeDirectTextBlocks(content gjson.Result, endpoint string) []string {
 	if content.Type == gjson.String {
 		return []string{content.String()}
 	}
@@ -348,9 +364,32 @@ func compositeDirectText(content gjson.Result, endpoint string) []string {
 	if len(text) == 0 {
 		return nil
 	}
-	// Preserve a message as one instruction. A quoted directive in a later
-	// text block must not gain a new artificial beginning of the request.
-	return []string{strings.Join(text, "\n")}
+	return text
+}
+
+func compositeLastDirectTextBlock(content gjson.Result, endpoint string) string {
+	if content.Type == gjson.String {
+		return content.String()
+	}
+	if !content.IsArray() {
+		return ""
+	}
+	blocks := content.Array()
+	for index := len(blocks) - 1; index >= 0; index-- {
+		block := blocks[index]
+		blockType := block.Get("type").String()
+		if blockType != "text" && !(endpoint == CompositeRouteEndpointResponses && blockType == "input_text") {
+			return ""
+		}
+		value := block.Get("text")
+		if value.Type != gjson.String {
+			return ""
+		}
+		if strings.TrimSpace(value.String()) != "" {
+			return value.String()
+		}
+	}
+	return ""
 }
 
 func (f *compositeRequestFacts) classify() CompositeRequestClassification {
@@ -375,6 +414,17 @@ func (f *compositeRequestFacts) classify() CompositeRequestClassification {
 			return CompositeRequestClassification{Kind: "compaction", Source: source, Reason: source}
 		}
 	}
+	if f.claudeCode && f.endpoint == CompositeRouteEndpointMessages {
+		text := compositeClaudeDirective(f.terminalTailBlock)
+		// Claude Code can merge earlier user text, local-command transport
+		// blocks, and this complete official template into one user message.
+		// Accept only the final effective text block when the complete official
+		// template starts at byte zero; short signatures and quoted prompts stay out.
+		if len(text) >= compositeClaudeCompactionStandaloneMinBytes &&
+			compositeClaudeCompleteCompactionPrompt(text, true) {
+			return CompositeRequestClassification{Kind: "compaction", Source: "claude_terminal_prompt", Reason: "claude_terminal_prompt"}
+		}
+	}
 	for _, text := range f.instructions {
 		if source := compositeCompactionSignature(text, true, false); source != "" {
 			return CompositeRequestClassification{Kind: "compaction", Source: source, Reason: source}
@@ -383,29 +433,49 @@ func (f *compositeRequestFacts) classify() CompositeRequestClassification {
 	return CompositeRequestClassification{Kind: "conversation", Source: "no_compaction_signature", Reason: "no_compaction_signature"}
 }
 
+const (
+	compositeClaudeCompactionCritical = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+	compositeClaudeCompactionFull     = "Your task is to create a detailed summary of the conversation so far"
+	// Public 2.1.286 complete templates are at least 4.4 KiB before custom
+	// instructions. The lower bound rejects short quoted signatures.
+	compositeClaudeCompactionStandaloneMinBytes = 2048
+)
+
+var compositeClaudeCompactionWarningLines = []string{
+	"- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.",
+	"- You already have all the context you need in the conversation above.",
+	"- Tool calls will be REJECTED and will waste your only turn \u2014 you will fail the task.",
+	"- Your entire response must be plain text: an <analysis> block followed by a <summary> block.",
+}
+
 func compositeClaudeCompactionPrompt(text string, allowPartial bool) bool {
-	const critical = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
-	const full = "Your task is to create a detailed summary of the conversation so far"
-	if strings.HasPrefix(text, critical) {
-		text = strings.TrimSpace(text[len(critical):])
-		warningLines := []string{
-			"- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.",
-			"- You already have all the context you need in the conversation above.",
-			"- Tool calls will be REJECTED and will waste your only turn \u2014 you will fail the task.",
-			"- Your entire response must be plain text: an <analysis> block followed by a <summary> block.",
-		}
-		if strings.HasPrefix(text, warningLines[0]) {
-			for _, line := range warningLines {
+	return compositeClaudeCompactionPromptInternal(text, allowPartial, false)
+}
+
+func compositeClaudeCompleteCompactionPrompt(text string, allowPartial bool) bool {
+	return compositeClaudeCompactionPromptInternal(text, allowPartial, true)
+}
+
+func compositeClaudeCompactionPromptInternal(text string, allowPartial, requireWarnings bool) bool {
+	if strings.HasPrefix(text, compositeClaudeCompactionCritical) {
+		text = strings.TrimSpace(text[len(compositeClaudeCompactionCritical):])
+		if strings.HasPrefix(text, compositeClaudeCompactionWarningLines[0]) {
+			for _, line := range compositeClaudeCompactionWarningLines {
 				if !strings.HasPrefix(text, line) {
 					return false
 				}
 				text = strings.TrimSpace(text[len(line):])
 			}
+		} else if requireWarnings {
+			return false
 		}
 	} else {
-		return strings.HasPrefix(text, full)
+		if requireWarnings {
+			return false
+		}
+		return strings.HasPrefix(text, compositeClaudeCompactionFull)
 	}
-	if strings.HasPrefix(text, full) {
+	if strings.HasPrefix(text, compositeClaudeCompactionFull) {
 		return true
 	}
 	if !allowPartial {
@@ -553,7 +623,11 @@ func evaluateCompositeRouteConditions(route CompositeModelRoute, match Composite
 		case "instructions":
 			texts = facts.instructions
 		case "last_message":
-			texts = facts.terminal
+			if facts.claudeCode && facts.endpoint == CompositeRouteEndpointMessages && len(facts.terminalBlocks) > 0 {
+				texts = facts.terminalBlocks
+			} else {
+				texts = facts.terminal
+			}
 		case "current_turn":
 			texts = make([]string, 0, len(facts.instructions)+len(facts.terminal))
 			texts = append(texts, facts.instructions...)

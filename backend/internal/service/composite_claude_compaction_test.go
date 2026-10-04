@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,9 +12,17 @@ import (
 const claudeCompactionTestUA = "claude-cli/2.1.286 (external, claude-desktop-3p, agent-sdk/0.3.286)"
 
 func TestCompositeClaudeCompactionCurrentMessageBoundaries(t *testing.T) {
-	full := "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\nYour task is to create a detailed summary of the conversation so far"
+	critical := "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+	taskFull := "Your task is to create a detailed summary of the conversation so far"
+	full := critical + "\n" + taskFull
 	recent := "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\nYour task is to create a detailed summary of the RECENT portion of the conversation"
 	earlier := "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\nYour task is to create a detailed summary of this conversation. This summary will be placed at the start of a continuing session; newer messages that build on this context will follow after your summary"
+	completeFull := critical + "\n\n" +
+		"- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.\n" +
+		"- You already have all the context you need in the conversation above.\n" +
+		"- Tool calls will be REJECTED and will waste your only turn \u2014 you will fail the task.\n" +
+		"- Your entire response must be plain text: an <analysis> block followed by a <summary> block.\n\n" +
+		taskFull + "\n" + strings.Repeat("Context detail.\n", 300)
 	reminder := "<system-reminder>\nCurrent date and workspace context.\n</system-reminder>"
 	text := func(s string) map[string]any { return map[string]any{"type": "text", "text": s} }
 	user := func(content any) map[string]any { return map[string]any{"role": "user", "content": content} }
@@ -30,6 +39,10 @@ func TestCompositeClaudeCompactionCurrentMessageBoundaries(t *testing.T) {
 		{"two terminal system carriers", claudeCompactionTestUA, "messages", []map[string]any{user(full), system(reminder), system("<budget_tokens>16377</budget_tokens>")}, true},
 		{"merged leading reminder", claudeCompactionTestUA, "messages", []map[string]any{user(reminder + "\n" + full)}, true},
 		{"separate leading reminder block", claudeCompactionTestUA, "messages", []map[string]any{user([]any{text(reminder), text(full)})}, true},
+		{"full template follows merged local command blocks", claudeCompactionTestUA, "messages", []map[string]any{user([]any{text("<local-command-caveat>transport context</local-command-caveat>"), text("<command-name>/model</command-name>"), text("<local-command-stdout>Set model</local-command-stdout>"), text("Previous user message"), text(completeFull)}), system(reminder)}, true},
+		{"long abbreviated signature without official warnings stays ordinary", claudeCompactionTestUA, "messages", []map[string]any{user([]any{text("Previous user message"), text(full + "\n" + strings.Repeat("Context detail.\n", 300))}), system(reminder)}, false},
+		{"long task prefix without critical warning stays ordinary", claudeCompactionTestUA, "messages", []map[string]any{user([]any{text("Previous user message"), text(taskFull + "\n" + strings.Repeat("Context detail.\n", 300))}), system(reminder)}, false},
+		{"complete template followed by ordinary instruction stays ordinary", claudeCompactionTestUA, "messages", []map[string]any{user([]any{text("Previous user message"), text(completeFull), text("Continue with the ordinary task.")}), system(reminder)}, false},
 		{"reminder and system carrier", claudeCompactionTestUA, "messages", []map[string]any{user(reminder + "\n" + recent), system(reminder)}, true},
 		{"tool result followed by direct prompt", claudeCompactionTestUA, "messages", []map[string]any{user([]any{map[string]any{"type": "tool_result", "content": "old tool data"}, text(full)}), system(reminder)}, true},
 		{"non Claude keeps strict last message", "OtherClient", "messages", []map[string]any{user(full), system(reminder)}, false},
@@ -122,6 +135,30 @@ func TestCompositeClaudeCompactionExplicitHintAndConservativeBody(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestCompositeClaudeCompactionMergedBlockSupportsLastMessagePrefix(t *testing.T) {
+	critical := "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+	complete := critical + "\n\n" +
+		"- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.\n" +
+		"- You already have all the context you need in the conversation above.\n" +
+		"- Tool calls will be REJECTED and will waste your only turn \u2014 you will fail the task.\n" +
+		"- Your entire response must be plain text: an <analysis> block followed by a <summary> block.\n\n" +
+		"Your task is to create a detailed summary of the conversation so far\n" +
+		strings.Repeat("Context detail.\n", 300)
+	body, err := json.Marshal(map[string]any{"messages": []map[string]any{
+		{"role": "user", "content": []map[string]any{
+			{"type": "text", "text": "Previous user message"},
+			{"type": "text", "text": complete},
+		}},
+		{"role": "system", "content": "<budget_tokens>16377</budget_tokens>"},
+	}})
+	require.NoError(t, err)
+	route := CompositeModelRoute{ID: 9, GroupID: 6, PublicModel: "claude-opus-5", MatchType: "exact", TargetPlatform: PlatformOpenAI, UpstreamModel: "gemini-3.8-flash-high", Endpoint: "messages", Enabled: true, RequestKind: "compaction", BodyMatchScope: "last_message", BodyMatchMode: "prefix", BodyContains: critical}
+	d, err := NewCompositeRouteResolver(compositeRouteRepoStub{routes: []CompositeModelRoute{route}}).ResolveWithMatch(context.Background(), 6, "claude-opus-5", "messages", CompositeRouteRequestMatch{UserAgent: claudeCompactionTestUA, Body: body, Explain: true})
+	require.NoError(t, err)
+	require.NotNil(t, d.Route)
+	require.Equal(t, "compaction", d.RequestClassification.Kind)
 }
 
 func TestCompositeClaudeCompactionHintKeepsBodyFiltersAndPrivacy(t *testing.T) {
