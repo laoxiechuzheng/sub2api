@@ -1205,6 +1205,16 @@ export default {
         bodyNotContainsPlaceholder: 'One excluded signature per line',
         compactionPreset: 'Compaction preset',
         nativeCompaction: 'Simulate native compaction endpoint (Responses)',
+        claudeCompactionHint: 'Claude Code compaction hint (optional)',
+        claudeCompactionHintHelp: 'Debug simulation for Messages with a User-Agent starting with claude-cli/ or claude-code/ and valid JSON. Leave unset for normal requests.',
+        claudeCompactionHints: {
+          none: 'None',
+          manual: 'Manual',
+          auto: 'Auto',
+          reactive: 'Reactive',
+          compaction: 'Compaction class only'
+        },
+        lastMessageHint: 'Matches the current user\'s original direct text. Only Messages with a claude-cli/ or claude-code/ User-Agent prefix may skip trailing text-only system carriers; never crosses assistant or tool messages.',
         shortBodyWarning: 'Full-body signatures of only 1-2 letters can match unrelated text and misroute requests.',
         historyBodyWarning: 'Historical quotes can match full-body signatures and misroute conversation requests. Prefer the current turn.',
         conditionsHint:
@@ -1224,7 +1234,7 @@ export default {
         bodyScopes: {
           full_body: 'Full body (legacy)',
           instructions: 'Instructions',
-          last_message: 'Last message',
+          last_message: 'Current terminal user message',
           current_turn: 'Current turn'
         },
         bodyModes: {
@@ -1237,6 +1247,7 @@ export default {
           invalid_json: 'Request body is not valid JSON',
           ambiguous_json: 'Duplicate JSON fields; precise matching rejected',
           native_endpoint: 'Native compaction request',
+          claude_request_header: 'Claude Code request header',
           claude_terminal_prompt: 'Claude terminal prompt',
           codex_instructions: 'Codex instructions',
           codex_terminal_prompt: 'Codex terminal prompt',
@@ -1276,6 +1287,7 @@ export default {
           unknown_body_mode: 'Unknown body match mode',
           no_conditions: 'No request conditions',
           native_endpoint: 'Native compaction request',
+          claude_request_header: 'Claude Code request header identifies compaction',
           claude_terminal_prompt: 'Claude terminal prompt identifies compaction',
           codex_instructions: 'Codex instructions identify compaction',
           codex_terminal_prompt: 'Codex terminal prompt identifies compaction',

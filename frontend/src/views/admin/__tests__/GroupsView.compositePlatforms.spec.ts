@@ -209,7 +209,7 @@ describe('GroupsView precise Composite routes', () => {
     await openRoutes()
     await editFirstRoute()
     await choose('#composite-request-kind', 'Conversation')
-    await choose('#composite-body-scope', 'Last message')
+    await choose('#composite-body-scope', 'Current terminal user message')
     await choose('#composite-body-mode', 'All signatures')
     await wrapper.get('[data-testid="composite-body-contains"]').setValue(' first\nsecond ')
     await wrapper.get('[data-testid="composite-body-not-contains"]').setValue(' quoted\nexample ')
@@ -340,6 +340,136 @@ describe('GroupsView precise Composite routes', () => {
     })
     expect(wrapper.get('[data-testid="composite-preview-result"]').text()).toContain('upstream-model')
     expect(wrapper.find('[data-testid="composite-request-classification"]').exists()).toBe(false)
+  })
+
+  it('keeps the Claude Code hint optional and omits it by default, including for Messages', async () => {
+    await openRoutes()
+    const hint = wrapper.find<HTMLButtonElement>('#composite-preview-claude-compaction-hint')
+    expect(hint.exists()).toBe(true)
+    expect(hint.element.disabled).toBe(true)
+    expect(hint.text()).toContain('None')
+    await runPreview()
+    expect(previewCompositeRoute.mock.lastCall?.[1]).not.toHaveProperty('claude_compaction_hint')
+
+    await choose('#composite-preview-endpoint', 'Messages')
+    expect(hint.element.disabled).toBe(false)
+    await runPreview()
+    expect(previewCompositeRoute).toHaveBeenLastCalledWith(42, {
+      model: 'public-model', endpoint: 'messages', user_agent: '', body: '', native_compaction: false
+    })
+  })
+
+  it.each([
+    { label: 'Manual', value: 'manual' },
+    { label: 'Auto', value: 'auto' },
+    { label: 'Reactive', value: 'reactive' },
+    { label: 'Compaction class only', value: 'compaction' }
+  ])('sends the selected Claude Code $value hint only in preview inputs', async ({ label, value }) => {
+    const body = '{"messages":[{"role":"user","content":"private-preview-body"}]}'
+    await openRoutes()
+    await choose('#composite-preview-endpoint', 'Messages')
+    expect(wrapper.find('#composite-preview-claude-compaction-hint').exists()).toBe(true)
+    await choose('#composite-preview-claude-compaction-hint', label)
+    await wrapper.get('[data-testid="composite-preview-user-agent"]').setValue(' claude-cli/2.0 ')
+    await wrapper.get('[data-testid="composite-preview-body"]').setValue(body)
+    await runPreview()
+
+    expect(previewCompositeRoute).toHaveBeenLastCalledWith(42, {
+      model: 'public-model', endpoint: 'messages', user_agent: 'claude-cli/2.0',
+      body, native_compaction: false, claude_compaction_hint: value
+    })
+    await wrapper.get('form input[placeholder="openrouter/gpt-5"]').setValue('new-model')
+    await submitRoute()
+    expect(createCompositeRoute.mock.lastCall?.[1]).not.toHaveProperty('claude_compaction_hint')
+  })
+
+  it.each(['Any', 'Count Tokens', 'Responses', 'Chat Completions', 'Embeddings', 'Images', 'Gemini Native'])(
+    'clears the Claude Code hint when switching to %s and does not restore it on return to Messages', async (endpointLabel) => {
+      await openRoutes()
+      await choose('#composite-preview-endpoint', 'Messages')
+      expect(wrapper.find('#composite-preview-claude-compaction-hint').exists()).toBe(true)
+      await choose('#composite-preview-claude-compaction-hint', 'Manual')
+      await choose('#composite-preview-endpoint', endpointLabel)
+
+      const hint = wrapper.get<HTMLButtonElement>('#composite-preview-claude-compaction-hint')
+      expect(hint.element.disabled).toBe(true)
+      expect(hint.text()).toContain('None')
+      await runPreview()
+      expect(previewCompositeRoute.mock.lastCall?.[1]).not.toHaveProperty('claude_compaction_hint')
+      await choose('#composite-preview-endpoint', 'Messages')
+      expect(hint.element.disabled).toBe(false)
+      expect(hint.text()).toContain('None')
+      await runPreview()
+      expect(previewCompositeRoute.mock.lastCall?.[1]).not.toHaveProperty('claude_compaction_hint')
+    }
+  )
+
+  it('omits the Claude Code hint after explicitly choosing the empty option', async () => {
+    await openRoutes()
+    await choose('#composite-preview-endpoint', 'Messages')
+    expect(wrapper.find('#composite-preview-claude-compaction-hint').exists()).toBe(true)
+    await choose('#composite-preview-claude-compaction-hint', 'Auto')
+    await choose('#composite-preview-claude-compaction-hint', 'None')
+    await runPreview()
+
+    expect(previewCompositeRoute.mock.lastCall?.[1]).not.toHaveProperty('claude_compaction_hint')
+  })
+
+  it('clears the Claude Code hint when closing and reopening the routes dialog', async () => {
+    await openRoutes()
+    await choose('#composite-preview-endpoint', 'Messages')
+    expect(wrapper.find('#composite-preview-claude-compaction-hint').exists()).toBe(true)
+    await choose('#composite-preview-claude-compaction-hint', 'Reactive')
+    await wrapper.get('[data-testid="composite-routes-close"]').trigger('click')
+    await wrapper.get('[data-testid="group-composite-routes"]').trigger('click')
+    await flushPromises()
+    await choose('#composite-preview-endpoint', 'Messages')
+    expect(wrapper.get('#composite-preview-claude-compaction-hint').text()).toContain('None')
+    await runPreview()
+
+    expect(previewCompositeRoute.mock.lastCall?.[1]).not.toHaveProperty('claude_compaction_hint')
+  })
+
+  it.each([
+    { locale: 'en', source: 'claude_request_header', sourceLabel: 'Claude Code request header', reasonLabel: 'Claude Code request header identifies compaction' },
+    { locale: 'zh', source: 'claude_request_header', sourceLabel: 'Claude Code \u8bf7\u6c42\u5934', reasonLabel: 'Claude Code \u8bf7\u6c42\u5934\u8bc6\u522b\u4e3a\u538b\u7f29' }
+  ])('localizes $locale $source diagnostics without echoing request text', async ({ locale, source, sourceLabel, reasonLabel }) => {
+    const body = '{"system":"private-preview-instructions","messages":[{"role":"user","content":"private-preview-user"}]}'
+    previewCompositeRoute.mockResolvedValue({
+      ...legacyDecision, matched: false, endpoint: 'messages', route: undefined, reason: source,
+      request_classification: { kind: 'compaction', source, reason: source },
+      condition_evaluations: [{ route_id: 7, matched: false, selected: false, body_match_scope: 'current_turn', checks: [
+        { field: 'request_kind', matched: true, reason: source }
+      ] }]
+    })
+    await openRoutes(locale)
+    await choose('#composite-preview-endpoint', 'Messages')
+    await wrapper.get('[data-testid="composite-preview-user-agent"]').setValue('claude-code/2.0')
+    await wrapper.get('[data-testid="composite-preview-body"]').setValue(body)
+    await runPreview()
+
+    expect(wrapper.get('[data-testid="composite-request-classification"]').text()).toContain(sourceLabel)
+    expect(wrapper.get('[data-testid="composite-condition-evaluation-7"]').text()).toContain(reasonLabel)
+    const result = wrapper.get('[data-testid="composite-preview-result"]')
+    expect(result.text()).toContain(reasonLabel)
+    expect(result.text()).not.toContain(source)
+    expect(result.html()).not.toContain(body)
+    expect(result.html()).not.toContain('private-preview-instructions')
+    expect(result.html()).not.toContain('private-preview-user')
+  })
+
+  it.each([
+    { locale: 'en', label: 'Current terminal user message' },
+    { locale: 'zh', label: '\u5f53\u524d\u672b\u6761\u7528\u6237\u6d88\u606f' }
+  ])('uses the $locale terminal-user scope label while preserving the last_message API value', async ({ locale, label }) => {
+    await openRoutes(locale)
+    await wrapper.get('form input[placeholder="openrouter/gpt-5"]').setValue('new-model')
+    await choose('#composite-body-scope', label)
+    await submitRoute()
+
+    expect(createCompositeRoute).toHaveBeenLastCalledWith(42, expect.objectContaining({
+      body_match_scope: 'last_message'
+    }))
   })
 
   it('renders classification and selected/matched/rejected checks with translated reasons', async () => {

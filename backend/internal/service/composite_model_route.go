@@ -79,21 +79,23 @@ type CompositeModelRoute struct {
 }
 
 type CompositeRoutePreviewRequest struct {
-	Model            string `json:"model"`
-	Endpoint         string `json:"endpoint"`
-	UserAgent        string `json:"user_agent"`
-	Body             string `json:"body"`
-	NativeCompaction bool   `json:"native_compaction"`
+	Model                string `json:"model"`
+	Endpoint             string `json:"endpoint"`
+	UserAgent            string `json:"user_agent"`
+	Body                 string `json:"body"`
+	NativeCompaction     bool   `json:"native_compaction"`
+	ClaudeCompactionHint string `json:"claude_compaction_hint,omitempty"`
 }
 
 // CompositeRouteRequestMatch carries request-level facts used by conditional
 // routes. Empty conditions never match a conditional rule.
 type CompositeRouteRequestMatch struct {
-	UserAgent        string
-	Body             []byte
-	NativeCompaction bool
-	Explain          bool
-	facts            *compositeRequestFacts
+	UserAgent            string
+	Body                 []byte
+	NativeCompaction     bool
+	ClaudeCompactionHint string
+	Explain              bool
+	facts                *compositeRequestFacts
 	// IgnoreRequestConditions is used by catalog/model-list resolution, which
 	// asks whether a model is routable at all rather than resolving one live
 	// request.

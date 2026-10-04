@@ -4130,6 +4130,7 @@
                       id="composite-body-scope"
                       v-model="compositeRouteForm.body_match_scope"
                       :aria-label="t('admin.groups.compositeRoutes.bodyMatchScope')"
+                      :title="compositeRouteForm.body_match_scope === 'last_message' ? t('admin.groups.compositeRoutes.lastMessageHint') : undefined"
                       :options="compositeBodyScopeOptions"
                     />
                   </div>
@@ -4293,6 +4294,20 @@
                   t('admin.groups.compositeRoutes.bodyContainsPlaceholder')
                 "
               ></textarea>
+              <div class="min-w-0">
+                <label for="composite-preview-claude-compaction-hint" class="input-label text-xs">
+                  {{ t("admin.groups.compositeRoutes.claudeCompactionHint") }}
+                </label>
+                <Select
+                  id="composite-preview-claude-compaction-hint"
+                  v-model="compositePreviewClaudeCompactionHint"
+                  :aria-label="t('admin.groups.compositeRoutes.claudeCompactionHint')"
+                  :title="t('admin.groups.compositeRoutes.claudeCompactionHintHelp')"
+                  :options="compositeClaudeCompactionHintOptions"
+                  :searchable="false"
+                  :disabled="compositePreviewEndpoint !== 'messages'"
+                />
+              </div>
               <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                 <input
                   v-model="compositePreviewNativeCompaction"
@@ -4514,6 +4529,7 @@ import type {
   CompositeRouteBodyMatchMode,
   CompositeRouteBodyMatchScope,
   CompositeRouteDecision,
+  CompositeRoutePreviewRequest,
   CompositeRouteEndpoint,
   CompositeRouteMatchType,
   CompositeRouteRequestKind,
@@ -4917,6 +4933,13 @@ const compositeBodyModeOptions = computed(() =>
   })),
 );
 
+const compositeClaudeCompactionHintOptions = computed(() =>
+  (['', 'manual', 'auto', 'reactive', 'compaction'] as const).map((value) => ({
+    value,
+    label: t('admin.groups.compositeRoutes.claudeCompactionHints.' + (value || 'none')),
+  })),
+);
+
 const editStatusOptions = computed(() => [
   { value: "active", label: t("admin.accounts.status.active") },
   { value: "inactive", label: t("admin.accounts.status.inactive") },
@@ -5132,11 +5155,13 @@ const compositePreviewUserAgent = ref("");
 const compositePreviewBody = ref("");
 const compositePreviewEndpoint = ref<CompositeRouteEndpoint>("any");
 const compositePreviewNativeCompaction = ref(false);
+const compositePreviewClaudeCompactionHint = ref<NonNullable<CompositeRoutePreviewRequest['claude_compaction_hint']> | ''>('');
 const compositePreviewLoading = ref(false);
 let compositePreviewRequestSequence = 0;
 const compositePreviewDecision = ref<CompositeRouteDecision | null>(null);
 watch(compositePreviewEndpoint, (endpoint) => {
   if (endpoint !== "responses") compositePreviewNativeCompaction.value = false;
+  if (endpoint !== "messages") compositePreviewClaudeCompactionHint.value = '';
 });
 const compositeRouteForm = reactive<CompositeRouteFormState>({
   public_model: "",
@@ -6839,6 +6864,7 @@ const handleCompositeRoutes = async (group: AdminGroup) => {
   compositePreviewBody.value = "";
   compositePreviewEndpoint.value = "any";
   compositePreviewNativeCompaction.value = false;
+  compositePreviewClaudeCompactionHint.value = '';
   compositePreviewDecision.value = null;
   resetCompositeRouteForm();
   showCompositeRoutesModal.value = true;
@@ -6948,6 +6974,9 @@ const previewCompositeRoute = async () => {
         user_agent: compositePreviewUserAgent.value.trim(),
         body: compositePreviewBody.value,
         native_compaction: compositePreviewEndpoint.value === "responses" && compositePreviewNativeCompaction.value,
+        ...(compositePreviewEndpoint.value === "messages" && compositePreviewClaudeCompactionHint.value
+          ? { claude_compaction_hint: compositePreviewClaudeCompactionHint.value }
+          : {}),
       },
     );
     if (requestSequence === compositePreviewRequestSequence) {

@@ -586,9 +586,10 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 		model := requestmodel.FromBodyForRoute(routePath, c.GetHeader("Content-Type"), body)
 		if model != "" {
 			decision, err := resolver.ResolveWithMatch(c.Request.Context(), apiKey.Group.ID, model, compositeRouteEndpointForPath(c.Request.URL.Path), service.CompositeRouteRequestMatch{
-				UserAgent:        c.GetHeader("User-Agent"),
-				Body:             body,
-				NativeCompaction: service.IsOpenAICompactionRequest(c, body),
+				UserAgent:            c.GetHeader("User-Agent"),
+				Body:                 body,
+				NativeCompaction:     service.IsOpenAICompactionRequest(c, body),
+				ClaudeCompactionHint: service.ClaudeCompactionHintFromHeaders(c.Request.Header),
 			})
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"type": "server_error", "message": "Failed to resolve composite model route"}})

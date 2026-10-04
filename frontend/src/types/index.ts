@@ -731,6 +731,7 @@ export interface CompositeRoutePreviewRequest {
   user_agent?: string
   body?: string
   native_compaction?: boolean
+  claude_compaction_hint?: 'manual' | 'auto' | 'reactive' | 'compaction'
 }
 
 export interface RequestClassification {

@@ -235,10 +235,11 @@ func (s *adminServiceImpl) PreviewCompositeRoute(ctx context.Context, groupID in
 		resolver = NewCompositeRouteResolver(s.compositeRouteRepo)
 	}
 	decision, err := resolver.ResolveWithMatch(ctx, groupID, input.Model, input.Endpoint, CompositeRouteRequestMatch{
-		UserAgent:        input.UserAgent,
-		Body:             []byte(input.Body),
-		NativeCompaction: input.NativeCompaction,
-		Explain:          true,
+		UserAgent:            input.UserAgent,
+		Body:                 []byte(input.Body),
+		NativeCompaction:     input.NativeCompaction,
+		ClaudeCompactionHint: input.ClaudeCompactionHint,
+		Explain:              true,
 	})
 	if err != nil {
 		return nil, err

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net/http"
 	"strings"
 	"unicode"
 
@@ -62,18 +63,56 @@ type CompositeRouteConditionEvaluation struct {
 // Facts are shared across all candidate rules and parsed only when a scoped
 // condition or request-kind check needs them. No request content enters traces.
 type compositeRequestFacts struct {
-	body             []byte
-	endpoint         string
-	nativeCompaction bool
-	parsed           bool
-	valid            bool
-	invalidReason    string
-	instructions     []string
-	terminal         []string
+	body                 []byte
+	endpoint             string
+	nativeCompaction     bool
+	claudeCode           bool
+	claudeCompactionHint string
+	parsed               bool
+	valid                bool
+	invalidReason        string
+	instructions         []string
+	terminal             []string
 }
 
 func newCompositeRequestFacts(match CompositeRouteRequestMatch) *compositeRequestFacts {
-	return &compositeRequestFacts{body: match.Body, nativeCompaction: match.NativeCompaction}
+	ua := strings.ToLower(strings.TrimSpace(match.UserAgent))
+	return &compositeRequestFacts{body: match.Body, nativeCompaction: match.NativeCompaction,
+		claudeCode:           strings.HasPrefix(ua, "claude-cli/") || strings.HasPrefix(ua, "claude-code/"),
+		claudeCompactionHint: match.ClaudeCompactionHint}
+}
+
+// Client hints describe request intent, not authorization or a native wire protocol.
+// Ignore duplicate/conflicting/unknown values instead of guessing from substrings.
+func ClaudeCompactionHintFromHeaders(headers http.Header) string {
+	hint := ""
+	for _, name := range []string{"X-Claude-Code-Compaction", "X-Cc-Compaction-Request", "X-Claude-Code-Request-Class"} {
+		values := headers.Values(name)
+		if len(values) == 0 {
+			continue
+		}
+		if len(values) != 1 {
+			return ""
+		}
+		value := strings.ToLower(strings.TrimSpace(values[0]))
+		if name == "X-Claude-Code-Request-Class" {
+			if value != "compaction" {
+				return ""
+			}
+			if hint == "" {
+				hint = value
+			}
+			continue
+		}
+		if value != "auto" && value != "manual" && value != "reactive" {
+			return ""
+		}
+		if hint != "" && hint != value {
+			return ""
+		}
+		hint = value
+	}
+	return hint
 }
 
 func (f *compositeRequestFacts) parse() {
@@ -141,7 +180,18 @@ func (f *compositeRequestFacts) parse() {
 	if len(items) == 0 {
 		return
 	}
-	last := items[len(items)-1]
+	index := len(items) - 1
+	// Claude Code can flush pure-text system carriers after its pending user
+	// message. Never cross assistant/tool output or change other protocols.
+	if f.claudeCode && f.endpoint == CompositeRouteEndpointMessages {
+		for index >= 0 && compositeClaudeSystemCarrier(items[index]) {
+			index--
+		}
+	}
+	if index < 0 {
+		return
+	}
+	last := items[index]
 	if last.Get("role").String() != "user" {
 		return
 	}
@@ -151,6 +201,56 @@ func (f *compositeRequestFacts) parse() {
 		return
 	}
 	f.terminal = compositeDirectText(last.Get("content"), f.endpoint)
+}
+
+func compositeClaudeSystemCarrier(item gjson.Result) bool {
+	if item.Get("role").String() != "system" {
+		return false
+	}
+	if typ := item.Get("type"); typ.Exists() && (typ.Type != gjson.String || typ.String() != "message") {
+		return false
+	}
+	content := item.Get("content")
+	if content.Type == gjson.String {
+		return true
+	}
+	if !content.IsArray() || len(content.Array()) == 0 {
+		return false
+	}
+	for _, block := range content.Array() {
+		if block.Get("type").String() != "text" || block.Get("text").Type != gjson.String {
+			return false
+		}
+	}
+	return true
+}
+
+func compositeClaudeDirective(text string) string {
+	text = strings.TrimSpace(text)
+	// Strip only complete leading reminder envelopes. Their contents are not
+	// directives; arbitrary prose/quotes must not gain a new artificial start.
+	for strings.HasPrefix(text, "<system-reminder>") {
+		depth, offset := 1, len("<system-reminder>")
+		for depth > 0 {
+			next := strings.IndexByte(text[offset:], '<')
+			if next < 0 {
+				return ""
+			}
+			offset += next
+			switch {
+			case strings.HasPrefix(text[offset:], "<system-reminder>"):
+				depth++
+				offset += len("<system-reminder>")
+			case strings.HasPrefix(text[offset:], "</system-reminder>"):
+				depth--
+				offset += len("</system-reminder>")
+			default:
+				offset++
+			}
+		}
+		text = strings.TrimSpace(text[offset:])
+	}
+	return text
 }
 
 func compositeObjectAmbiguous(value gjson.Result) bool {
@@ -261,27 +361,65 @@ func (f *compositeRequestFacts) classify() CompositeRequestClassification {
 	if f.nativeCompaction {
 		return CompositeRequestClassification{Kind: "compaction", Source: "native_endpoint", Reason: "native_endpoint"}
 	}
+	if f.claudeCode && f.endpoint == CompositeRouteEndpointMessages {
+		switch f.claudeCompactionHint {
+		case "auto", "manual", "reactive", "compaction":
+			return CompositeRequestClassification{Kind: "compaction", Source: "claude_request_header", Reason: "claude_request_header"}
+		}
+	}
 	for _, text := range f.terminal {
-		if source := compositeCompactionSignature(text, false); source != "" {
+		if f.claudeCode && f.endpoint == CompositeRouteEndpointMessages {
+			text = compositeClaudeDirective(text)
+		}
+		if source := compositeCompactionSignature(text, false, f.claudeCode && f.endpoint == CompositeRouteEndpointMessages); source != "" {
 			return CompositeRequestClassification{Kind: "compaction", Source: source, Reason: source}
 		}
 	}
 	for _, text := range f.instructions {
-		if source := compositeCompactionSignature(text, true); source != "" {
+		if source := compositeCompactionSignature(text, true, false); source != "" {
 			return CompositeRequestClassification{Kind: "compaction", Source: source, Reason: source}
 		}
 	}
 	return CompositeRequestClassification{Kind: "conversation", Source: "no_compaction_signature", Reason: "no_compaction_signature"}
 }
 
-func compositeCompactionSignature(text string, instructions bool) string {
+func compositeClaudeCompactionPrompt(text string, allowPartial bool) bool {
+	const critical = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+	const full = "Your task is to create a detailed summary of the conversation so far"
+	if strings.HasPrefix(text, critical) {
+		text = strings.TrimSpace(text[len(critical):])
+		warningLines := []string{
+			"- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.",
+			"- You already have all the context you need in the conversation above.",
+			"- Tool calls will be REJECTED and will waste your only turn \u2014 you will fail the task.",
+			"- Your entire response must be plain text: an <analysis> block followed by a <summary> block.",
+		}
+		if strings.HasPrefix(text, warningLines[0]) {
+			for _, line := range warningLines {
+				if !strings.HasPrefix(text, line) {
+					return false
+				}
+				text = strings.TrimSpace(text[len(line):])
+			}
+		}
+	} else {
+		return strings.HasPrefix(text, full)
+	}
+	if strings.HasPrefix(text, full) {
+		return true
+	}
+	if !allowPartial {
+		return false
+	}
+	return strings.HasPrefix(text, "Your task is to create a detailed summary of the RECENT portion of the conversation") ||
+		strings.HasPrefix(text, "Your task is to create a detailed summary of this conversation. This summary will be placed at the start of a continuing session; newer messages that build on this context will follow after your summary")
+}
+
+func compositeCompactionSignature(text string, instructions, allowClaudePartial bool) string {
 	text = strings.TrimSpace(text)
 	// Anchor full, known directives at the beginning. A mention in a quote,
 	// tool result, summary or explanatory paragraph is not a compaction signal.
-	if !instructions &&
-		(strings.HasPrefix(text, "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.") ||
-			strings.HasPrefix(text, "Your task is to create a detailed summary of the conversation so far")) &&
-		strings.Contains(text, "Your task is to create a detailed summary of the conversation so far") {
+	if !instructions && compositeClaudeCompactionPrompt(text, allowClaudePartial) {
 		return "claude_terminal_prompt"
 	}
 	codexPrefixes := []string{

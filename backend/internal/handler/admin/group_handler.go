@@ -347,11 +347,12 @@ type CompositeRouteRequest struct {
 }
 
 type CompositeRoutePreviewRequest struct {
-	Model            string `json:"model" binding:"required"`
-	Endpoint         string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
-	UserAgent        string `json:"user_agent" binding:"omitempty,max=2048"`
-	Body             string `json:"body" binding:"omitempty,max=2000000"`
-	NativeCompaction bool   `json:"native_compaction"`
+	Model                string `json:"model" binding:"required"`
+	Endpoint             string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
+	UserAgent            string `json:"user_agent" binding:"omitempty,max=2048"`
+	Body                 string `json:"body" binding:"omitempty,max=2000000"`
+	NativeCompaction     bool   `json:"native_compaction"`
+	ClaudeCompactionHint string `json:"claude_compaction_hint" binding:"omitempty,oneof=auto manual reactive compaction"`
 }
 
 // List handles listing all groups with pagination
@@ -507,11 +508,12 @@ func (h *GroupHandler) PreviewCompositeRoute(c *gin.Context) {
 		return
 	}
 	decision, err := h.adminService.PreviewCompositeRoute(c.Request.Context(), groupID, service.CompositeRoutePreviewRequest{
-		Model:            req.Model,
-		Endpoint:         req.Endpoint,
-		UserAgent:        req.UserAgent,
-		Body:             req.Body,
-		NativeCompaction: req.NativeCompaction,
+		Model:                req.Model,
+		Endpoint:             req.Endpoint,
+		UserAgent:            req.UserAgent,
+		Body:                 req.Body,
+		NativeCompaction:     req.NativeCompaction,
+		ClaudeCompactionHint: req.ClaudeCompactionHint,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

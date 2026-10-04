@@ -1202,6 +1202,16 @@ export default {
         bodyNotContainsPlaceholder: '每行一个排除特征',
         compactionPreset: '压缩预设',
         nativeCompaction: '模拟原生压缩端点（Responses）',
+        claudeCompactionHint: 'Claude Code 压缩标记（可选）',
+        claudeCompactionHintHelp: '仅调试模拟：需为 Messages、User-Agent 以 claude-cli/ 或 claude-code/ 开头且正文为有效 JSON。普通请求无需填写。',
+        claudeCompactionHints: {
+          none: '不模拟',
+          manual: '手动',
+          auto: '自动',
+          reactive: 'Reactive',
+          compaction: '仅 compaction 类'
+        },
+        lastMessageHint: '匹配当前用户的原始直接文本；仅 Messages 且 User-Agent 以 claude-cli/ 或 claude-code/ 开头时，可跳过尾部纯文本 system carrier，绝不越过 assistant 或 tool 消息。',
         shortBodyWarning: '全文匹配中仅 1-2 个字母的特征易命中无关正文，导致错误路由。',
         historyBodyWarning: '全文匹配会命中历史引用，可能将普通对话错误路由。建议使用当前轮次。',
         conditionsHint:
@@ -1221,7 +1231,7 @@ export default {
         bodyScopes: {
           full_body: '完整正文（兼容旧路由）',
           instructions: '指令',
-          last_message: '最后一条消息',
+          last_message: '当前末条用户消息',
           current_turn: '当前轮次'
         },
         bodyModes: {
@@ -1234,6 +1244,7 @@ export default {
           invalid_json: '请求正文不是有效 JSON',
           ambiguous_json: '重复 JSON 字段，拒绝精确匹配',
           native_endpoint: '原生压缩请求',
+          claude_request_header: 'Claude Code 请求头',
           claude_terminal_prompt: 'Claude 末尾提示词',
           codex_instructions: 'Codex 指令',
           codex_terminal_prompt: 'Codex 末尾提示词',
@@ -1273,6 +1284,7 @@ export default {
           unknown_body_mode: '未知正文匹配方式',
           no_conditions: '未设置请求条件',
           native_endpoint: '原生压缩请求',
+          claude_request_header: 'Claude Code 请求头识别为压缩',
           claude_terminal_prompt: 'Claude 末尾提示词识别为压缩',
           codex_instructions: 'Codex 指令识别为压缩',
           codex_terminal_prompt: 'Codex 末尾提示词识别为压缩',
