@@ -473,6 +473,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		sendErrorEvent(code, message)
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", scanErr), true
 	}
+	// native DeepSeek Responses 的 reasoning 明文缓存：流内只收集，函数返回时
+	// 一次 flush；非本 scope / 无 APIKey 时为 nil。
+	var deepSeekReasoningCache *deepSeekNativeReasoningCacheCollector
+	if deepSeekNativeResponsesReasoningScope(account) && !isOpenAIResponsesCompactPath(c) {
+		deepSeekReasoningCache = newDeepSeekNativeReasoningCacheCollector(getAPIKeyIDFromContext(c))
+		defer s.flushDeepSeekNativeResponsesReasoningCache(deepSeekReasoningCache)
+	}
 	processSSELine := func(line string, queueDrained bool) {
 		if streamEarlyErr != nil {
 			return
@@ -502,6 +509,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				suppressCurrentEvent = true
 			}
 			observer.ObserveOpenAI(dataBytes, eventType)
+			if deepSeekReasoningCache != nil {
+				deepSeekReasoningCache.collectStreamEvent(dataBytes, eventType)
+			}
 			// 初始上游 data 的 type 只解析一次：原始值保持终止事件的精确匹配，规范化值供后续分支复用。
 			if openAIStreamEventIsTerminalWithType(data, eventType) {
 				sawTerminalEvent = true
@@ -1645,6 +1655,10 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	}
 	usage := &usageValue
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
+	// native DeepSeek Responses 非流式 JSON：从原始 output 缓存 reasoning 明文。
+	if !isOpenAIResponsesCompactPath(c) {
+		s.cacheDeepSeekNativeResponsesReasoningPayload(account, getAPIKeyIDFromContext(c), body)
+	}
 
 	// Replace model in response if needed
 	if originalModel != mappedModel {
@@ -1712,6 +1726,18 @@ func bodyHasSSEFraming(body []byte) bool {
 
 func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
 	bodyText := string(body)
+	// native DeepSeek Responses SSE→JSON：终态 output 可能被重建/裁剪，先在入口
+	// 扫描原始 SSE 的 done/terminal 事件收集 reasoning 明文，函数返回时一次 flush。
+	var deepSeekReasoningCache *deepSeekNativeReasoningCacheCollector
+	if deepSeekNativeResponsesReasoningScope(account) && !isOpenAIResponsesCompactPath(c) {
+		deepSeekReasoningCache = newDeepSeekNativeReasoningCacheCollector(getAPIKeyIDFromContext(c))
+		defer s.flushDeepSeekNativeResponsesReasoningCache(deepSeekReasoningCache)
+		if deepSeekReasoningCache != nil {
+			forEachOpenAISSEFrame(bodyText, func(eventType string, data []byte) {
+				deepSeekReasoningCache.collectStreamEvent(data, effectiveOpenAISSEEventType(data, eventType))
+			})
+		}
+	}
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if terminalOK && (terminalType == "response.failed" || terminalType == "error") {
 		msg := extractOpenAISSEErrorMessage(terminalPayload)
@@ -1781,6 +1807,10 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		if contentType == "" {
 			contentType = "text/event-stream"
 		}
+	}
+	// 重建后的终态 payload 可补充收集（同一 collector，不另开持久化预算）。
+	if ok && deepSeekReasoningCache != nil {
+		deepSeekReasoningCache.collectJSONPayload(body)
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)

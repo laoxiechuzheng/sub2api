@@ -26,6 +26,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
+	// native DeepSeek Responses 的 reasoning 补齐必须在 none 过滤之前，过滤会
+	// 丢掉 effort=none 信号；仅覆盖 platform=deepseek + 原生 Responses 账号。
+	if restoredBody, restored := s.restoreDeepSeekNativeResponsesReasoningText(c, account, body); restored {
+		body = restoredBody
+	}
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
 	}
