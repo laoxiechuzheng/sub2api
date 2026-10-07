@@ -6,7 +6,7 @@ on:
       release_version:
         description: Image tag to publish
         required: true
-        default: 0.2.12-diagnostics-20261003
+        default: 0.2.14-custom-20261007
         type: string
 
 permissions:
@@ -39,7 +39,7 @@ jobs:
           ./internal/requestdiagnostic ./internal/service ./internal/repository
           ./internal/handler ./internal/handler/admin ./internal/server/middleware ./internal/server/routes
           ./internal/config ./internal/pkg/httputil
-          -run 'Composite|NativeCompaction|ResponsesChatFallback|ResponsesNativeGuard|Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|GatewayForwardStreamDrain|CommentOnlySSEOverload'
+          -run 'Composite|NativeCompaction|DeepSeek|ResponsesChatFallback|ResponsesNativeGuard|Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|GatewayForwardStreamDrain|CommentOnlySSEOverload'
           -count=1 -timeout=10m
       - name: PostgreSQL diagnostic and precise routing integration tests
         working-directory: backend
@@ -56,7 +56,7 @@ jobs:
         working-directory: frontend
         run: |
           pnpm install --frozen-lockfile
-          pnpm run typecheck
+          pnpm exec vue-tsc -b
           pnpm exec vitest run src/api/__tests__/admin.usageDiagnostic.spec.ts src/components/admin/usage/__tests__/UsageDiagnosticModal.spec.ts src/components/admin/usage/__tests__/UsageTable.diagnostic.spec.ts src/views/admin/__tests__/UsageView.diagnostic.spec.ts src/views/admin/__tests__/GroupsView.compositePlatforms.spec.ts
 
   publish:

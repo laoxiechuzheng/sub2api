@@ -171,6 +171,85 @@ describe('admin usage diagnostic modal', () => {
     expect(wrapper.findAll('pre')).toHaveLength(0)
   })
 
+  it('pretty-prints a synthetic JSON payload for display and copy without rendering HTML', async () => {
+    const content = JSON.stringify({ message: '<strong>plain</strong>', nested: { ok: true } })
+    const formatted = JSON.stringify(JSON.parse(content), null, 2)
+    getDiagnostic.mockResolvedValueOnce(response(1, content))
+    const wrapper = await open()
+    await wrapper.get('[data-testid="diagnostic-toggle-inbound-body"]').trigger('click')
+
+    expect(wrapper.get('pre code').text()).toBe(formatted)
+    expect(wrapper.find('strong').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="diagnostic-copy-inbound-body"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledWith(formatted)
+  })
+
+  it('preserves exact numeric tokens, duplicate keys, and empty containers', async () => {
+    const content = '{"large":9007199254740993,"precise":0.123456789012345678901,"exponent":1.2300e+23,"emptyObject":{},"emptyArray":[],"large":-0}'
+    const formatted = [
+      '{',
+      '  "large": 9007199254740993,',
+      '  "precise": 0.123456789012345678901,',
+      '  "exponent": 1.2300e+23,',
+      '  "emptyObject": {},',
+      '  "emptyArray": [],',
+      '  "large": -0',
+      '}'
+    ].join('\n')
+    getDiagnostic.mockResolvedValueOnce(response(1, content))
+    const wrapper = await open()
+    await wrapper.get('[data-testid="diagnostic-toggle-inbound-body"]').trigger('click')
+
+    expect(wrapper.get('pre code').text()).toBe(formatted)
+    await wrapper.get('[data-testid="diagnostic-copy-inbound-body"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledWith(formatted)
+  })
+
+  it('leaves truncated JSON with doubled escape characters unchanged', async () => {
+    const content = String.raw`{"path":"C:\\temp\\new","next":`
+    getDiagnostic.mockResolvedValueOnce(response(1, content))
+    const wrapper = await open()
+    await wrapper.get('[data-testid="diagnostic-toggle-inbound-body"]').trigger('click')
+
+    expect(wrapper.get('pre code').text()).toBe(content)
+    await wrapper.get('[data-testid="diagnostic-copy-inbound-body"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledWith(content)
+  })
+
+  it('preserves escape tokens and structural characters inside JSON strings', async () => {
+    const content = String.raw`{"escaped":"line\ncolumn\tquote\"slash\\solidus\/unicode\u0061","symbols":"{}[],:\""}`
+    const formatted = [
+      '{',
+      String.raw`  "escaped": "line\ncolumn\tquote\"slash\\solidus\/unicode\u0061",`,
+      String.raw`  "symbols": "{}[],:\""`,
+      '}'
+    ].join('\n')
+    getDiagnostic.mockResolvedValueOnce(response(1, content))
+    const wrapper = await open()
+    await wrapper.get('[data-testid="diagnostic-toggle-inbound-body"]').trigger('click')
+
+    expect(wrapper.get('pre code').text()).toBe(formatted)
+    await wrapper.get('[data-testid="diagnostic-copy-inbound-body"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledWith(formatted)
+  })
+
+  it('leaves JSON nested deeper than 64 levels unchanged', async () => {
+    const content = '['.repeat(65) + '0' + ']'.repeat(65)
+    getDiagnostic.mockResolvedValueOnce(response(1, content))
+    const wrapper = await open()
+    await wrapper.get('[data-testid="diagnostic-toggle-inbound-body"]').trigger('click')
+
+    expect(wrapper.get('pre code').text()).toBe(content)
+    await wrapper.get('[data-testid="diagnostic-copy-inbound-body"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledWith(content)
+  })
+
   it.each<UsageDiagnosticStatus>(['not_captured', 'expired', 'evicted', 'unavailable'])('shows %s without inventing historical content', async (status) => {
     const result = response()
     result.diagnostic = { status, payload: null }

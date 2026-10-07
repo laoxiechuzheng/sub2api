@@ -9,13 +9,14 @@ import {
   type DefaultPlatformQuotasMap,
 } from "@/api/admin/settings";
 
-/** 全 null 的 5 平台 map，用于断言归一化默认值 */
+/** 全 null 的六平台 map，用于断言归一化默认值 */
 const allNullQuotas: DefaultPlatformQuotasMap = {
   anthropic: { daily: null, weekly: null, monthly: null },
   openai:    { daily: null, weekly: null, monthly: null },
   gemini:    { daily: null, weekly: null, monthly: null },
   antigravity: { daily: null, weekly: null, monthly: null },
   grok: { daily: null, weekly: null, monthly: null },
+  typesafe: { daily: null, weekly: null, monthly: null },
 }
 
 describe("admin settings auth source defaults helpers", () => {
@@ -238,14 +239,12 @@ describe("normalizePlatformQuotasMap", () => {
     expect(result.gemini).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.antigravity).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.grok).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(result.typesafe).toEqual({ daily: null, weekly: null, monthly: null });
   });
 
-  it("无参数时返回全 5 平台全 null", () => {
+  it("无参数时返回显式六平台全 null", () => {
     const result = normalizePlatformQuotasMap();
-    expect(Object.keys(result)).toHaveLength(5);
-    for (const v of Object.values(result)) {
-      expect(v).toEqual({ daily: null, weekly: null, monthly: null });
-    }
+    expect(result).toEqual(allNullQuotas);
   });
 
   it("非 number 类型的值归一化为 null", () => {
@@ -288,11 +287,16 @@ describe("sanitizePlatformQuotasMap", () => {
     expect(result.gemini?.weekly).toBe(null);
   });
 
+  it("独立保留 typesafe 的合法限额值", () => {
+    const result = sanitizePlatformQuotasMap({
+      typesafe: { daily: 12, weekly: 0, monthly: 24 },
+    });
+    expect(result.typesafe).toEqual({ daily: 12, weekly: 0, monthly: 24 });
+    expect(result.grok).toEqual({ daily: null, weekly: null, monthly: null });
+  });
+
   it("缺失平台填充为全 null", () => {
     const result = sanitizePlatformQuotasMap({});
-    expect(Object.keys(result)).toHaveLength(5);
-    for (const v of Object.values(result)) {
-      expect(v).toEqual({ daily: null, weekly: null, monthly: null });
-    }
+    expect(result).toEqual(allNullQuotas);
   });
 });

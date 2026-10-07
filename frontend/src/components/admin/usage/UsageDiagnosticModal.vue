@@ -102,7 +102,7 @@
                     class="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-300 dark:hover:bg-dark-700"
                     :disabled="!block.payload.content"
                     :data-testid="`diagnostic-copy-${block.key}`"
-                    @click="copyPayload(block.key, block.payload.content)"
+                    @click="copyPayload(block.key, formatPayloadContent(block.payload.content))"
                   >
                     <Icon :name="copiedPayload === block.key ? 'check' : 'copy'" size="xs" />
                     {{ copiedPayload === block.key ? text.copied : text.copy }}
@@ -118,7 +118,7 @@
                 <p class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ block.summary ? text.limitedSummary : text.bodyNote }}</p>
                 <div v-if="expandedPayloads.has(block.key)" :id="`diagnostic-content-${block.key}`">
                   <!-- 请求内容只做文本插值，不能渲染 HTML 或 Markdown。 -->
-                  <pre v-if="block.payload.content" class="max-h-[480px] overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs leading-relaxed text-gray-800 dark:border-dark-700 dark:bg-dark-900 dark:text-gray-100"><code>{{ block.payload.content }}</code></pre>
+                  <pre v-if="block.payload.content" class="max-h-[480px] overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs leading-relaxed text-gray-800 dark:border-dark-700 dark:bg-dark-900 dark:text-gray-100"><code>{{ formatPayloadContent(block.payload.content) }}</code></pre>
                   <p v-else class="py-3 text-sm text-gray-500 dark:text-gray-400">{{ text.emptyPayload }}</p>
                 </div>
               </div>
@@ -520,6 +520,90 @@ async function loadDiagnostic() {
 function togglePayload(key: string) {
   if (expandedPayloads.value.has(key)) expandedPayloads.value.delete(key)
   else expandedPayloads.value.add(key)
+}
+
+// 将后端序列化的紧凑 JSON 字符串格式化为可读的缩进形式；
+// JSON.parse 只负责验证，格式化扫描器逐字保留字符串、数字和重复键等原始 token。
+function formatPayloadContent(content: string): string {
+  if (!content) return content
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < content.length; index++) {
+    const char = content[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') {
+      inString = true
+      continue
+    }
+    if (char === '{' || char === '[') {
+      depth++
+      if (depth > 64) return content
+    } else if (char === '}' || char === ']') {
+      depth--
+    }
+  }
+
+  try {
+    JSON.parse(content)
+  } catch {
+    return content
+  }
+
+  let formatted = ''
+  depth = 0
+  inString = false
+  escaped = false
+  for (let index = 0; index < content.length; index++) {
+    const char = content[index]
+    if (inString) {
+      formatted += char
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') {
+      inString = true
+      formatted += char
+      continue
+    }
+    if (char === '{' || char === '[') {
+      const closing = char === '{' ? '}' : ']'
+      let next = index + 1
+      while (next < content.length && /\s/.test(content[next])) next++
+      if (content[next] === closing) {
+        formatted += char + closing
+        index = next
+        continue
+      }
+      depth++
+      formatted += char + '\n' + '  '.repeat(depth)
+      continue
+    }
+    if (char === '}' || char === ']') {
+      depth--
+      formatted += '\n' + '  '.repeat(Math.max(0, depth)) + char
+      continue
+    }
+    if (char === ',') {
+      formatted += ',\n' + '  '.repeat(depth)
+      continue
+    }
+    if (char === ':') {
+      formatted += ': '
+      continue
+    }
+    if (/\s/.test(char)) continue
+    formatted += char
+  }
+  return formatted
 }
 
 // 只在管理员明确点击复制时写入本机剪贴板，不做外发或持久化。
