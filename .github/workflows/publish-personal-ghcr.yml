@@ -52,12 +52,12 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
           cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Frontend diagnostic regression tests
+      - name: Frontend typecheck and full test suite
         working-directory: frontend
         run: |
           pnpm install --frozen-lockfile
           pnpm exec vue-tsc -b
-          pnpm exec vitest run src/api/__tests__/admin.usageDiagnostic.spec.ts src/components/admin/usage/__tests__/UsageDiagnosticModal.spec.ts src/components/admin/usage/__tests__/UsageTable.diagnostic.spec.ts src/views/admin/__tests__/UsageView.diagnostic.spec.ts src/views/admin/__tests__/GroupsView.compositePlatforms.spec.ts
+          pnpm exec vitest run
 
   publish:
     needs: verify
@@ -68,14 +68,30 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Resolve release metadata
+      - name: Resolve and validate release metadata
         id: source
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "version=${{ inputs.release_version }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          version="$RELEASE_VERSION"
+          if [[ ! "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "release_version must be a valid Docker tag" >&2
+            exit 1
+          fi
+          version_file="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
+          if [[ "$version" != "$version_file" ]]; then
+            echo "release_version '$version' does not match backend/cmd/server/VERSION '$version_file'" >&2
+            exit 1
+          fi
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -85,13 +101,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push linux/amd64 image
+      - name: Build linux/amd64 image locally
         uses: docker/build-push-action@v6
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
-          push: true
+          load: true
+          push: false
           tags: |
             ${{ env.IMAGE_NAME }}:${{ steps.source.outputs.version }}
             ${{ env.IMAGE_NAME }}:latest
@@ -103,8 +121,346 @@ jobs:
             org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
             org.opencontainers.image.version=${{ steps.source.outputs.version }}
 
-      - name: Verify pushed manifests
+      - name: Export cached backend builder and final runtime files
+        shell: bash
+        env:
+          BUILDX_BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${{ steps.source.outputs.version }}"
-          docker buildx imagetools inspect "${IMAGE_NAME}:latest"
-          echo "Published source SHA: ${{ steps.source.outputs.sha }}"
+          set -euo pipefail
+          work_dir="$(mktemp -d "${RUNNER_TEMP}/release-provenance.XXXXXX")"
+          mkdir -p "${work_dir}/builder" "${work_dir}/runtime"
+          builder_tag="sub2api-provenance-builder:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          version_ref="${IMAGE_NAME}:${RELEASE_VERSION}"
+
+          docker buildx build \
+            --builder "$BUILDX_BUILDER_NAME" \
+            --file ./Dockerfile \
+            --platform linux/amd64 \
+            --target backend-builder \
+            --build-arg "VERSION=${RELEASE_VERSION}" \
+            --build-arg "COMMIT=${SOURCE_SHA}" \
+            --tag "$builder_tag" \
+            --load \
+            .
+
+          builder_container=""
+          runtime_container=""
+          cleanup() {
+            for container in "$builder_container" "$runtime_container"; do
+              if [[ -n "$container" ]]; then
+                docker rm "$container" >/dev/null 2>&1 || true
+              fi
+            done
+          }
+          trap cleanup EXIT
+
+          builder_container="$(docker create --network=none "$builder_tag")"
+          runtime_container="$(docker create --network=none "$version_ref")"
+          docker cp "${builder_container}:/app/sub2api" "${work_dir}/builder/sub2api"
+          docker cp "${builder_container}:/app/backend/internal/web/dist" "${work_dir}/builder/dist"
+          docker cp "${runtime_container}:/app/sub2api" "${work_dir}/runtime/sub2api"
+
+          cleanup
+          trap - EXIT
+          {
+            echo "PROVENANCE_WORK_DIR=${work_dir}"
+            echo "PROVENANCE_DIR=${GITHUB_WORKSPACE}/release-provenance"
+          } >> "$GITHUB_ENV"
+          mkdir -p "${GITHUB_WORKSPACE}/release-provenance"
+
+      - name: Verify binary provenance and runtime identity
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          EXPECTED_OCI_SOURCE: https://github.com/laoxiechuzheng/sub2api
+        run: |
+          set -euo pipefail
+          version_ref="${IMAGE_NAME}:${RELEASE_VERSION}"
+          builder_binary="${PROVENANCE_WORK_DIR}/builder/sub2api"
+          runtime_binary="${PROVENANCE_WORK_DIR}/runtime/sub2api"
+          if [[ ! -f "$builder_binary" || ! -f "$runtime_binary" ]]; then
+            echo "builder or runtime binary was not exported" >&2
+            exit 1
+          fi
+
+          builder_sha="$(sha256sum "$builder_binary" | awk '{print $1}')"
+          runtime_sha="$(sha256sum "$runtime_binary" | awk '{print $1}')"
+          if [[ "$builder_sha" != "$runtime_sha" ]]; then
+            echo "cached builder binary SHA does not match final runtime image binary" >&2
+            echo "builder: $builder_sha" >&2
+            echo "runtime: $runtime_sha" >&2
+            exit 1
+          fi
+          if ! cmp --silent "$builder_binary" "$runtime_binary"; then
+            echo "cached builder binary differs from final runtime image binary" >&2
+            exit 1
+          fi
+
+          version_output="$(docker run --rm --network none --entrypoint /app/sub2api "$version_ref" -version 2>&1)"
+          printf '%s\n' "$version_output"
+          version_regex="${RELEASE_VERSION//./\\.}"
+          version_line_pattern="Sub2API[[:space:]]+${version_regex}[[:space:]]+\\(commit:[[:space:]]+${SOURCE_SHA},[[:space:]]+built:[[:space:]]+[^)]+\\)"
+          version_matches="$(
+            printf '%s\n' "$version_output" |
+              grep -Eo "$version_line_pattern" |
+              wc -l |
+              tr -d '[:space:]' || true
+          )"
+          if [[ "$version_matches" != "1" ]]; then
+            echo "runtime -version output must contain exactly one matching version/commit line" >&2
+            exit 1
+          fi
+
+          actual_source="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$version_ref")"
+          actual_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$version_ref")"
+          actual_version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$version_ref")"
+          actual_platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$version_ref")"
+          runtime_image_id="$(docker image inspect --format '{{.Id}}' "$version_ref")"
+          latest_image_id="$(docker image inspect --format '{{.Id}}' "${IMAGE_NAME}:latest")"
+
+          [[ "$actual_source" == "$EXPECTED_OCI_SOURCE" ]] || {
+            echo "runtime OCI source mismatch: $actual_source" >&2
+            exit 1
+          }
+          [[ "$actual_revision" == "$SOURCE_SHA" ]] || {
+            echo "runtime OCI revision mismatch: $actual_revision" >&2
+            exit 1
+          }
+          [[ "$actual_version" == "$RELEASE_VERSION" ]] || {
+            echo "runtime OCI version mismatch: $actual_version" >&2
+            exit 1
+          }
+          [[ "$actual_platform" == "linux/amd64" ]] || {
+            echo "runtime platform mismatch: $actual_platform" >&2
+            exit 1
+          }
+          [[ "$runtime_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "invalid local OCI image ID: $runtime_image_id" >&2
+            exit 1
+          }
+          [[ "$runtime_image_id" == "$latest_image_id" ]] || {
+            echo "version and latest tags do not reference the same local image" >&2
+            exit 1
+          }
+
+          {
+            echo "BINARY_SHA256=${runtime_sha}"
+            echo "OCI_LOCAL_IMAGE_ID=${runtime_image_id}"
+          } >> "$GITHUB_ENV"
+          echo "Verified builder/runtime binary SHA: ${runtime_sha}"
+          echo "Verified local OCI image ID: ${runtime_image_id}"
+
+      - name: Generate and validate asset manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist_dir="${PROVENANCE_WORK_DIR}/builder/dist"
+          asset_manifest="${PROVENANCE_DIR}/asset-manifest.json"
+          asset_count="$(
+            python3 - "$dist_dir" "$asset_manifest" <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          output = Path(sys.argv[2])
+          assets_dir = source / "assets"
+          max_assets = 512
+          max_asset_size = 64 * 1024 * 1024
+          max_total_size = 64 * 1024 * 1024
+
+          if assets_dir.is_symlink() or not assets_dir.is_dir():
+              raise SystemExit(f"expected flat assets directory at {assets_dir}")
+
+          with os.scandir(assets_dir) as iterator:
+              entries = sorted(iterator, key=lambda entry: entry.name)
+
+          if not entries:
+              raise SystemExit("asset directory is empty")
+          if len(entries) > max_assets:
+              raise SystemExit(f"asset count exceeds limit: {len(entries)} > {max_assets}")
+
+          files = []
+          total_size = 0
+          for entry in entries:
+              if entry.is_symlink():
+                  raise SystemExit(f"asset symlink is not allowed: {entry.path}")
+              if entry.is_dir(follow_symlinks=False):
+                  raise SystemExit(f"nested asset directory is not allowed: {entry.path}")
+              if not entry.is_file(follow_symlinks=False):
+                  raise SystemExit(f"asset is not a regular file: {entry.path}")
+              if re.fullmatch(r"[A-Za-z0-9._-]+", entry.name) is None:
+                  raise SystemExit(f"unsafe asset file name: {entry.name!r}")
+
+              size = entry.stat(follow_symlinks=False).st_size
+              if size > max_asset_size:
+                  raise SystemExit(f"asset exceeds size limit: {entry.path} ({size} bytes)")
+              total_size += size
+              if total_size > max_total_size:
+                  raise SystemExit(f"total asset size exceeds limit: {total_size} > {max_total_size}")
+
+              digest = hashlib.sha256()
+              with open(entry.path, "rb") as source_file:
+                  for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                      digest.update(chunk)
+
+              files.append(
+                  {
+                      "path": f"/assets/{entry.name}",
+                      "sha256": digest.hexdigest(),
+                      "size": size,
+                  }
+              )
+
+          output.parent.mkdir(parents=True, exist_ok=True)
+          with output.open("w", encoding="utf-8", newline="\n") as manifest_file:
+              json.dump({"files": files}, manifest_file, ensure_ascii=True, separators=(",", ":"))
+              manifest_file.write("\n")
+
+          print(len(files))
+          PY
+          )"
+          if [[ ! "$asset_count" =~ ^[1-9][0-9]*$ ]]; then
+            echo "invalid asset count: $asset_count" >&2
+            exit 1
+          fi
+          jq -e '
+            (.files | type == "array") and
+            ((.files | length) > 0) and
+            ((.files | length) <= 512) and
+            (([.files[].size] | add // 0) <= 67108864) and
+            all(.files[];
+              (.path | type == "string" and test("^/assets/[A-Za-z0-9._-]+$")) and
+              (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+              (.size | type == "number" and floor == . and . >= 0)
+            )
+          ' "$asset_manifest" >/dev/null
+          asset_manifest_sha256="$(sha256sum "$asset_manifest" | awk '{print $1}')"
+          {
+            echo "ASSET_COUNT=${asset_count}"
+            echo "ASSET_MANIFEST_SHA256=${asset_manifest_sha256}"
+          } >> "$GITHUB_ENV"
+          echo "Asset manifest SHA: ${asset_manifest_sha256} (${asset_count} files)"
+
+      - name: Push verified image tags
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker push "${IMAGE_NAME}:${RELEASE_VERSION}"
+          docker push "${IMAGE_NAME}:latest"
+
+      - name: Resolve registry digest and write release manifest
+        shell: bash
+        env:
+          BUILDX_BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          version_ref="${IMAGE_NAME}:${RELEASE_VERSION}"
+          latest_ref="${IMAGE_NAME}:latest"
+          digest_template='{{json .Manifest.Digest}}'
+          version_digest="$(docker buildx imagetools inspect --builder "$BUILDX_BUILDER_NAME" --format "$digest_template" "$version_ref" | jq -er .)"
+          latest_digest="$(docker buildx imagetools inspect --builder "$BUILDX_BUILDER_NAME" --format "$digest_template" "$latest_ref" | jq -er .)"
+          [[ "$version_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "invalid GHCR digest for version tag: $version_digest" >&2
+            exit 1
+          }
+          [[ "$latest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "invalid GHCR digest for latest tag: $latest_digest" >&2
+            exit 1
+          }
+          [[ "$version_digest" == "$latest_digest" ]] || {
+            echo "version and latest tags resolved to different registry manifests" >&2
+            exit 1
+          }
+
+          current_image_id="$(docker image inspect --format '{{.Id}}' "$version_ref")"
+          current_latest_image_id="$(docker image inspect --format '{{.Id}}' "$latest_ref")"
+          [[ "$current_image_id" == "$OCI_LOCAL_IMAGE_ID" ]] || {
+            echo "local image ID changed after push: $current_image_id" >&2
+            exit 1
+          }
+          [[ "$current_latest_image_id" == "$OCI_LOCAL_IMAGE_ID" ]] || {
+            echo "local latest image ID changed after push: $current_latest_image_id" >&2
+            exit 1
+          }
+
+          after_push_dir="${PROVENANCE_WORK_DIR}/runtime/after-push"
+          mkdir -p "$after_push_dir"
+          runtime_container=""
+          cleanup() {
+            if [[ -n "$runtime_container" ]]; then
+              docker rm "$runtime_container" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          runtime_container="$(docker create --network=none "$version_ref")"
+          docker cp "${runtime_container}:/app/sub2api" "${after_push_dir}/sub2api"
+          cleanup
+          trap - EXIT
+
+          after_push_sha="$(sha256sum "${after_push_dir}/sub2api" | awk '{print $1}')"
+          [[ "$after_push_sha" == "$BINARY_SHA256" ]] || {
+            echo "local runtime binary SHA changed after push: $after_push_sha" >&2
+            exit 1
+          }
+          if ! cmp --silent "${PROVENANCE_WORK_DIR}/runtime/sub2api" "${after_push_dir}/sub2api"; then
+            echo "local runtime binary changed after push" >&2
+            exit 1
+          fi
+
+          release_manifest="${PROVENANCE_DIR}/release-manifest.json"
+          jq -n \
+            --arg source_commit "$SOURCE_SHA" \
+            --arg version "$RELEASE_VERSION" \
+            --arg ghcr_digest "$version_digest" \
+            --arg binary_sha256 "$BINARY_SHA256" \
+            --arg oci_local_image_id "$OCI_LOCAL_IMAGE_ID" \
+            --arg asset_manifest_sha256 "$ASSET_MANIFEST_SHA256" \
+            --argjson asset_count "$ASSET_COUNT" \
+            '{
+              source_commit: $source_commit,
+              version: $version,
+              ghcr_digest: $ghcr_digest,
+              binary_sha256: $binary_sha256,
+              oci_local_image_id: $oci_local_image_id,
+              asset_manifest_sha256: $asset_manifest_sha256,
+              asset_count: $asset_count
+            }' > "$release_manifest"
+          jq -e \
+            --arg source_commit "$SOURCE_SHA" \
+            --arg version "$RELEASE_VERSION" \
+            --arg ghcr_digest "$version_digest" \
+            --arg binary_sha256 "$BINARY_SHA256" \
+            --arg oci_local_image_id "$OCI_LOCAL_IMAGE_ID" \
+            --arg asset_manifest_sha256 "$ASSET_MANIFEST_SHA256" \
+            --argjson asset_count "$ASSET_COUNT" \
+            '.source_commit == $source_commit and
+             .version == $version and
+             .ghcr_digest == $ghcr_digest and
+             .binary_sha256 == $binary_sha256 and
+             .oci_local_image_id == $oci_local_image_id and
+             .asset_manifest_sha256 == $asset_manifest_sha256 and
+             .asset_count == $asset_count' \
+            "$release_manifest" >/dev/null
+
+          echo "Published source SHA: ${SOURCE_SHA}"
+          echo "Published image: ${version_ref}@${version_digest}"
+
+      - name: Upload release provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-provenance
+          path: |
+            release-provenance/release-manifest.json
+            release-provenance/asset-manifest.json
+          if-no-files-found: error
