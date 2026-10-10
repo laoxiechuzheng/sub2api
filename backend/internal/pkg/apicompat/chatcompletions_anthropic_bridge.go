@@ -34,17 +34,38 @@ import (
 // Request: AnthropicRequest → ChatCompletionsRequest
 // ---------------------------------------------------------------------------
 
+// AnthropicChatCompletionsOptions controls optional behavior of the direct
+// Anthropic to Chat Completions bridge. The zero value keeps the historical
+// conversion, which folds text blocks into strings and drops cache_control.
+type AnthropicChatCompletionsOptions struct {
+	// PreserveCacheControl keeps Anthropic prompt-cache breakpoints by emitting
+	// content-part arrays instead of folded strings. Enable it only for
+	// upstreams that accept Anthropic-style cache_control inside Chat
+	// Completions payloads (e.g. OpenRouter routed to Claude models).
+	PreserveCacheControl bool
+	// DefaultCacheControlTTL fills a ttl the client left unset on a preserved
+	// breakpoint. An explicit client ttl always wins; an empty default leaves
+	// the upstream's own default untouched.
+	DefaultCacheControlTTL string
+}
+
 // AnthropicToChatCompletionsRequest converts an Anthropic Messages request
 // directly into a Chat Completions request, without transiting the Responses
 // API. It is semantically equivalent to composing AnthropicToResponses +
 // ResponsesToChatCompletionsRequest but avoids materializing the intermediate
 // ResponsesRequest and the extra marshal/unmarshal cycle.
 func AnthropicToChatCompletionsRequest(req *AnthropicRequest) (*ChatCompletionsRequest, error) {
+	return AnthropicToChatCompletionsRequestWithOptions(req, AnthropicChatCompletionsOptions{})
+}
+
+// AnthropicToChatCompletionsRequestWithOptions is
+// AnthropicToChatCompletionsRequest with explicit bridge options.
+func AnthropicToChatCompletionsRequestWithOptions(req *AnthropicRequest, opts AnthropicChatCompletionsOptions) (*ChatCompletionsRequest, error) {
 	if req == nil {
 		return nil, fmt.Errorf("anthropic request is nil")
 	}
 
-	messages, err := anthropicToChatMessages(req.System, req.Messages)
+	messages, err := anthropicToChatMessages(req.System, req.Messages, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -111,27 +132,24 @@ func AnthropicToChatCompletionsRequest(req *AnthropicRequest) (*ChatCompletionsR
 // anthropicToChatMessages converts the Anthropic system field + message list
 // into Chat Completions messages. It mirrors convertAnthropicToResponsesInput +
 // responsesInputToChatMessages but produces ChatMessage directly.
-func anthropicToChatMessages(system json.RawMessage, msgs []AnthropicMessage) ([]ChatMessage, error) {
+func anthropicToChatMessages(system json.RawMessage, msgs []AnthropicMessage, opts AnthropicChatCompletionsOptions) ([]ChatMessage, error) {
 	var messages []ChatMessage
 
-	// System prompt → system message. parseAnthropicSystemContentParts handles
-	// both string and []block forms and filters the billing header.
+	// System prompt to system message. anthropicSystemToChatMessage handles both
+	// string and []block forms, filters the billing header, and keeps
+	// cache_control breakpoints when the options enable preservation.
 	if len(system) > 0 {
-		sysParts, err := parseAnthropicSystemContentParts(system)
+		sysMsg, err := anthropicSystemToChatMessage(system, opts)
 		if err != nil {
 			return nil, err
 		}
-		if len(sysParts) > 0 {
-			text := joinResponsesContentPartText(sysParts)
-			if text != "" {
-				content, _ := json.Marshal(text)
-				messages = append(messages, ChatMessage{Role: "system", Content: content})
-			}
+		if sysMsg != nil {
+			messages = append(messages, *sysMsg)
 		}
 	}
 
 	for _, m := range msgs {
-		converted, err := anthropicMsgToChatMessages(m)
+		converted, err := anthropicMsgToChatMessages(m, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -141,16 +159,108 @@ func anthropicToChatMessages(system json.RawMessage, msgs []AnthropicMessage) ([
 	return normalizeChatMessages(messages), nil
 }
 
+// anthropicSystemToChatMessage converts the Anthropic system field into one
+// system message. Text blocks fold into a single string unless a preserved
+// cache_control breakpoint requires the content-part form; the billing header
+// block is dropped in both cases.
+func anthropicSystemToChatMessage(system json.RawMessage, opts AnthropicChatCompletionsOptions) (*ChatMessage, error) {
+	var s string
+	if err := json.Unmarshal(system, &s); err == nil {
+		if s == "" || isAnthropicBillingHeaderText(s) {
+			return nil, nil
+		}
+		content, _ := json.Marshal(s)
+		return &ChatMessage{Role: "system", Content: content}, nil
+	}
+
+	var blocks []AnthropicContentBlock
+	if err := json.Unmarshal(system, &blocks); err != nil {
+		return nil, err
+	}
+
+	var textParts []string
+	var parts []ChatContentPart
+	hasCacheControl := false
+	for _, b := range blocks {
+		if b.Type != "text" || b.Text == "" || isAnthropicBillingHeaderText(b.Text) {
+			continue
+		}
+		textParts = append(textParts, b.Text)
+		part := ChatContentPart{Type: "text", Text: b.Text}
+		if cc := preservedCacheControl(b.CacheControl, opts); cc != nil {
+			part.CacheControl = cc
+			hasCacheControl = true
+		}
+		parts = append(parts, part)
+	}
+	if len(textParts) == 0 {
+		return nil, nil
+	}
+	if !hasCacheControl {
+		content, _ := json.Marshal(strings.Join(textParts, "\n\n"))
+		return &ChatMessage{Role: "system", Content: content}, nil
+	}
+	content, err := json.Marshal(parts)
+	if err != nil {
+		return nil, err
+	}
+	return &ChatMessage{Role: "system", Content: content}, nil
+}
+
+// preservedCacheControl returns the breakpoint to emit on a content part, or
+// nil when preservation is off or the block carries no breakpoint. A missing
+// ttl is filled from the options; an explicit client ttl is kept as-is.
+func preservedCacheControl(cc *AnthropicCacheControl, opts AnthropicChatCompletionsOptions) *AnthropicCacheControl {
+	if !opts.PreserveCacheControl || cc == nil {
+		return nil
+	}
+	out := *cc
+	if out.Type == "" {
+		out.Type = "ephemeral"
+	}
+	if out.TTL == "" {
+		out.TTL = opts.DefaultCacheControlTTL
+	}
+	return &out
+}
+
+// anthropicTextPartsWithCacheControl builds text content parts for blocks that
+// carry a preserved cache_control breakpoint. It reports false when
+// preservation is off or no text block carries a breakpoint, so callers can
+// keep the historical folded-string form.
+func anthropicTextPartsWithCacheControl(blocks []AnthropicContentBlock, opts AnthropicChatCompletionsOptions) ([]ChatContentPart, bool) {
+	if !opts.PreserveCacheControl {
+		return nil, false
+	}
+	var parts []ChatContentPart
+	hasCacheControl := false
+	for _, b := range blocks {
+		if b.Type != "text" || b.Text == "" {
+			continue
+		}
+		part := ChatContentPart{Type: "text", Text: b.Text}
+		if cc := preservedCacheControl(b.CacheControl, opts); cc != nil {
+			part.CacheControl = cc
+			hasCacheControl = true
+		}
+		parts = append(parts, part)
+	}
+	if !hasCacheControl {
+		return nil, false
+	}
+	return parts, true
+}
+
 // anthropicMsgToChatMessages converts one Anthropic message into one or more
 // Chat messages. tool_result blocks become standalone "tool" role messages
 // (the Chat Completions convention); text/image blocks stay in a user message;
 // assistant tool_use blocks become tool_calls on the assistant message.
-func anthropicMsgToChatMessages(m AnthropicMessage) ([]ChatMessage, error) {
+func anthropicMsgToChatMessages(m AnthropicMessage, opts AnthropicChatCompletionsOptions) ([]ChatMessage, error) {
 	switch m.Role {
 	case "assistant":
-		return anthropicAssistantToChatMessages(m.Content)
+		return anthropicAssistantToChatMessages(m.Content, opts)
 	default: // "user" and any unknown role
-		return anthropicUserToChatMessages(m.Content)
+		return anthropicUserToChatMessages(m.Content, opts)
 	}
 }
 
@@ -159,7 +269,7 @@ func anthropicMsgToChatMessages(m AnthropicMessage) ([]ChatMessage, error) {
 // standalone "tool" role messages; images inside tool_results are lifted into a
 // follow-up user message as image_url parts (the Responses bridge does the same
 // — function_call_output only accepts strings, so images must travel separately).
-func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
+func anthropicUserToChatMessages(raw json.RawMessage, opts AnthropicChatCompletionsOptions) ([]ChatMessage, error) {
 	// Plain string → single user message.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -199,24 +309,36 @@ func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
 	// (responsesContentPartsToChatContent) folds text-only content into a single
 	// string joined with "\n\n" and only uses the parts-array form when an image
 	// is present — strict chat upstreams reject array content — so the direct
-	// bridge preserves that folding.
+	// bridge preserves that folding unless a preserved cache_control breakpoint
+	// requires the content-part form.
 	var textParts []string
 	var parts []ChatContentPart
 	hasImage := false
+	hasCacheControl := false
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
 			if b.Text != "" {
 				textParts = append(textParts, b.Text)
-				parts = append(parts, ChatContentPart{Type: "text", Text: b.Text})
+				part := ChatContentPart{Type: "text", Text: b.Text}
+				if cc := preservedCacheControl(b.CacheControl, opts); cc != nil {
+					part.CacheControl = cc
+					hasCacheControl = true
+				}
+				parts = append(parts, part)
 			}
 		case "image":
 			if uri := anthropicImageToDataURI(b.Source); uri != "" {
 				hasImage = true
-				parts = append(parts, ChatContentPart{
+				part := ChatContentPart{
 					Type:     "image_url",
 					ImageURL: &ChatImageURL{URL: uri},
-				})
+				}
+				if cc := preservedCacheControl(b.CacheControl, opts); cc != nil {
+					part.CacheControl = cc
+					hasCacheControl = true
+				}
+				parts = append(parts, part)
 			}
 		}
 	}
@@ -225,7 +347,7 @@ func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
 		parts = append(parts, toolResultImageParts...)
 	}
 
-	if !hasImage {
+	if !hasImage && !hasCacheControl {
 		if len(textParts) > 0 {
 			content, _ := json.Marshal(strings.Join(textParts, "\n\n"))
 			out = append(out, ChatMessage{Role: "user", Content: content})
@@ -246,7 +368,7 @@ func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
 // Text content → assistant message content; tool_use blocks → tool_calls on the
 // same assistant message; thinking blocks → reasoning_content, but only on a
 // message that carries tool calls (see anthropicThinkingToReasoningContent).
-func anthropicAssistantToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
+func anthropicAssistantToChatMessages(raw json.RawMessage, opts AnthropicChatCompletionsOptions) ([]ChatMessage, error) {
 	// Plain string → single assistant message.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -260,8 +382,13 @@ func anthropicAssistantToChatMessages(raw json.RawMessage) ([]ChatMessage, error
 	}
 
 	msg := ChatMessage{Role: "assistant"}
-	text := extractAnthropicTextFromBlocks(blocks)
-	if text != "" {
+	if parts, hasCacheControl := anthropicTextPartsWithCacheControl(blocks, opts); hasCacheControl {
+		content, err := json.Marshal(parts)
+		if err != nil {
+			return nil, err
+		}
+		msg.Content = content
+	} else if text := extractAnthropicTextFromBlocks(blocks); text != "" {
 		content, _ := json.Marshal(text)
 		msg.Content = content
 	}

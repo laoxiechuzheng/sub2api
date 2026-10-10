@@ -83,7 +83,7 @@ func TestAnthropicChatBridge_ReasoningSurvivesOutboundInboundRoundTrip(t *testin
 	require.NoError(t, err)
 
 	// 入站：Anthropic content blocks → Chat 请求
-	back, err := anthropicAssistantToChatMessages(raw)
+	back, err := anthropicAssistantToChatMessages(raw, AnthropicChatCompletionsOptions{})
 	require.NoError(t, err)
 	require.Len(t, back, 1)
 	require.Equal(t, upstream.ReasoningContent, back[0].ReasoningContent,
@@ -221,7 +221,7 @@ func TestAnthropicThinkingToReasoningContent(t *testing.T) {
 
 // 纯字符串形态的 assistant content 没有 blocks 可读，走早返回分支，不得 panic。
 func TestAnthropicAssistantToChatMessages_PlainStringContentUnaffected(t *testing.T) {
-	msgs, err := anthropicAssistantToChatMessages(json.RawMessage(`"just text"`))
+	msgs, err := anthropicAssistantToChatMessages(json.RawMessage(`"just text"`), AnthropicChatCompletionsOptions{})
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	require.Empty(t, msgs[0].ReasoningContent)

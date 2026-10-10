@@ -1105,3 +1105,84 @@ func TestChatCompletionsResponseToAnthropic_ContentFilterWithToolUse(t *testing.
 	out := ChatCompletionsResponseToAnthropic(resp, "claude-sonnet-4-20250514")
 	require.Equal(t, "tool_use", AnthropicStopReasonString(out.StopReason))
 }
+
+// TestAnthropicToChatCompletionsRequest_OptionsPreserveCacheControl verifies
+// the optional cache_control passthrough: breakpoints survive on the wire in
+// content-part form, a missing ttl takes the configured default, and an
+// explicit client ttl is kept.
+func TestAnthropicToChatCompletionsRequest_OptionsPreserveCacheControl(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:     "claude-haiku-5-5",
+		MaxTokens: 100,
+		System: json.RawMessage(`[
+			{"type":"text","text":"x-anthropic-billing-header: test"},
+			{"type":"text","text":"stable system prefix","cache_control":{"type":"ephemeral"}},
+			{"type":"text","text":"tail"}
+		]`),
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: json.RawMessage(`[
+				{"type":"text","text":"turn one","cache_control":{"type":"ephemeral","ttl":"1h"}},
+				{"type":"text","text":"dynamic"}
+			]`)},
+			{Role: "assistant", Content: json.RawMessage(`[{"type":"text","text":"answer","cache_control":{"type":"ephemeral"}}]`)},
+		},
+	}
+
+	out, err := AnthropicToChatCompletionsRequestWithOptions(req, AnthropicChatCompletionsOptions{
+		PreserveCacheControl:   true,
+		DefaultCacheControlTTL: "1h",
+	})
+	require.NoError(t, err)
+	require.Len(t, out.Messages, 3)
+
+	var sysParts []ChatContentPart
+	require.NoError(t, json.Unmarshal(out.Messages[0].Content, &sysParts))
+	require.Len(t, sysParts, 2)
+	require.Equal(t, "stable system prefix", sysParts[0].Text)
+	require.NotNil(t, sysParts[0].CacheControl)
+	require.Equal(t, "ephemeral", sysParts[0].CacheControl.Type)
+	require.Equal(t, "1h", sysParts[0].CacheControl.TTL)
+	require.Equal(t, "tail", sysParts[1].Text)
+	require.Nil(t, sysParts[1].CacheControl)
+
+	var userParts []ChatContentPart
+	require.NoError(t, json.Unmarshal(out.Messages[1].Content, &userParts))
+	require.Len(t, userParts, 2)
+	require.NotNil(t, userParts[0].CacheControl)
+	require.Equal(t, "1h", userParts[0].CacheControl.TTL)
+	require.Nil(t, userParts[1].CacheControl)
+
+	var assistantParts []ChatContentPart
+	require.NoError(t, json.Unmarshal(out.Messages[2].Content, &assistantParts))
+	require.Len(t, assistantParts, 1)
+	require.NotNil(t, assistantParts[0].CacheControl)
+	require.Equal(t, "1h", assistantParts[0].CacheControl.TTL)
+
+	raw, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.Equal(t, 3, strings.Count(string(raw), "cache_control"))
+	require.NotContains(t, string(raw), "x-anthropic-billing-header")
+}
+
+// TestAnthropicToChatCompletionsRequest_DefaultDropsCacheControl pins the
+// historical default: without options the text blocks fold into one string and
+// every breakpoint is dropped.
+func TestAnthropicToChatCompletionsRequest_DefaultDropsCacheControl(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:     "claude-haiku-5-5",
+		MaxTokens: 100,
+		System:    json.RawMessage(`[{"type":"text","text":"prefix","cache_control":{"type":"ephemeral"}},{"type":"text","text":"tail"}]`),
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]`)},
+		},
+	}
+
+	out, err := AnthropicToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, `"prefix\n\ntail"`, string(out.Messages[0].Content))
+	require.Equal(t, `"hi"`, string(out.Messages[1].Content))
+
+	raw, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.Equal(t, 0, strings.Count(string(raw), "cache_control"))
+}

@@ -488,3 +488,52 @@ func TestForwardAsAnthropic_ResponsesSupportedAccountStillUsesResponsesEndpoint(
 	require.Empty(t, upstream.lastReq.Header.Get("OpenAI-Beta"))
 	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "content.0.text").String())
 }
+
+// TestForwardAsAnthropic_ForceChatCompletionsCacheControlPassthrough verifies
+// the end-to-end gate: Claude-family upstreams receive the client's Anthropic
+// cache breakpoints (ttl-less ones raised to the bridge default), while other
+// chat upstreams keep the historical drop.
+func TestForwardAsAnthropic_ForceChatCompletionsCacheControlPassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"claude-haiku-5-5","max_tokens":32,"system":[{"type":"text","text":"stable prefix","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],"stream":false}`)
+
+	tests := []struct {
+		name          string
+		mapped        string
+		wantMarkers   int
+		wantSystemTTL string
+	}{
+		{name: "claude upstream keeps breakpoints with 1h default", mapped: "anthropic/claude-haiku-5.5", wantMarkers: 2, wantSystemTTL: "1h"},
+		{name: "non-claude upstream drops breakpoints", mapped: "deepseek-v4-pro", wantMarkers: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"id":"chatcmpl_cache","object":"chat.completion","model":"` + tt.mapped + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+				)),
+			}}
+			account := forceChatMessagesFallbackAccount()
+			account.Credentials["model_mapping"] = map[string]any{"claude-haiku-5-5": tt.mapped}
+
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+			require.NoError(t, err)
+
+			require.Equal(t, tt.wantMarkers, strings.Count(string(upstream.lastBody), "cache_control"))
+			if tt.wantMarkers > 0 {
+				require.Equal(t, tt.wantSystemTTL, gjson.GetBytes(upstream.lastBody, "messages.0.content.0.cache_control.ttl").String())
+				require.Equal(t, tt.wantSystemTTL, gjson.GetBytes(upstream.lastBody, "messages.1.content.0.cache_control.ttl").String())
+			}
+		})
+	}
+}

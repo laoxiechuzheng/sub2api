@@ -16,6 +16,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// chatCompletionsAnthropicCacheTTL replaces the Anthropic default ttl (5m) on
+// cache breakpoints bridged to Chat Completions when the client did not set
+// one. Claude Code emits ttl-less breakpoints; 5 minutes forces a cache rebuild
+// almost every turn in an agent session, so the bridge raises them to 1h. An
+// explicit client ttl still wins.
+const chatCompletionsAnthropicCacheTTL = "1h"
+
 // forwardAnthropicViaRawChatCompletions serves /v1/messages clients through
 // an OpenAI-compatible upstream that only supports /v1/chat/completions.
 //
@@ -51,15 +58,22 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	applyOpenAICompatModelNormalization(&anthropicReq)
 	clientStream := anthropicReq.Stream
 
-	// 2. Anthropic → Chat Completions (direct, no Responses intermediary)
-	chatReq, err := apicompat.AnthropicToChatCompletionsRequest(&anthropicReq)
+	// 2. Resolve the outbound model, then convert Anthropic to Chat Completions
+	// (direct, no Responses intermediary). Model resolution comes first because
+	// the cache_control passthrough is scoped to Claude-family upstreams:
+	// OpenRouter forwards Anthropic-style breakpoints to Claude models, while
+	// DeepSeek/Kimi-style chat upstreams may reject the unknown field.
+	billingModel := resolveOpenAIForwardModel(account, anthropicReq.Model, defaultMappedModel)
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	chatReq, err := apicompat.AnthropicToChatCompletionsRequestWithOptions(&anthropicReq, apicompat.AnthropicChatCompletionsOptions{
+		PreserveCacheControl:   isClaudeFamilyModelName(upstreamModel),
+		DefaultCacheControlTTL: chatCompletionsAnthropicCacheTTL,
+	})
 	if err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("convert anthropic to chat completions: %w", err)
 	}
 
-	billingModel := resolveOpenAIForwardModel(account, anthropicReq.Model, defaultMappedModel)
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	if err := validateGPT61SolCompatRequest(body, upstreamModel); err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err

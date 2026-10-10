@@ -707,6 +707,10 @@ type ChatContentPart struct {
 	Text                  string          `json:"text,omitempty"`
 	ImageURL              *ChatImageURL   `json:"image_url,omitempty"`
 	File                  *ChatFile       `json:"file,omitempty"`
+	// CacheControl carries an Anthropic-style prompt cache breakpoint for
+	// providers that accept it inside Chat Completions content parts
+	// (e.g. OpenRouter routing to Claude models).
+	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 // ChatImageURL contains the URL for an image content part.
