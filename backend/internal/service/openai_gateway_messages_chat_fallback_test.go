@@ -537,3 +537,67 @@ func TestForwardAsAnthropic_ForceChatCompletionsCacheControlPassthrough(t *testi
 		})
 	}
 }
+
+// TestForwardAsAnthropic_ForceChatCompletionsToolResultCacheControlPassthrough
+// pins the production regression end to end: Claude Code marks the tail
+// tool_result as a cache breakpoint, and the final upstream chat body must
+// carry it on the tool message without disturbing the tool_call_id, text, or
+// message order. Non-Claude upstreams keep the historical drop.
+func TestForwardAsAnthropic_ForceChatCompletionsToolResultCacheControlPassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"claude-haiku-5-5","max_tokens":32,"stream":false,` +
+		`"system":[{"type":"text","text":"stable prefix","cache_control":{"type":"ephemeral"}}],` +
+		`"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"SF"}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"sunny, 72F","cache_control":{"type":"ephemeral"}}]}` +
+		`]}`)
+
+	tests := []struct {
+		name        string
+		mapped      string
+		wantMarkers int
+	}{
+		{name: "claude upstream keeps the tool_result breakpoint", mapped: "anthropic/claude-haiku-5.5", wantMarkers: 3},
+		{name: "non-claude upstream drops breakpoints", mapped: "deepseek-v4-pro", wantMarkers: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"id":"chatcmpl_tool_cache","object":"chat.completion","model":"` + tt.mapped + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+				)),
+			}}
+			account := forceChatMessagesFallbackAccount()
+			account.Credentials["model_mapping"] = map[string]any{"claude-haiku-5-5": tt.mapped}
+
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+			require.NoError(t, err)
+
+			require.Equal(t, tt.wantMarkers, strings.Count(string(upstream.lastBody), "cache_control"))
+			require.Equal(t, int64(4), gjson.GetBytes(upstream.lastBody, "messages.#").Int())
+			require.Equal(t, "tool", gjson.GetBytes(upstream.lastBody, "messages.3.role").String(),
+				"tool reply must stay right after the assistant that announced it")
+			require.Equal(t, "toolu_1", gjson.GetBytes(upstream.lastBody, "messages.3.tool_call_id").String())
+			if tt.wantMarkers > 0 {
+				require.Equal(t, "sunny, 72F", gjson.GetBytes(upstream.lastBody, "messages.3.content.0.text").String())
+				require.Equal(t, "1h", gjson.GetBytes(upstream.lastBody, "messages.3.content.0.cache_control.ttl").String(),
+					"ttl-less tool_result breakpoint must take the gateway default")
+			} else {
+				require.Equal(t, gjson.String, gjson.GetBytes(upstream.lastBody, "messages.3.content").Type,
+					"non-claude upstream must keep the historical string tool content")
+				require.Equal(t, "sunny, 72F", gjson.GetBytes(upstream.lastBody, "messages.3.content").String())
+			}
+		})
+	}
+}

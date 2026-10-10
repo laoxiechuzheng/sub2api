@@ -213,7 +213,12 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 	if account != nil && account.IsOpenAI() {
 		responsesLite := isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) || isOpenAIResponsesLiteWebSocketPayload(body)
-		normalizedBody, normalized, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(body, account, responsesLite)
+		// OpenRouter native Claude Responses keeps its reasoning replay payload:
+		// the compatibility wrapper below skips only the reasoning-history
+		// removals for that destination and retains every other normalization.
+		normalizedBody, normalized, normalizeErr := normalizeOpenAIResponsesCompatibilityBodyWithReasoningReplay(
+			body, account, responsesLite, shouldPreserveOpenRouterClaudeResponsesReasoningReplay(s, c, account, body),
+		)
 		if normalizeErr != nil {
 			return nil, fmt.Errorf("normalize passthrough Responses compatibility: %w", normalizeErr)
 		}
@@ -607,6 +612,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 
 	// DeepSeek / Kimi 原生 Responses 端点为无状态实现（见 normalizeDeepSeekResponsesRequestBody）。
 	body = normalizeDeepSeekResponsesRequestBody(account, body)
+	// OpenRouter 原生 Responses（Claude）保持协议与负载不变，只在顶层补自动
+	// cache_control 断点；门控与语义见 openai_gateway_openrouter_cache.go。
+	body, err := injectOpenRouterClaudeAutoCacheControl(targetURL, body)
+	if err != nil {
+		return nil, err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -1858,6 +1869,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
 	}
+	// OpenRouter native Claude Responses folds reasoning into output_tokens and
+	// counts cache writes inside total_tokens; keep the canonical output there.
+	outputIncludesReasoning := s.openRouterNativeResponsesOutputIncludesReasoning(c, account, originalModel, mappedModel)
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	// SSE headers
@@ -2073,7 +2087,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析
 				// 再打 cyber 标记，否则 mark 记到的是解析前的 0，导致流式 cyber 按 0 token 计费
 				// 而漏记真实用量。对齐 WS V2 / Chat 流式路径（均先解析 usage 再 Mark）。
-				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage, outputIncludesReasoning)
 				if hit, code, msg := detectOpenAICyberPolicy(dataBytes); hit {
 					cyberHit = true
 					MarkOpsCyberPolicy(c, CyberPolicyMark{
@@ -2179,7 +2193,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
-			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage, outputIncludesReasoning)
 		}
 		if line == "" {
 			pendingSSEEventType = ""
@@ -2321,15 +2335,16 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 
 	usage := &OpenAIUsage{}
 	usageParsed := false
+	outputIncludesReasoning := s.openRouterNativeResponsesOutputIncludesReasoning(c, account, originalModel, mappedModel)
 	if len(body) > 0 {
-		if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(body); ok {
+		if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(body, outputIncludesReasoning); ok {
 			*usage = parsedUsage
 			usageParsed = true
 		}
 	}
 	if !usageParsed {
 		// 兜底：尝试从 SSE 文本中解析 usage
-		usage = s.parseSSEUsageFromBody(string(body))
+		usage = s.parseSSEUsageFromBody(string(body), outputIncludesReasoning)
 	}
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
 
@@ -2369,6 +2384,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 // rewrite model fields back to the original requested model.
 func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
 	bodyText := string(body)
+	outputIncludesReasoning := s.openRouterNativeResponsesOutputIncludesReasoning(c, account, originalModel, mappedModel)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if terminalOK && (terminalType == "response.failed" || terminalType == "error") {
 		msg := extractOpenAISSEErrorMessage(terminalPayload)
@@ -2385,9 +2401,9 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 	}
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
 
-	usage := s.parseSSEUsageFromBody(bodyText)
+	usage := s.parseSSEUsageFromBody(bodyText, outputIncludesReasoning)
 	if ok {
-		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse, outputIncludesReasoning); parsed {
 			*usage = parsedUsage
 		}
 		// When the terminal event has an empty output array, reconstruct

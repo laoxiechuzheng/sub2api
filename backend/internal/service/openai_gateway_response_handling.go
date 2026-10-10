@@ -158,6 +158,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	}
 
 	usage := &OpenAIUsage{}
+	// OpenRouter native Claude Responses folds reasoning into output_tokens and
+	// counts cache writes inside total_tokens; keep the canonical output there.
+	outputIncludesReasoning := s.openRouterNativeResponsesOutputIncludesReasoning(c, account, originalModel, mappedModel)
 	imageCounter := newOpenAIImageOutputCounter()
 	responseID := ""
 	var firstOutputScanGuard atomic.Bool
@@ -547,7 +550,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析
 				// 再打 cyber 标记，否则 mark 记到的是解析前的 0，导致流式 cyber 按 0 token 计费
 				// 而漏记真实用量。对齐 WS V2 / Chat 流式路径（均先解析 usage 再 Mark）。
-				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage, outputIncludesReasoning)
 				if hit, code, msg := detectOpenAICyberPolicy(dataBytes); hit {
 					cyberHit = true
 					MarkOpsCyberPolicy(c, CyberPolicyMark{
@@ -730,7 +733,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				firstTokenMs = &ms
 				stopFirstOutputTimer()
 			}
-			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage, outputIncludesReasoning)
 			return
 		}
 
@@ -1225,7 +1228,7 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 	s.parseSSEUsageBytesWithType(data, "", usage)
 }
 
-func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType string, usage *OpenAIUsage) {
+func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType string, usage *OpenAIUsage, outputIncludesReasoning ...bool) {
 	if usage == nil || len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
 		return
 	}
@@ -1235,7 +1238,7 @@ func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType
 	if !bytes.Contains(data, []byte(`"usage"`)) {
 		return
 	}
-	parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data)
+	parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data, outputIncludesReasoning...)
 	if !ok {
 		return
 	}
@@ -1347,7 +1350,7 @@ func logOpenAISuccessMissingUsage(ctx context.Context, c *gin.Context, account *
 	).Warn("openai_usage.success_missing_usage")
 }
 
-func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
+func extractOpenAIUsageFromJSONBytes(body []byte, outputIncludesReasoning ...bool) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false
 	}
@@ -1365,7 +1368,7 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 		{usagePath: "data.response.usage", imageUsagePath: "data.response.tool_usage.image_gen"},
 	}
 	for _, candidate := range candidates {
-		if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, candidate.usagePath)); ok {
+		if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, candidate.usagePath), outputIncludesReasoning...); ok {
 			mergeHostedImageGenToolUsage(gjson.GetBytes(body, candidate.imageUsagePath), &usage)
 			return usage, true
 		}
@@ -1519,7 +1522,7 @@ func (s *OpenAIGatewayService) bindHTTPResponseAccount(ctx context.Context, c *g
 	}
 }
 
-func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+func openAIUsageFromGJSON(value gjson.Result, outputIncludesReasoning ...bool) (OpenAIUsage, bool) {
 	if !value.Exists() || !value.IsObject() {
 		return OpenAIUsage{}, false
 	}
@@ -1531,13 +1534,15 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	if outputTokens == 0 {
 		outputTokens = value.Get("completion_tokens").Int()
 	}
-	// xAI reports visible output separately from reasoning_tokens; OpenAI
-	// folds reasoning into completion/output. Use total_tokens to tell them apart.
+	// xAI reports visible output separately from reasoning_tokens; OpenAI and
+	// OpenRouter native Responses fold reasoning into completion/output. Use
+	// total_tokens to tell them apart unless the caller marked the canonical
+	// output as reasoning-inclusive.
 	reasoningTokens := max(int(firstPositiveGJSONInt(
 		value.Get("completion_tokens_details.reasoning_tokens"),
 		value.Get("output_tokens_details.reasoning_tokens"),
 	)), 0)
-	if reasoningTokens > 0 {
+	if reasoningTokens > 0 && !(len(outputIncludesReasoning) > 0 && outputIncludesReasoning[0]) {
 		outputTokens = xai.IncludeIndependentReasoningTokens(
 			inputTokens, outputTokens, value.Get("total_tokens").Int(), int64(reasoningTokens),
 		)
@@ -1646,7 +1651,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 	}
 
-	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
+	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body, s.openRouterNativeResponsesOutputIncludesReasoning(c, account, originalModel, mappedModel))
 	if !usageOK {
 		if bodyLooksLikeSSE {
 			return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
@@ -1726,6 +1731,7 @@ func bodyHasSSEFraming(body []byte) bool {
 
 func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
 	bodyText := string(body)
+	outputIncludesReasoning := s.openRouterNativeResponsesOutputIncludesReasoning(c, account, originalModel, mappedModel)
 	// native DeepSeek Responses SSE→JSON：终态 output 可能被重建/裁剪，先在入口
 	// 扫描原始 SSE 的 done/terminal 事件收集 reasoning 明文，函数返回时一次 flush。
 	var deepSeekReasoningCache *deepSeekNativeReasoningCacheCollector
@@ -1754,9 +1760,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	}
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
 
-	usage := s.parseSSEUsageFromBody(bodyText)
+	usage := s.parseSSEUsageFromBody(bodyText, outputIncludesReasoning)
 	if ok {
-		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse, outputIncludesReasoning); parsed {
 			*usage = parsedUsage
 		}
 		// When the terminal event has an empty output array, reconstruct
@@ -2401,10 +2407,10 @@ func extractImageGenerationOutputFromSSEData(data []byte, seen map[string]struct
 	return json.RawMessage(item.Raw), true
 }
 
-func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string) *OpenAIUsage {
+func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string, outputIncludesReasoning ...bool) *OpenAIUsage {
 	usage := &OpenAIUsage{}
 	forEachOpenAISSEFrame(body, func(eventType string, data []byte) {
-		s.parseSSEUsageBytesWithType(data, eventType, usage)
+		s.parseSSEUsageBytesWithType(data, eventType, usage, outputIncludesReasoning...)
 	})
 	return usage
 }

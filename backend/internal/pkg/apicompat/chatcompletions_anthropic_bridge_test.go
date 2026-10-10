@@ -1186,3 +1186,171 @@ func TestAnthropicToChatCompletionsRequest_DefaultDropsCacheControl(t *testing.T
 	require.NoError(t, err)
 	require.Equal(t, 0, strings.Count(string(raw), "cache_control"))
 }
+
+// TestAnthropicToChatCompletionsRequest_OptionsPreserveToolResultCacheControl
+// reproduces the production input tail: two cached system blocks plus a marked
+// pure-text tool_result. All three breakpoints must survive on the wire as
+// content parts, with the extracted text, tool_call_id, and order unchanged.
+func TestAnthropicToChatCompletionsRequest_OptionsPreserveToolResultCacheControl(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:     "claude-haiku-5-5",
+		MaxTokens: 100,
+		System: json.RawMessage(`[
+			{"type":"text","text":"stable system prefix","cache_control":{"type":"ephemeral"}},
+			{"type":"text","text":"system tail","cache_control":{"type":"ephemeral"}}
+		]`),
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: json.RawMessage(`"check the weather"`)},
+			{Role: "assistant", Content: json.RawMessage(`[{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"SF"}}]`)},
+			{Role: "user", Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"toolu_1","content":"sunny, 72F","cache_control":{"type":"ephemeral"}}]`)},
+		},
+	}
+
+	out, err := AnthropicToChatCompletionsRequestWithOptions(req, AnthropicChatCompletionsOptions{
+		PreserveCacheControl:   true,
+		DefaultCacheControlTTL: "1h",
+	})
+	require.NoError(t, err)
+	require.Len(t, out.Messages, 4)
+	require.Equal(t, []string{"system", "user", "assistant", "tool"}, []string{
+		out.Messages[0].Role, out.Messages[1].Role, out.Messages[2].Role, out.Messages[3].Role,
+	})
+	require.Equal(t, "toolu_1", out.Messages[3].ToolCallID, "tool_call_id must be preserved")
+
+	raw, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.Equal(t, 3, strings.Count(string(raw), "cache_control"),
+		"two system breakpoints plus the tail tool_result breakpoint must all survive")
+
+	var toolParts []ChatContentPart
+	require.NoError(t, json.Unmarshal(out.Messages[3].Content, &toolParts),
+		"marked pure-text tool_result must become one text content part, got %s", string(out.Messages[3].Content))
+	require.Len(t, toolParts, 1)
+	require.Equal(t, "text", toolParts[0].Type)
+	require.Equal(t, "sunny, 72F", toolParts[0].Text)
+	require.NotNil(t, toolParts[0].CacheControl)
+	require.Equal(t, "ephemeral", toolParts[0].CacheControl.Type)
+	require.Equal(t, "1h", toolParts[0].CacheControl.TTL)
+}
+
+// decodeToolParts asserts tool message content is the content-part array form
+// and returns the decoded parts.
+func decodeToolParts(t *testing.T, content json.RawMessage) []ChatContentPart {
+	t.Helper()
+	var parts []ChatContentPart
+	require.NoError(t, json.Unmarshal(content, &parts), "expected content parts, got %s", string(content))
+	return parts
+}
+
+// TestAnthropicToChatCompletionsRequest_ToolResultCacheControlVariants pins
+// the surrounding semantics of the tool_result breakpoint passthrough: text
+// extraction is unchanged, an explicit ttl wins over the default, plain cases
+// keep the historical string form, and image-bearing tool_results keep theirs.
+func TestAnthropicToChatCompletionsRequest_ToolResultCacheControlVariants(t *testing.T) {
+	preserveOpts := AnthropicChatCompletionsOptions{PreserveCacheControl: true, DefaultCacheControlTTL: "1h"}
+
+	build := func(toolResult string) *AnthropicRequest {
+		return &AnthropicRequest{
+			Model:     "claude-haiku-5-5",
+			MaxTokens: 100,
+			Messages: []AnthropicMessage{
+				{Role: "user", Content: json.RawMessage(`"go"`)},
+				{Role: "assistant", Content: json.RawMessage(`[{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"SF"}}]`)},
+				{Role: "user", Content: json.RawMessage(toolResult)},
+			},
+		}
+	}
+
+	toolMessage := func(t *testing.T, req *AnthropicRequest, opts AnthropicChatCompletionsOptions) ChatMessage {
+		t.Helper()
+		out, err := AnthropicToChatCompletionsRequestWithOptions(req, opts)
+		require.NoError(t, err)
+		require.Len(t, out.Messages, 3)
+		require.Equal(t, "user", out.Messages[0].Role)
+		require.Equal(t, "assistant", out.Messages[1].Role)
+		require.Equal(t, "tool", out.Messages[2].Role)
+		return out.Messages[2]
+	}
+
+	t.Run("multi text blocks keep the newline semantics", func(t *testing.T) {
+		msg := toolMessage(t, build(`[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"line one"},{"type":"text","text":"line two"}],"cache_control":{"type":"ephemeral"}}]`), preserveOpts)
+		parts := decodeToolParts(t, msg.Content)
+		require.Len(t, parts, 1)
+		require.Equal(t, "line one\n\nline two", parts[0].Text)
+		require.NotNil(t, parts[0].CacheControl)
+		require.Equal(t, "1h", parts[0].CacheControl.TTL)
+	})
+
+	t.Run("string result keeps its text and takes the default ttl", func(t *testing.T) {
+		msg := toolMessage(t, build(`[{"type":"tool_result","tool_use_id":"toolu_1","content":"sunny, 72F","cache_control":{"type":"ephemeral"}}]`), preserveOpts)
+		parts := decodeToolParts(t, msg.Content)
+		require.Len(t, parts, 1)
+		require.Equal(t, "sunny, 72F", parts[0].Text)
+		require.Equal(t, "1h", parts[0].CacheControl.TTL)
+	})
+
+	t.Run("explicit ttl wins over the default", func(t *testing.T) {
+		msg := toolMessage(t, build(`[{"type":"tool_result","tool_use_id":"toolu_1","content":"sunny","cache_control":{"type":"ephemeral","ttl":"5m"}}]`), preserveOpts)
+		parts := decodeToolParts(t, msg.Content)
+		require.Len(t, parts, 1)
+		require.Equal(t, "5m", parts[0].CacheControl.TTL)
+	})
+
+	t.Run("empty result keeps the placeholder", func(t *testing.T) {
+		msg := toolMessage(t, build(`[{"type":"tool_result","tool_use_id":"toolu_1","content":"","cache_control":{"type":"ephemeral"}}]`), preserveOpts)
+		parts := decodeToolParts(t, msg.Content)
+		require.Len(t, parts, 1)
+		require.Equal(t, "(empty)", parts[0].Text)
+		require.Equal(t, "1h", parts[0].CacheControl.TTL)
+	})
+
+	t.Run("preserve disabled keeps the string form", func(t *testing.T) {
+		msg := toolMessage(t, build(`[{"type":"tool_result","tool_use_id":"toolu_1","content":"sunny","cache_control":{"type":"ephemeral"}}]`), AnthropicChatCompletionsOptions{})
+		require.Equal(t, `"sunny"`, string(msg.Content))
+	})
+
+	t.Run("unmarked result keeps the string form", func(t *testing.T) {
+		msg := toolMessage(t, build(`[{"type":"tool_result","tool_use_id":"toolu_1","content":"sunny"}]`), preserveOpts)
+		require.Equal(t, `"sunny"`, string(msg.Content))
+	})
+
+	t.Run("image bearing tool_result keeps the original shape", func(t *testing.T) {
+		req := build(`[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"result"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}],"cache_control":{"type":"ephemeral"}}]`)
+		out, err := AnthropicToChatCompletionsRequestWithOptions(req, preserveOpts)
+		require.NoError(t, err)
+		require.Len(t, out.Messages, 4)
+		require.Equal(t, "tool", out.Messages[2].Role)
+		require.Equal(t, `"result"`, string(out.Messages[2].Content), "image tool_results keep the string tool content")
+		require.Equal(t, "toolu_1", out.Messages[2].ToolCallID)
+		require.Equal(t, "user", out.Messages[3].Role)
+		var userParts []ChatContentPart
+		require.NoError(t, json.Unmarshal(out.Messages[3].Content, &userParts))
+		require.Len(t, userParts, 1)
+		require.Equal(t, "image_url", userParts[0].Type)
+		require.NotNil(t, userParts[0].ImageURL)
+		require.True(t, strings.HasPrefix(userParts[0].ImageURL.URL, "data:image/png;base64,"))
+		raw, err := json.Marshal(out)
+		require.NoError(t, err)
+		require.Equal(t, 0, strings.Count(string(raw), "cache_control"), "image tool_results must not gain a marker")
+	})
+
+	t.Run("repeated conversion is stable and does not mutate inbound", func(t *testing.T) {
+		rawToolResult := `[{"type":"tool_result","tool_use_id":"toolu_1","content":"sunny","cache_control":{"type":"ephemeral"}}]`
+		req := build(rawToolResult)
+		first, err := AnthropicToChatCompletionsRequestWithOptions(req, preserveOpts)
+		require.NoError(t, err)
+		firstJSON, err := json.Marshal(first)
+		require.NoError(t, err)
+
+		require.Equal(t, rawToolResult, string(req.Messages[2].Content), "inbound tool_result bytes must stay untouched")
+
+		second, err := AnthropicToChatCompletionsRequestWithOptions(req, preserveOpts)
+		require.NoError(t, err)
+		secondJSON, err := json.Marshal(second)
+		require.NoError(t, err)
+		require.Equal(t, string(firstJSON), string(secondJSON))
+		require.Len(t, second.Messages, 3)
+		require.Equal(t, "toolu_1", second.Messages[2].ToolCallID)
+		require.Equal(t, string(first.Messages[2].Content), string(second.Messages[2].Content))
+	})
+}

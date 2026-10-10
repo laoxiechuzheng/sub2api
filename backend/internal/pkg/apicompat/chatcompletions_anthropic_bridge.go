@@ -291,7 +291,18 @@ func anthropicUserToChatMessages(raw json.RawMessage, opts AnthropicChatCompleti
 			continue
 		}
 		text, imageParts := convertToolResultOutput(b)
-		content, _ := json.Marshal(text)
+		// A marked pure-text tool_result keeps its breakpoint as a single text
+		// content part (same gate as the system/user paths); image-bearing and
+		// unmarked results keep the historical string content.
+		var content json.RawMessage
+		if len(imageParts) == 0 {
+			if cc := preservedCacheControl(b.CacheControl, opts); cc != nil {
+				content, _ = json.Marshal([]ChatContentPart{{Type: "text", Text: text, CacheControl: cc}})
+			}
+		}
+		if content == nil {
+			content, _ = json.Marshal(text)
+		}
 		out = append(out, ChatMessage{
 			Role:       "tool",
 			Content:    content,
