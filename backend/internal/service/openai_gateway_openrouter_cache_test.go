@@ -61,7 +61,7 @@ func TestBuildUpstreamRequestOpenRouterClaudeResponsesInjectsAutoCacheControl(t 
 
 	upstreamBody := readOpenRouterCacheUpstreamBody(t, req)
 	require.Equal(t, "ephemeral", gjson.GetBytes(upstreamBody, "cache_control.type").String())
-	require.Equal(t, "1h", gjson.GetBytes(upstreamBody, "cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(upstreamBody, "cache_control.ttl").String())
 }
 
 func TestBuildUpstreamRequestOpenAIPassthroughOpenRouterClaudeResponsesInjectsAutoCacheControl(t *testing.T) {
@@ -77,7 +77,7 @@ func TestBuildUpstreamRequestOpenAIPassthroughOpenRouterClaudeResponsesInjectsAu
 
 	upstreamBody := readOpenRouterCacheUpstreamBody(t, req)
 	require.Equal(t, "ephemeral", gjson.GetBytes(upstreamBody, "cache_control.type").String())
-	require.Equal(t, "1h", gjson.GetBytes(upstreamBody, "cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(upstreamBody, "cache_control.ttl").String())
 }
 
 const openRouterCacheTestResponsesURL = "https://openrouter.ai/api/v1/responses"
@@ -109,7 +109,7 @@ func TestOpenRouterAutoCacheControlGateScopesHostPathAndModel(t *testing.T) {
 			require.NoError(t, err)
 			if tt.injected {
 				require.Equal(t, "ephemeral", gjson.GetBytes(out, "cache_control.type").String(), string(out))
-				require.Equal(t, "1h", gjson.GetBytes(out, "cache_control.ttl").String(), string(out))
+				require.Equal(t, "5m", gjson.GetBytes(out, "cache_control.ttl").String(), string(out))
 				return
 			}
 			require.Equal(t, tt.body, out, "gated request must keep body bytes unchanged")
@@ -121,26 +121,28 @@ func TestOpenRouterAutoCacheControlTTLDefaultAndPreservation(t *testing.T) {
 	target := openRouterCacheTestResponsesURL
 	const prefix = `{"model":"anthropic/claude-sonnet-4.5","input":[]`
 
-	t.Run("missing directive injects ephemeral 1h", func(t *testing.T) {
+	t.Run("missing directive injects ephemeral 5m", func(t *testing.T) {
 		body := []byte(prefix + `}`)
 		out, err := injectOpenRouterClaudeAutoCacheControl(target, body)
 		require.NoError(t, err)
-		require.Equal(t, `{"type":"ephemeral","ttl":"1h"}`, gjson.GetBytes(out, "cache_control").Raw)
+		require.Equal(t, `{"type":"ephemeral","ttl":"5m"}`, gjson.GetBytes(out, "cache_control").Raw)
 	})
 
-	t.Run("exact ephemeral without ttl fills 1h only", func(t *testing.T) {
+	t.Run("exact ephemeral without ttl fills 5m only", func(t *testing.T) {
 		body := []byte(prefix + `,"cache_control":{"type":"ephemeral"}}`)
 		out, err := injectOpenRouterClaudeAutoCacheControl(target, body)
 		require.NoError(t, err)
 		require.Equal(t, "ephemeral", gjson.GetBytes(out, "cache_control.type").String())
-		require.Equal(t, "1h", gjson.GetBytes(out, "cache_control.ttl").String())
+		require.Equal(t, "5m", gjson.GetBytes(out, "cache_control.ttl").String())
 	})
 
 	preserved := []struct {
 		name       string
 		cacheField string
+		wantTTL    string
 	}{
-		{name: "explicit ttl wins", cacheField: `,"cache_control":{"type":"ephemeral","ttl":"5m"}`},
+		{name: "explicit 5m ttl wins", cacheField: `,"cache_control":{"type":"ephemeral","ttl":"5m"}`, wantTTL: "5m"},
+		{name: "explicit 1h ttl wins", cacheField: `,"cache_control":{"type":"ephemeral","ttl":"1h"}`, wantTTL: "1h"},
 		{name: "client null ttl wins", cacheField: `,"cache_control":{"type":"ephemeral","ttl":null}`},
 		{name: "client null directive wins", cacheField: `,"cache_control":null`},
 		{name: "client false directive wins", cacheField: `,"cache_control":false`},
@@ -156,6 +158,9 @@ func TestOpenRouterAutoCacheControlTTLDefaultAndPreservation(t *testing.T) {
 			out, err := injectOpenRouterClaudeAutoCacheControl(target, body)
 			require.NoError(t, err)
 			require.Equal(t, body, out, "explicit client directive must keep body bytes unchanged")
+			if tt.wantTTL != "" {
+				require.Equal(t, tt.wantTTL, gjson.GetBytes(out, "cache_control.ttl").String())
+			}
 		})
 	}
 }
@@ -183,7 +188,7 @@ func TestOpenRouterAutoCacheControlIdempotent(t *testing.T) {
 
 	seeded, err := injectOpenRouterClaudeAutoCacheControl(openRouterCacheTestResponsesURL, []byte(`{"model":"anthropic/claude-sonnet-4.5","input":[],"cache_control":{"type":"ephemeral"}}`))
 	require.NoError(t, err)
-	require.Equal(t, "1h", gjson.GetBytes(seeded, "cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(seeded, "cache_control.ttl").String())
 	again, err := injectOpenRouterClaudeAutoCacheControl(openRouterCacheTestResponsesURL, seeded)
 	require.NoError(t, err)
 	require.Equal(t, seeded, again)

@@ -491,28 +491,34 @@ func TestForwardAsAnthropic_ResponsesSupportedAccountStillUsesResponsesEndpoint(
 
 // TestForwardAsAnthropic_ForceChatCompletionsCacheControlPassthrough verifies
 // the end-to-end gate: Claude-family upstreams receive the client's Anthropic
-// cache breakpoints (ttl-less ones raised to the bridge default), while other
-// chat upstreams keep the historical drop.
+// cache breakpoints (ttl-less ones raised to the bridge default 5m, explicit
+// client ttls like 1h kept verbatim), while other chat upstreams keep the
+// historical drop.
 func TestForwardAsAnthropic_ForceChatCompletionsCacheControlPassthrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	body := []byte(`{"model":"claude-haiku-5-5","max_tokens":32,"system":[{"type":"text","text":"stable prefix","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],"stream":false}`)
+	ttlLessBody := []byte(`{"model":"claude-haiku-5-5","max_tokens":32,"system":[{"type":"text","text":"stable prefix","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],"stream":false}`)
+	explicit1hBody := []byte(`{"model":"claude-haiku-5-5","max_tokens":32,"system":[{"type":"text","text":"stable prefix","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral","ttl":"1h"}}]}],"stream":false}`)
+	explicit5mBody := []byte(`{"model":"claude-haiku-5-5","max_tokens":32,"system":[{"type":"text","text":"stable prefix","cache_control":{"type":"ephemeral","ttl":"5m"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral","ttl":"5m"}}]}],"stream":false}`)
 
 	tests := []struct {
-		name          string
-		mapped        string
-		wantMarkers   int
-		wantSystemTTL string
+		name        string
+		body        []byte
+		mapped      string
+		wantMarkers int
+		wantTTL     string
 	}{
-		{name: "claude upstream keeps breakpoints with 1h default", mapped: "anthropic/claude-haiku-5.5", wantMarkers: 2, wantSystemTTL: "1h"},
-		{name: "non-claude upstream drops breakpoints", mapped: "deepseek-v4-pro", wantMarkers: 0},
+		{name: "claude upstream ttl-less breakpoints take 5m default", body: ttlLessBody, mapped: "anthropic/claude-haiku-5.5", wantMarkers: 2, wantTTL: "5m"},
+		{name: "claude upstream preserves explicit 1h ttl", body: explicit1hBody, mapped: "anthropic/claude-haiku-5.5", wantMarkers: 2, wantTTL: "1h"},
+		{name: "claude upstream preserves explicit 5m ttl", body: explicit5mBody, mapped: "anthropic/claude-haiku-5.5", wantMarkers: 2, wantTTL: "5m"},
+		{name: "non-claude upstream drops breakpoints", body: ttlLessBody, mapped: "deepseek-v4-pro", wantMarkers: 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rec)
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(tt.body))
 			c.Request.Header.Set("Content-Type", "application/json")
 
 			upstream := &httpUpstreamRecorder{resp: &http.Response{
@@ -526,13 +532,13 @@ func TestForwardAsAnthropic_ForceChatCompletionsCacheControlPassthrough(t *testi
 			account.Credentials["model_mapping"] = map[string]any{"claude-haiku-5-5": tt.mapped}
 
 			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-			_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+			_, err := svc.ForwardAsAnthropic(context.Background(), c, account, tt.body, "", "")
 			require.NoError(t, err)
 
 			require.Equal(t, tt.wantMarkers, strings.Count(string(upstream.lastBody), "cache_control"))
 			if tt.wantMarkers > 0 {
-				require.Equal(t, tt.wantSystemTTL, gjson.GetBytes(upstream.lastBody, "messages.0.content.0.cache_control.ttl").String())
-				require.Equal(t, tt.wantSystemTTL, gjson.GetBytes(upstream.lastBody, "messages.1.content.0.cache_control.ttl").String())
+				require.Equal(t, tt.wantTTL, gjson.GetBytes(upstream.lastBody, "messages.0.content.0.cache_control.ttl").String())
+				require.Equal(t, tt.wantTTL, gjson.GetBytes(upstream.lastBody, "messages.1.content.0.cache_control.ttl").String())
 			}
 		})
 	}
@@ -591,7 +597,7 @@ func TestForwardAsAnthropic_ForceChatCompletionsToolResultCacheControlPassthroug
 			require.Equal(t, "toolu_1", gjson.GetBytes(upstream.lastBody, "messages.3.tool_call_id").String())
 			if tt.wantMarkers > 0 {
 				require.Equal(t, "sunny, 72F", gjson.GetBytes(upstream.lastBody, "messages.3.content.0.text").String())
-				require.Equal(t, "1h", gjson.GetBytes(upstream.lastBody, "messages.3.content.0.cache_control.ttl").String(),
+				require.Equal(t, "5m", gjson.GetBytes(upstream.lastBody, "messages.3.content.0.cache_control.ttl").String(),
 					"ttl-less tool_result breakpoint must take the gateway default")
 			} else {
 				require.Equal(t, gjson.String, gjson.GetBytes(upstream.lastBody, "messages.3.content").Type,
@@ -600,4 +606,45 @@ func TestForwardAsAnthropic_ForceChatCompletionsToolResultCacheControlPassthroug
 			}
 		})
 	}
+}
+
+// TestForwardAsAnthropic_ForceChatCompletionsToolResultExplicitTTLPreserved
+// guards the other half of the tool_result contract: a client-sent explicit
+// 1h ttl must survive the chat bridge verbatim and must not be rewritten to
+// the 5m gateway default.
+func TestForwardAsAnthropic_ForceChatCompletionsToolResultExplicitTTLPreserved(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"claude-haiku-5-5","max_tokens":32,"stream":false,` +
+		`"system":[{"type":"text","text":"stable prefix","cache_control":{"type":"ephemeral","ttl":"1h"}}],` +
+		`"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"1h"}}]},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"SF"}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"sunny, 72F","cache_control":{"type":"ephemeral","ttl":"1h"}}]}` +
+		`]}`)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl_tool_cache_1h","object":"chat.completion","model":"anthropic/claude-haiku-5.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		)),
+	}}
+	account := forceChatMessagesFallbackAccount()
+	account.Credentials["model_mapping"] = map[string]any{"claude-haiku-5-5": "anthropic/claude-haiku-5.5"}
+
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+
+	require.Equal(t, 3, strings.Count(string(upstream.lastBody), "cache_control"))
+	require.Equal(t, "1h", gjson.GetBytes(upstream.lastBody, "messages.3.content.0.cache_control.ttl").String(),
+		"explicit client ttl on the tool_result breakpoint must stay authoritative")
+	require.Equal(t, "sunny, 72F", gjson.GetBytes(upstream.lastBody, "messages.3.content.0.text").String())
+	require.Equal(t, "toolu_1", gjson.GetBytes(upstream.lastBody, "messages.3.tool_call_id").String())
 }

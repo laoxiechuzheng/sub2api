@@ -16,12 +16,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// chatCompletionsAnthropicCacheTTL replaces the Anthropic default ttl (5m) on
-// cache breakpoints bridged to Chat Completions when the client did not set
-// one. Claude Code emits ttl-less breakpoints; 5 minutes forces a cache rebuild
-// almost every turn in an agent session, so the bridge raises them to 1h. An
-// explicit client ttl still wins.
-const chatCompletionsAnthropicCacheTTL = "1h"
+// chatCompletionsAnthropicCacheTTL fills the ttl on cache breakpoints bridged
+// to Chat Completions when the client did not set one. Claude Code emits
+// ttl-less breakpoints, and the bridge keeps Anthropic's standard 5 minute
+// ephemeral ttl instead of extending it. An explicit client ttl still wins.
+const chatCompletionsAnthropicCacheTTL = "5m"
 
 // forwardAnthropicViaRawChatCompletions serves /v1/messages clients through
 // an OpenAI-compatible upstream that only supports /v1/chat/completions.

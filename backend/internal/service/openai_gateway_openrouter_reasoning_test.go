@@ -98,7 +98,7 @@ func requireOpenRouterClaudeReasoningReplayOnWire(t *testing.T, out []byte) {
 	require.Len(t, gjson.GetBytes(out, "tools").Array(), 1, string(out))
 	require.Equal(t, "lookup", gjson.GetBytes(out, "tools.0.name").String(), string(out))
 	require.Equal(t, "ephemeral", gjson.GetBytes(out, "cache_control.type").String(), string(out))
-	require.Equal(t, "1h", gjson.GetBytes(out, "cache_control.ttl").String(), string(out))
+	require.Equal(t, "5m", gjson.GetBytes(out, "cache_control.ttl").String(), string(out))
 }
 
 func requireOpenRouterReasoningItemCleaned(t *testing.T, out []byte) {

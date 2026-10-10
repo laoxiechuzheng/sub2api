@@ -14,7 +14,7 @@ import (
 // time when the client sent none, without converting protocol or touching
 // reasoning / output-limit / tooling semantics.
 const (
-	openRouterNativeResponsesAutoCacheTTL        = "1h"
+	openRouterNativeResponsesAutoCacheTTL        = "5m"
 	openRouterNativeResponsesAutoCacheControlRaw = `{"type":"ephemeral","ttl":"` + openRouterNativeResponsesAutoCacheTTL + `"}`
 )
 
@@ -52,8 +52,8 @@ func openRouterAutoCacheExplicitMode(body []byte) bool {
 // breakpoint for OpenRouter native Responses requests whose final mapped model
 // is Claude-family:
 //
-//   - missing cache_control: {type:ephemeral, ttl:1h}
-//   - existing exact {"type":"ephemeral"} without ttl: fill ttl=1h only
+//   - missing cache_control: {type:ephemeral, ttl:5m}
+//   - existing exact {"type":"ephemeral"} without ttl: fill ttl=5m only
 //   - explicit ttl, client null/false, or any other type: untouched
 //
 // sjson raw edits preserve every other byte of the native Responses payload
