@@ -7,7 +7,7 @@ import (
 )
 
 // Capture 支持 gateway、transport 和 usage 记录路径的并发调用。
-// 它只持有选定元数据和脱敏 string，不持有调用方字节或 context。
+// It owns captured strings without retaining caller byte slices or context.
 // 应先 EndAttempt 再 Finish，后者会冻结 HTTP 采集数据。
 // 未绑定 usage 时 Finish 也会立即调用 Options.OnFinish；
 // 确定不会产生 usage 时应调用 Discard，释放剩余的安全字符串。
@@ -16,6 +16,7 @@ type Capture struct {
 
 	maxBytes    int
 	maxAttempts int
+	preserveRaw bool
 	meta        Inbound
 	attempts    []attemptState
 	nextID      int64
@@ -60,6 +61,7 @@ func NewCapture(options Options, inbound Inbound, onReady func(*Snapshot)) *Capt
 	c := &Capture{
 		maxBytes:          maxBytes,
 		maxAttempts:       maxAttempts,
+		preserveRaw:       options.PreserveRaw,
 		meta:              meta,
 		metadataRedacted:  redacted,
 		metadataTruncated: truncated,
@@ -79,6 +81,27 @@ func (c *Capture) MaxBytes() int {
 	return c.maxBytes
 }
 
+func (c *Capture) PreserveRaw() bool {
+	return c != nil && c.preserveRaw
+}
+
+// RawCaptureActive lets passive readers release buffers after capture stops.
+func (c *Capture) RawCaptureActive() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.preserveRaw && !c.dropped && !c.discarded && !c.finished && !c.published
+}
+
+func (c *Capture) capturePayload(raw []byte, maxBytes int) Payload {
+	if c.preserveRaw {
+		return rawPayload(raw, maxBytes)
+	}
+	return sanitizePayload(raw, maxBytes)
+}
+
 // SetInbound 记录首次入站正文，不修改或持有原始字节。
 // 重复调用以及 Finish 之后的 HTTP 采集修改会被忽略。
 func (c *Capture) SetInbound(raw []byte) {
@@ -96,7 +119,7 @@ func (c *Capture) SetInbound(raw []byte) {
 	} else if len(raw) > c.maxBytes {
 		c.meta.Body = omittedPayload(len(raw), OmittedTooLarge)
 	} else {
-		c.meta.Body = sanitizePayload(raw, c.maxBytes)
+		c.meta.Body = c.capturePayload(raw, c.maxBytes)
 	}
 	c.enforceBudgetLocked()
 }
@@ -136,7 +159,7 @@ func (c *Capture) BeginAttempt(metadata Attempt, raw []byte) int64 {
 		if len(raw) > c.maxBytes {
 			body = omittedPayload(len(raw), OmittedTooLarge)
 		} else {
-			body = sanitizePayload(raw, c.maxBytes)
+			body = c.capturePayload(raw, c.maxBytes)
 		}
 	}
 	return c.beginAttemptLocked(metadata, body)
@@ -205,7 +228,17 @@ func (c *Capture) EndAttempt(id int64, result AttemptResult) {
 		} else if len(result.ResponseSummary) > c.maxBytes {
 			state.ResponseSummary = omittedPayload(len(result.ResponseSummary), OmittedTooLarge)
 		} else {
-			state.ResponseSummary = sanitizePayload(result.ResponseSummary, min(c.maxBytes, MaxResponseSummaryBytes))
+			state.ResponseSummary = c.capturePayload(result.ResponseSummary, min(c.maxBytes, MaxResponseSummaryBytes))
+		}
+		if c.preserveRaw && result.ResponseBody != nil {
+			var payload Payload
+			if c.dropped {
+				payload = omittedPayload(max(result.ResponseBytes, len(result.ResponseBody)), c.dropReason)
+			} else {
+				payload = rawResponsePayload(result.ResponseBody, result.ResponseBytes, min(c.maxBytes, MaxResponseBodyBytes), result.ResponseIncomplete)
+			}
+			state.ResponseBody = &payload
+			state.ResponseContentType = cleanMetadata(result.ResponseContentType, 128, &state.MetadataRedacted, &state.MetadataTruncated)
 		}
 		c.enforceBudgetLocked()
 		return
@@ -284,6 +317,9 @@ func (c *Capture) Drop(reason string) {
 	for i := range c.attempts {
 		c.attempts[i].Body = droppedPayload(c.attempts[i].Body, c.dropReason)
 		c.attempts[i].ResponseSummary = droppedPayload(c.attempts[i].ResponseSummary, c.dropReason)
+		if payload := c.attempts[i].ResponseBody; payload != nil {
+			*payload = droppedPayload(*payload, c.dropReason)
+		}
 	}
 	c.enforceBudgetLocked()
 }
@@ -354,6 +390,10 @@ func (c *Capture) captureStatusLocked() string {
 		a := &c.attempts[i]
 		present = present || a.Body.StoredBytes > 0 || a.ResponseSummary.StoredBytes > 0
 		partial = partial || a.MetadataTruncated || incompletePayload(a.Body)
+		if a.ResponseBody != nil {
+			present = present || a.ResponseBody.StoredBytes > 0
+			partial = partial || incompletePayload(*a.ResponseBody)
+		}
 		if a.ResponseSummary.OmittedReason != OmittedEmptyBody && a.ResponseSummary.OmittedReason != OmittedNotCaptured {
 			partial = partial || incompletePayload(a.ResponseSummary)
 		}
@@ -380,8 +420,20 @@ func (c *Capture) enforceBudgetLocked() {
 	c.storedBytes = len(c.binding.CanonicalID) + metadataUsed
 
 	latest := (*Payload)(nil)
+	latestResponse := (*Payload)(nil)
 	if len(c.attempts) > 0 {
 		latest = &c.attempts[len(c.attempts)-1].Body
+		latestResponse = c.attempts[len(c.attempts)-1].ResponseBody
+	}
+	if latestResponse != nil {
+		// Keep useful output even when the two large request bodies fill the entry.
+		allowance := payloadBytes(latestResponse)
+		if allowance+c.meta.Body.StoredBytes+payloadBytes(latest) > remaining {
+			allowance = min(allowance, max(0, remaining/3))
+		}
+		limitPayload(latestResponse, allowance, OmittedBudget)
+		remaining -= latestResponse.StoredBytes
+		c.storedBytes += latestResponse.StoredBytes
 	}
 	inboundAllowance, latestAllowance := priorityAllowances(c.meta.Body.StoredBytes, payloadBytes(latest), remaining)
 	limitPayload(&c.meta.Body, inboundAllowance, OmittedBudget)
@@ -400,6 +452,13 @@ func (c *Capture) enforceBudgetLocked() {
 		}
 		remaining -= body.StoredBytes
 		c.storedBytes += body.StoredBytes
+		if response := c.attempts[i].ResponseBody; response != nil {
+			if response.StoredBytes > remaining {
+				*response = droppedPayload(*response, OmittedEvicted)
+			}
+			remaining -= response.StoredBytes
+			c.storedBytes += response.StoredBytes
+		}
 	}
 	for i := len(c.attempts) - 1; i >= 0; i-- {
 		summary := &c.attempts[i].ResponseSummary
@@ -423,7 +482,7 @@ func (c *Capture) limitMetadataLocked(maxBytes int) int {
 	}
 	for i := len(c.attempts) - 1; i >= 0; i-- {
 		a := &c.attempts[i]
-		for _, field := range []*string{&a.Platform, &a.Endpoint, &a.Method, &a.Model, &a.UpstreamRequestID, &a.Error} {
+		for _, field := range []*string{&a.Platform, &a.Endpoint, &a.Method, &a.Model, &a.UpstreamRequestID, &a.Error, &a.ResponseContentType} {
 			limit(field, &a.MetadataTruncated)
 		}
 	}

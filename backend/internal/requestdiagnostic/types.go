@@ -1,4 +1,4 @@
-// Package requestdiagnostic 提供有界、脱敏的 HTTP JSON 请求诊断采集。
+// Package requestdiagnostic provides bounded HTTP request and response capture.
 // 本包不读取 HTTP body，不持有 context，不处理读取权限、队列、存储和 TTL；
 // 这些职责由调用方的 middleware、transport 和 service 实现。
 package requestdiagnostic
@@ -10,6 +10,7 @@ const (
 	DefaultMaxBytes         = 8 << 20
 	DefaultMaxAttempts      = 16
 	MaxResponseSummaryBytes = 64 << 10
+	MaxResponseBodyBytes    = 1 << 20
 )
 
 const (
@@ -41,11 +42,13 @@ const (
 type Options struct {
 	MaxBytes    int
 	MaxAttempts int
+	PreserveRaw bool
 	OnFinish    func()
 }
 
 // Payload.Content 是标准 JSON string 字段，不是 json.RawMessage。
-// 字符串内容是脱敏后的 JSON 文本；Truncated 时是 UTF-8 安全前缀，
+// Content preserves the original text when PreserveRaw is enabled.
+// Truncated content is a UTF-8-safe prefix and can be incomplete.
 // 前缀自身可能不是有效 JSON，但外层 Snapshot 始终可正常序列化。
 // StoredBytes 等于 len(Content)，不包含 JSON wire 转义的额外开销。
 // 即使保留了其他内容，也会明确标记二进制内容或嵌套限制导致的局部省略。
@@ -77,33 +80,39 @@ type Inbound struct {
 // Platform、Endpoint、Method、Model 和 StartedAt，其余字段由 Capture 生成。
 // ID 是单次采集内递增的 attempt 序号，不是 usage ID。
 type Attempt struct {
-	ID                int64     `json:"id"`
-	AccountID         int64     `json:"account_id"`
-	Platform          string    `json:"platform"`
-	Endpoint          string    `json:"endpoint"`
-	Method            string    `json:"method"`
-	Model             string    `json:"model,omitempty"`
-	StartedAt         time.Time `json:"started_at"`
-	FinishedAt        time.Time `json:"finished_at,omitempty"`
-	DurationMs        int64     `json:"duration_ms"`
-	Status            int       `json:"status"`
-	Error             string    `json:"error,omitempty"`
-	UpstreamRequestID string    `json:"upstream_request_id,omitempty"`
-	Body              Payload   `json:"body"`
-	ResponseSummary   Payload   `json:"response_summary"`
-	MetadataRedacted  bool      `json:"metadata_redacted"`
-	MetadataTruncated bool      `json:"metadata_truncated"`
+	ID                  int64     `json:"id"`
+	AccountID           int64     `json:"account_id"`
+	Platform            string    `json:"platform"`
+	Endpoint            string    `json:"endpoint"`
+	Method              string    `json:"method"`
+	Model               string    `json:"model,omitempty"`
+	StartedAt           time.Time `json:"started_at"`
+	FinishedAt          time.Time `json:"finished_at,omitempty"`
+	DurationMs          int64     `json:"duration_ms"`
+	Status              int       `json:"status"`
+	Error               string    `json:"error,omitempty"`
+	UpstreamRequestID   string    `json:"upstream_request_id,omitempty"`
+	Body                Payload   `json:"body"`
+	ResponseSummary     Payload   `json:"response_summary"`
+	ResponseBody        *Payload  `json:"response_body,omitempty"`
+	ResponseContentType string    `json:"response_content_type,omitempty"`
+	MetadataRedacted    bool      `json:"metadata_redacted"`
+	MetadataTruncated   bool      `json:"metadata_truncated"`
 }
 
 // AttemptResult 描述实际的上游 HTTP 结果。
-// ResponseSummary 必须是完整 JSON，无效或非 JSON 正文直接省略；
-// 仅保存最多 64KiB 的脱敏前缀，不应逐 stream frame 调用。
+// ResponseSummary contains bounded JSON metadata. ResponseBody contains the
+// observed response bytes when PreserveRaw is enabled; it may be a prefix.
 // EndAttempt 采用首次结果并以内置单调时钟计算 DurationMs。
 type AttemptResult struct {
-	Status            int
-	Error             string
-	UpstreamRequestID string
-	ResponseSummary   []byte
+	Status              int
+	Error               string
+	UpstreamRequestID   string
+	ResponseSummary     []byte
+	ResponseBody        []byte
+	ResponseBytes       int
+	ResponseContentType string
+	ResponseIncomplete  bool
 }
 
 // UsageBinding 必须来自权威 usage 创建或计费路径。
@@ -115,7 +124,7 @@ type UsageBinding struct {
 }
 
 // Snapshot 是仅交给 onReady 一次的独立值，发布后 Capture 不再修改它。
-// 调用方应把导出字段当只读；正文只有脱敏 string，没有原始字节切片。
+// Callers must treat exported fields as read-only; payloads own their strings.
 // StoredBytes 包含已保存正文和元数据字符串的字节数，以及精确 canonical 绑定；
 // 固定 JSON 字段名、wire 转义、数字和时间字段不计入该预算。
 // CapturedAt 是 Finish 时间，TTL/过期时间由 service 管理。

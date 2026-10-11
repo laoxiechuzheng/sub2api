@@ -25,6 +25,8 @@ export interface UsageDiagnosticAttempt {
   error?: string
   upstream_request_id?: string
   body: UsageDiagnosticPayload
+  response_body?: UsageDiagnosticPayload | null
+  response_content_type?: string
   response_summary?: UsageDiagnosticPayload | null
 }
 

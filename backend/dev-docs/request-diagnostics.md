@@ -9,6 +9,7 @@
 | 环境变量 | 默认值 | 含义 |
 | --- | ---: | --- |
 | `REQUEST_DIAGNOSTICS_ENABLED` | `false` | 是否采集新请求 |
+| `REQUEST_DIAGNOSTICS_PRESERVE_RAW` | `false` | 按原文保存请求正文和上游响应，不脱敏、不重新编码正文 |
 | `REQUEST_DIAGNOSTICS_RETENTION_HOURS` | `24` | 正文保留小时，启用时允许 1–168 |
 | `REQUEST_DIAGNOSTICS_MAX_ENTRY_BYTES` | `8388608` | 单条已保存字符串预算，最多 8 MiB |
 | `REQUEST_DIAGNOSTICS_MAX_ACTIVE` | `4` | 同时采集数，最多 32 |
@@ -23,7 +24,7 @@
 - transport 通过 `GetBody` 读取有限副本，不消费真正发送的 Body；Grok 兼容重试与 HTTP 重定向分别记录实际 attempt。平台来自已解析分组或强制平台，不按模型名称推断。
 - 只保存可安全处理的 JSON。multipart、二进制/图片/base64、无法重读的上游 Body、无效 JSON/UTF-8 和超大正文明确标为省略；超大正文不会保存原始截断片段。
 - 入站和最新 attempt 优先。最多保留最近 16 个 attempts；预算不足时旧正文被淘汰或安全截断，并有明确标记。截断字符串可能不是有效 JSON，但外层响应仍是合法 JSON。
-- SSE 响应只保存有限 usage/stop/error/terminal/EOF 摘要，不保存完整输出流。完整、小于 64 KiB 的 JSON 响应可保留脱敏正文；过大、未读完或编码响应只留摘要元数据。摘要不能证明客户端收到或保存了输出。
+- 默认模式下，SSE 响应只保存有限 usage/stop/error/terminal/EOF 摘要；完整、小于 64 KiB 的 JSON 响应可保留脱敏正文。启用 `preserve_raw` 后，请求正文按原文保存，上游 JSON/SSE 响应额外保存最多 1 MiB 的已读取原文，前端可分别复制模型输出正文与完整响应原文。超过容量或响应中途结束会标记不完整；编码响应仍只留摘要。采集不预读上游，也不能证明客户端收到或保存了输出。
 - WebSocket 多轮推理不做连接级正文绑定；这些用量可能显示未采集。历史请求没有原文，不能事后补回。
 - 若关闭、过载、异步绑定未完成或存储失败，计费继续，不为诊断阻塞业务。没有行时统一显示 `not_captured`，不能从该状态区分所有未采集原因。
 

@@ -2304,6 +2304,7 @@ func setDefaults() {
 
 	// 管理员请求诊断默认关闭；正文只短期保留，资源超限不影响转发或计费。
 	viper.SetDefault("request_diagnostics.enabled", false)
+	viper.SetDefault("request_diagnostics.preserve_raw", false)
 	viper.SetDefault("request_diagnostics.retention_hours", 24)
 	viper.SetDefault("request_diagnostics.max_entry_bytes", 8<<20)
 	viper.SetDefault("request_diagnostics.max_active", 4)

@@ -933,6 +933,8 @@ ops:
 # 所有选项可通过 REQUEST_DIAGNOSTICS_<KEY> 环境变量覆盖。
 request_diagnostics:
   enabled: false
+  # Preserve request/response text exactly and capture up to 1 MiB of upstream output.
+  preserve_raw: false
   retention_hours: 24
   max_entry_bytes: 8388608
   max_active: 4

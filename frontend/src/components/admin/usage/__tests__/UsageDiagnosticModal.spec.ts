@@ -6,8 +6,9 @@ import type { UsageDiagnosticPayload, UsageDiagnosticResponse, UsageDiagnosticSt
 import UsageDiagnosticModal from '../UsageDiagnosticModal.vue'
 
 const { getDiagnostic, clipboard } = vi.hoisted(() => ({ getDiagnostic: vi.fn(), clipboard: vi.fn() }))
+const testLocale = ref('en')
 vi.mock('@/api/admin/usageDiagnostic', () => ({ getUsageDiagnostic: getDiagnostic }))
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ locale: ref('en') }) }))
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ locale: testLocale }) }))
 vi.mock('@/utils/format', () => ({
   formatDateTime: (value: string) => value,
   formatReasoningEffort: (value?: string | null) => value || '-'
@@ -22,6 +23,7 @@ const global = { stubs: { BaseDialog: BaseDialogStub, Icon: true } }
 
 enableAutoUnmount(afterEach)
 beforeEach(() => {
+  testLocale.value = 'en'
   getDiagnostic.mockReset()
   clipboard.mockReset().mockResolvedValue(undefined)
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: clipboard } })
@@ -106,10 +108,17 @@ function response(id = 1, content = `saved-body-${id}`): UsageDiagnosticResponse
     }
   }
 }
-function deferred() {
-  let resolve!: (value: UsageDiagnosticResponse) => void
+function responseWithBody(content: string, id = 1, overrides: Partial<UsageDiagnosticPayload> = {}, contentType = 'application/json'): UsageDiagnosticResponse {
+  const result = response(id)
+  const attempt = result.diagnostic.payload!.attempts[0]
+  attempt.response_body = payload(content, overrides)
+  attempt.response_content_type = contentType
+  return result
+}
+function deferred<T = UsageDiagnosticResponse>() {
+  let resolve!: (value: T) => void
   let reject!: (error: Error) => void
-  const promise = new Promise<UsageDiagnosticResponse>((res, rej) => { resolve = res; reject = rej })
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
   return { promise, resolve, reject }
 }
 async function open() {
@@ -171,7 +180,7 @@ describe('admin usage diagnostic modal', () => {
     expect(wrapper.findAll('pre')).toHaveLength(0)
   })
 
-  it('pretty-prints a synthetic JSON payload for display and copy without rendering HTML', async () => {
+  it('pretty-prints JSON only for display and copies the exact saved content', async () => {
     const content = JSON.stringify({ message: '<strong>plain</strong>', nested: { ok: true } })
     const formatted = JSON.stringify(JSON.parse(content), null, 2)
     getDiagnostic.mockResolvedValueOnce(response(1, content))
@@ -183,7 +192,7 @@ describe('admin usage diagnostic modal', () => {
 
     await wrapper.get('[data-testid="diagnostic-copy-inbound-body"]').trigger('click')
     await flushPromises()
-    expect(clipboard).toHaveBeenCalledWith(formatted)
+    expect(clipboard).toHaveBeenCalledWith(content)
   })
 
   it('preserves exact numeric tokens, duplicate keys, and empty containers', async () => {
@@ -205,7 +214,7 @@ describe('admin usage diagnostic modal', () => {
     expect(wrapper.get('pre code').text()).toBe(formatted)
     await wrapper.get('[data-testid="diagnostic-copy-inbound-body"]').trigger('click')
     await flushPromises()
-    expect(clipboard).toHaveBeenCalledWith(formatted)
+    expect(clipboard).toHaveBeenCalledWith(content)
   })
 
   it('leaves truncated JSON with doubled escape characters unchanged', async () => {
@@ -235,7 +244,7 @@ describe('admin usage diagnostic modal', () => {
     expect(wrapper.get('pre code').text()).toBe(formatted)
     await wrapper.get('[data-testid="diagnostic-copy-inbound-body"]').trigger('click')
     await flushPromises()
-    expect(clipboard).toHaveBeenCalledWith(formatted)
+    expect(clipboard).toHaveBeenCalledWith(content)
   })
 
   it('leaves JSON nested deeper than 64 levels unchanged', async () => {
@@ -264,7 +273,7 @@ describe('admin usage diagnostic modal', () => {
     expect(wrapper.text().toLowerCase()).not.toContain('replay')
   })
 
-  it('shows redaction, truncation, omissions, byte counts and incomplete attempts', async () => {
+  it('keeps truncation, omissions, byte counts and incomplete attempts without redaction notices', async () => {
     const result = response()
     result.diagnostic.payload!.inbound.body = payload('', {
       original_bytes: 2048,
@@ -280,14 +289,177 @@ describe('admin usage diagnostic modal', () => {
 
     expect(block.text()).toContain('2,048 B')
     expect(block.text()).toContain('0 B')
-    expect(block.text()).toContain('Partially redacted')
+    expect(block.text()).not.toContain('Partially redacted')
     expect(block.text()).toContain('Truncated')
     expect(block.text()).toContain('body_limit')
     expect(wrapper.get('[data-testid="diagnostic-dropped-attempts"]').text()).toContain('2')
     expect(block.get('button[data-testid="diagnostic-copy-inbound-body"]').attributes()).toHaveProperty('disabled')
     await block.get('button[data-testid="diagnostic-toggle-inbound-body"]').trigger('click')
     expect(block.text()).toContain('No saved content.')
-    expect(wrapper.text()).toContain('Redaction is not full anonymization')
+    expect(wrapper.text()).not.toContain('Redaction is not full anonymization')
+    expect(wrapper.text()).not.toContain('sensitive prompts')
+  })
+
+  it.each([
+    ['Responses JSON', '{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"model answer"}]}]}', 'application/json'],
+    ['Responses SSE', 'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"stale delta"}\n\ndata: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"stale done"}\n\ndata: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"model answer"}]}]}}\n\n', 'text/event-stream'],
+    ['Anthropic JSON', '{"type":"message","role":"assistant","content":[{"type":"thinking","thinking":"private reasoning"},{"type":"text","text":"model answer"}]}', 'application/json'],
+    ['Anthropic SSE', 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"model "}}\n\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}\n\n', 'text/event-stream'],
+    ['Chat JSON', '{"choices":[{"index":0,"message":{"role":"assistant","content":"model answer","reasoning_content":"private reasoning"}}]}', 'application/json'],
+    ['Chat SSE', 'data: {"choices":[{"index":0,"delta":{"content":"model "}}]}\n\ndata: {"choices":[{"index":0,"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n', 'text/event-stream'],
+    ['Gemini JSON', '{"candidates":[{"content":{"parts":[{"thought":true,"text":"private reasoning"},{"text":"model answer"}]}}]}', 'application/json']
+  ])('opens extracted model text from %s and keeps the raw response collapsed', async (_name, content, contentType) => {
+    getDiagnostic.mockResolvedValueOnce(responseWithBody(content, 1, {}, contentType))
+    const wrapper = await open()
+    const output = wrapper.get('[data-testid="diagnostic-payload-attempt-1-output"]')
+
+    expect(output.get('pre code').text()).toBe('model answer')
+    expect(output.get('button[data-testid="diagnostic-toggle-attempt-1-output"]').attributes('aria-expanded')).toBe('true')
+    expect(output.text()).not.toContain('private reasoning')
+    expect(wrapper.get('[data-testid="diagnostic-toggle-attempt-1-response"]').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.text()).toContain('Upstream response body')
+    expect(wrapper.text()).not.toContain('Limited upstream response summary')
+    expect(wrapper.text()).not.toContain('response-summary-1')
+    expect(clipboard).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="diagnostic-copy-attempt-1-output"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenLastCalledWith('model answer')
+    await wrapper.get('[data-testid="diagnostic-toggle-attempt-1-response"]').trigger('click')
+    await wrapper.get('[data-testid="diagnostic-copy-attempt-1-response"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenLastCalledWith(content)
+  })
+
+  it('keeps leading and trailing whitespace in model text and all payload copies', async () => {
+    const modelText = '  {"summary":"literal"}\r\n  '
+    const raw = ' ' + JSON.stringify({ choices: [{ message: { content: modelText } }] }) + '\r\n'
+    const result = responseWithBody(raw)
+    result.diagnostic.payload!.inbound.body = payload(' {"input":1} \r\n')
+    result.diagnostic.payload!.attempts[0].body = payload('\r\n {"prompt":2} ')
+    getDiagnostic.mockResolvedValueOnce(result)
+    const wrapper = await open()
+
+    expect(wrapper.get('[data-testid="diagnostic-payload-attempt-1-output"] pre code').element.textContent).toBe(modelText)
+    for (const [key, expected] of [
+      ['inbound-body', ' {"input":1} \r\n'],
+      ['attempt-1-body', '\r\n {"prompt":2} '],
+      ['attempt-1-output', modelText],
+      ['attempt-1-response', raw]
+    ]) {
+      await wrapper.get(`[data-testid="diagnostic-copy-${key}"]`).trigger('click')
+      await flushPromises()
+      expect(clipboard).toHaveBeenLastCalledWith(expected)
+    }
+  })
+
+  it('shows response truncation and omission metadata alongside extracted partial text', async () => {
+    const content = 'data: {"type":"response.output_text.delta","delta":"partial output"}\n\ndata: {"type":"response.output_text.delta","delta":"unfinished'
+    getDiagnostic.mockResolvedValueOnce(responseWithBody(content, 1, {
+      truncated: true,
+      original_bytes: 4096,
+      stored_bytes: 200,
+      omitted_reason: 'response_read_error'
+    }, 'text/event-stream'))
+    const wrapper = await open()
+
+    expect(wrapper.get('[data-testid="diagnostic-payload-attempt-1-output"] pre code').text()).toBe('partial output')
+    const raw = wrapper.get('[data-testid="diagnostic-payload-attempt-1-response"]')
+    expect(raw.text()).toContain('Truncated')
+    expect(raw.text()).toContain('response_read_error')
+    expect(raw.text()).toContain('4,096 B')
+    expect(raw.text()).toContain('200 B')
+    await raw.get('button[data-testid="diagnostic-copy-attempt-1-response"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledWith(content)
+  })
+
+  it('keeps model text, compression markers and untrusted HTML literal', async () => {
+    const modelText = '{"summary":"<img src=x onerror=alert(1)>","marker":"[REDACTED]","path":"C:\\temp"}'
+    const content = '  ' + JSON.stringify({ output: [
+      { type: 'compaction', encrypted_content: 'opaque-compaction-marker' },
+      { type: 'message', content: [{ type: 'output_text', text: modelText }] }
+    ] }) + '\r\n'
+    getDiagnostic.mockResolvedValueOnce(responseWithBody(content))
+    const wrapper = await open()
+    const output = wrapper.get('[data-testid="diagnostic-payload-attempt-1-output"]')
+
+    expect(output.get('pre code').text()).toBe(modelText)
+    expect(wrapper.find('img').exists()).toBe(false)
+    await wrapper.get('[data-testid="diagnostic-toggle-attempt-1-response"]').trigger('click')
+    expect(wrapper.get('[data-testid="diagnostic-payload-attempt-1-response"]').text()).toContain('opaque-compaction-marker')
+    await wrapper.get('[data-testid="diagnostic-copy-attempt-1-response"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledWith(content)
+  })
+
+  it.each([
+    'not a JSON response',
+    '{"output":[{"type":"compaction","encrypted_content":"opaque"},{"type":"reasoning","summary":[{"type":"summary_text","text":"reasoning only"}]}],"usage":{"output_tokens":10}}'
+  ])('keeps an unextractable response available without fabricating model text', async (content) => {
+    getDiagnostic.mockResolvedValueOnce(responseWithBody(content, 1, { truncated: true, original_bytes: 8192 }))
+    const wrapper = await open()
+    const output = wrapper.get('[data-testid="diagnostic-payload-attempt-1-output"]')
+    const raw = wrapper.get('[data-testid="diagnostic-payload-attempt-1-response"]')
+
+    expect(output.find('pre').exists()).toBe(false)
+    expect(output.get('button[data-testid="diagnostic-copy-attempt-1-output"]').attributes()).toHaveProperty('disabled')
+    expect(output.text()).toContain('No model text could be extracted')
+    expect(raw.text()).toContain('8,192 B')
+    expect(raw.text()).toContain('Truncated')
+    await raw.get('button[data-testid="diagnostic-toggle-attempt-1-response"]').trigger('click')
+    expect(raw.get('pre code').text()).toContain(content.startsWith('{') ? 'opaque' : content)
+    await raw.get('button[data-testid="diagnostic-copy-attempt-1-response"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledWith(content)
+  })
+
+  it.each(['null', 'omitted'] as const)('does not substitute an old summary for an explicitly %s response body', async (state) => {
+    const result = responseWithBody('', 1, { original_bytes: 10000, omitted_reason: 'snapshot_limit' })
+    const attempt = result.diagnostic.payload!.attempts[0]
+    attempt.response_summary = payload('{"choices":[{"message":{"content":"summary must not become original"}}]}')
+    if (state === 'null') attempt.response_body = null
+    getDiagnostic.mockResolvedValueOnce(result)
+    const wrapper = await open()
+    const raw = wrapper.get('[data-testid="diagnostic-payload-attempt-1-response"]')
+
+    expect(wrapper.find('pre').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('summary must not become original')
+    expect(wrapper.text()).not.toContain('Limited upstream response summary')
+    expect(raw.get('button[data-testid="diagnostic-copy-attempt-1-response"]').attributes()).toHaveProperty('disabled')
+    if (state === 'omitted') {
+      expect(raw.text()).toContain('snapshot_limit')
+      expect(raw.text()).toContain('10,000 B')
+    }
+    await raw.get('button[data-testid="diagnostic-toggle-attempt-1-response"]').trigger('click')
+    expect(raw.find('pre').exists()).toBe(false)
+    expect(clipboard).not.toHaveBeenCalled()
+  })
+
+  it('uses a clearly limited summary only for snapshots without the response body field', async () => {
+    const result = response()
+    const summary = ' {"model":"legacy","usage":{"output_tokens":10}}\n'
+    result.diagnostic.payload!.attempts[0].response_summary = payload(summary)
+    getDiagnostic.mockResolvedValueOnce(result)
+    const wrapper = await open()
+
+    expect(wrapper.text()).toContain('Limited upstream response summary')
+    expect(wrapper.text()).toContain('not the full response body or full SSE stream')
+    expect(wrapper.get('[data-testid="diagnostic-payload-attempt-1-output"]').find('pre').exists()).toBe(false)
+    await wrapper.get('[data-testid="diagnostic-copy-attempt-1-response"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledWith(summary)
+  })
+
+  it('uses Chinese output labels without sensitive-content or redaction notices', async () => {
+    testLocale.value = 'zh-CN'
+    getDiagnostic.mockResolvedValueOnce(responseWithBody('{"choices":[{"message":{"content":"answer"}}]}', 1, { redacted: true }))
+    const wrapper = await open()
+
+    expect(wrapper.text()).toContain('模型输出')
+    expect(wrapper.text()).toContain('上游响应原文')
+    expect(wrapper.text()).not.toContain('敏感内容')
+    expect(wrapper.text()).not.toContain('脱敏')
   })
 
   it('displays all recorded attempts, including errors and a limited response summary', async () => {
@@ -310,7 +482,7 @@ describe('admin usage diagnostic modal', () => {
     expect(wrapper.findAll('[data-testid^="diagnostic-section-attempt-"]')).toHaveLength(2)
     expect(wrapper.text()).toContain('quota exhausted')
     expect(wrapper.text()).toContain('429')
-    expect(wrapper.text()).toContain('No upstream response summary was captured.')
+    expect(wrapper.text()).toContain('No upstream response body was captured.')
     await wrapper.get('[data-testid="diagnostic-toggle-attempt-1-body"]').trigger('click')
     await wrapper.get('[data-testid="diagnostic-toggle-attempt-1-response"]').trigger('click')
     expect(wrapper.text()).toContain('final-body-1')
@@ -431,5 +603,50 @@ describe('admin usage diagnostic modal', () => {
     await wrapper.get('[data-testid="diagnostic-copy-inbound-body"]').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('Copy failed.')
+  })
+
+  it('clears extracted output, expansion and copy timers while switching records', async () => {
+    vi.useFakeTimers()
+    const current = deferred()
+    getDiagnostic.mockResolvedValueOnce(responseWithBody('{"choices":[{"message":{"content":"old output"}}]}')).mockReturnValueOnce(current.promise)
+    const wrapper = await open()
+    await wrapper.get('[data-testid="diagnostic-toggle-attempt-1-response"]').trigger('click')
+    await wrapper.get('[data-testid="diagnostic-copy-attempt-1-output"]').trigger('click')
+    await flushPromises()
+    expect(vi.getTimerCount()).toBe(1)
+
+    await wrapper.setProps({ usageId: 2, usage: usage(2) })
+    expect(wrapper.text()).not.toContain('old output')
+    expect(wrapper.findAll('pre')).toHaveLength(0)
+    expect(vi.getTimerCount()).toBe(0)
+    current.resolve(responseWithBody('{"choices":[{"message":{"content":"current output"}}]}', 2))
+    await flushPromises()
+    expect(wrapper.get('[data-testid="diagnostic-payload-attempt-1-output"] pre code').text()).toBe('current output')
+    expect(wrapper.get('[data-testid="diagnostic-toggle-attempt-1-response"]').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.get('[data-testid="diagnostic-copy-attempt-1-output"]').text()).not.toContain('Copied')
+
+    await wrapper.get('[data-testid="diagnostic-close"]').trigger('click')
+    expect((wrapper.vm as unknown as { captureSections: unknown[] }).captureSections).toEqual([])
+    expect(wrapper.findAll('pre')).toHaveLength(0)
+  })
+
+  it.each(['resolve', 'reject'] as const)('ignores a late clipboard %s after switching records', async (settle) => {
+    vi.useFakeTimers()
+    const pending = deferred<void>()
+    clipboard.mockReturnValueOnce(pending.promise)
+    getDiagnostic.mockResolvedValueOnce(responseWithBody('{"choices":[{"message":{"content":"old output"}}]}'))
+      .mockResolvedValueOnce(responseWithBody('{"choices":[{"message":{"content":"current output"}}]}', 2))
+    const wrapper = await open()
+    await wrapper.get('[data-testid="diagnostic-copy-attempt-1-output"]').trigger('click')
+    await wrapper.setProps({ usageId: 2, usage: usage(2) })
+    await flushPromises()
+    if (settle === 'resolve') pending.resolve()
+    else pending.reject(new Error('obsolete clipboard failure'))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('current output')
+    expect(wrapper.text()).not.toContain('Copy failed.')
+    expect(wrapper.get('[data-testid="diagnostic-copy-attempt-1-output"]').text()).not.toContain('Copied')
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

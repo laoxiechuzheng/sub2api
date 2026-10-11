@@ -50,7 +50,7 @@ type diagnosticWrite struct {
 	reserved int64
 }
 
-// RequestDiagnosticService 的有界后台队列只接收脱敏快照；失败不影响计费。
+// RequestDiagnosticService persists bounded snapshots without blocking billing.
 type RequestDiagnosticService struct {
 	repo         RequestDiagnosticRepository
 	cfg          config.RequestDiagnosticsConfig
@@ -141,7 +141,7 @@ func (s *RequestDiagnosticService) Begin(meta requestdiagnostic.Inbound) *reques
 		mu.Unlock()
 	}
 	capture = requestdiagnostic.NewCapture(requestdiagnostic.Options{
-		MaxBytes: s.cfg.MaxEntryBytes, MaxAttempts: 16,
+		MaxBytes: s.cfg.MaxEntryBytes, MaxAttempts: 16, PreserveRaw: s.cfg.PreserveRaw,
 		OnFinish: func() {
 			mu.Lock()
 			if !completed {

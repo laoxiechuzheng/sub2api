@@ -7,10 +7,6 @@
     @close="close"
   >
     <div v-if="show" class="space-y-5">
-      <p class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-900 dark:border-amber-800 dark:bg-amber-900/10 dark:text-amber-200">
-        {{ text.sensitiveNotice }}
-      </p>
-
       <div v-if="loading" role="status" class="flex items-center justify-center gap-3 py-12 text-sm text-gray-500 dark:text-gray-400" data-testid="diagnostic-loading">
         <span class="h-6 w-6 animate-spin rounded-full border-2 border-gray-200 border-t-primary-600 motion-reduce:animate-none dark:border-dark-700 dark:border-t-primary-400" aria-hidden="true"></span>
         {{ text.loading }}
@@ -100,29 +96,29 @@
                   <button
                     type="button"
                     class="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-300 dark:hover:bg-dark-700"
-                    :disabled="!block.payload.content"
+                    :disabled="!block.payload?.content && !block.output"
                     :data-testid="`diagnostic-copy-${block.key}`"
-                    @click="copyPayload(block.key, formatPayloadContent(block.payload.content))"
+                    @click="copyPayload(block.key, block.payload?.content ?? block.output ?? '')"
                   >
                     <Icon :name="copiedPayload === block.key ? 'check' : 'copy'" size="xs" />
-                    {{ copiedPayload === block.key ? text.copied : text.copy }}
+                    {{ copiedPayload === block.key ? text.copied : block.output !== undefined ? text.copyOutput : text.copy }}
                   </button>
                 </div>
-                <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                <div v-if="block.payload" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
                   <span>{{ text.originalBytes }}: {{ bytes(block.payload.original_bytes) }}</span>
                   <span>{{ text.storedBytes }}: {{ bytes(block.payload.stored_bytes) }}</span>
-                  <span v-if="block.payload.redacted" class="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">{{ text.redacted }}</span>
                   <span v-if="block.payload.truncated" class="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">{{ text.truncated }}</span>
                 </div>
-                <p v-if="block.payload.omitted_reason" class="break-all text-xs text-amber-700 dark:text-amber-300">{{ text.omittedReason }}: {{ block.payload.omitted_reason }}</p>
-                <p class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ block.summary ? text.limitedSummary : text.bodyNote }}</p>
+                <p v-if="block.payload?.omitted_reason" class="break-all text-xs text-amber-700 dark:text-amber-300">{{ text.omittedReason }}: {{ block.payload.omitted_reason }}</p>
+                <p v-if="block.summary" class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ text.limitedSummary }}</p>
+                <p v-if="block.payload === null" class="text-xs text-gray-500 dark:text-gray-400">{{ text.noResponseBody }}</p>
+                <p v-if="block.output !== undefined && !block.output && !expandedPayloads.has(block.key)" class="text-xs text-gray-500 dark:text-gray-400">{{ text.noModelOutput }}</p>
                 <div v-if="expandedPayloads.has(block.key)" :id="`diagnostic-content-${block.key}`">
-                  <!-- 请求内容只做文本插值，不能渲染 HTML 或 Markdown。 -->
-                  <pre v-if="block.payload.content" class="max-h-[480px] overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs leading-relaxed text-gray-800 dark:border-dark-700 dark:bg-dark-900 dark:text-gray-100"><code>{{ formatPayloadContent(block.payload.content) }}</code></pre>
-                  <p v-else class="py-3 text-sm text-gray-500 dark:text-gray-400">{{ text.emptyPayload }}</p>
+                  <!-- 请求、响应和模型正文只做文本插值，不能渲染 HTML 或 Markdown。 -->
+                  <pre v-if="block.payload?.content || block.output" class="max-h-[480px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs leading-relaxed text-gray-800 dark:border-dark-700 dark:bg-dark-900 dark:text-gray-100"><code>{{ block.output !== undefined ? block.output : formatPayloadContent(block.payload?.content ?? '') }}</code></pre>
+                  <p v-else-if="block.payload !== null" class="py-3 text-sm text-gray-500 dark:text-gray-400">{{ block.output !== undefined ? text.noModelOutput : text.emptyPayload }}</p>
                 </div>
               </div>
-              <p v-if="section.noResponseSummary" class="text-xs text-gray-500 dark:text-gray-400">{{ text.noResponseSummary }}</p>
             </div>
           </article>
           <p v-if="snapshot.attempts.length === 0" class="text-sm text-gray-500 dark:text-gray-400">{{ text.noAttempts }}</p>
@@ -146,6 +142,7 @@ import type { UsageDiagnosticPayload, UsageDiagnosticResponse } from '@/api/admi
 import type { AdminUsageLog } from '@/types'
 import { formatDateTime, formatReasoningEffort } from '@/utils/format'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
+import { extractUsageDiagnosticOutput } from '@/utils/usageDiagnosticOutput'
 
 const props = withDefaults(defineProps<{
   show: boolean
@@ -162,7 +159,6 @@ const { locale } = useI18n()
 const messages = {
   en: {
     title: 'Usage request diagnostic',
-    sensitiveNotice: 'Short-lived diagnostic snapshots may still contain sensitive prompts and personal data. Redaction is not full anonymization. Open or copy content only when needed for troubleshooting; copying uses your local clipboard.',
     loading: 'Loading diagnostic…',
     loadFailed: 'Could not load this diagnostic. Check your access and connection, then retry.',
     retry: 'Retry',
@@ -206,7 +202,7 @@ const messages = {
     capturedAt: 'Captured at',
     expiresAt: 'Expires at',
     captured: 'Snapshot captured',
-    capturedDescription: 'Inspect the saved inbound request and final request bodies for the recorded upstream attempts below.',
+    capturedDescription: 'Inspect saved request bodies, model output and upstream responses below.',
     notCaptured: 'Not captured',
     notCapturedDescription: 'No request snapshot was captured for this record (including older records or requests made while capture was disabled). Historical content cannot be reconstructed.',
     expired: 'Snapshot expired',
@@ -235,25 +231,27 @@ const messages = {
     inboundBody: 'Saved inbound body',
     upstreamBody: 'Final upstream request body',
     responseSummary: 'Limited upstream response summary',
+    responseBody: 'Upstream response body',
+    responseContentType: 'Response Content-Type',
+    modelOutput: 'Model output',
     expand: 'Show',
     collapse: 'Hide',
     copy: 'Copy saved text',
+    copyOutput: 'Copy model output',
     copied: 'Copied',
     copyFailed: 'Copy failed. Your browser may not allow clipboard access.',
     originalBytes: 'Original bytes',
     storedBytes: 'Stored bytes',
-    redacted: 'Partially redacted',
     truncated: 'Truncated',
     omittedReason: 'Content omitted',
-    bodyNote: 'This is the stored text, which may be redacted, truncated, or omitted—not a guaranteed complete original request.',
     limitedSummary: 'Only a limited response summary is saved. This is not the full response body or full SSE stream.',
     emptyPayload: 'No saved content.',
     noAttempts: 'No upstream attempts were captured.',
-    noResponseSummary: 'No upstream response summary was captured.'
+    noResponseBody: 'No upstream response body was captured.',
+    noModelOutput: 'No model text could be extracted from the saved response.'
   },
   zh: {
     title: '用量请求诊断',
-    sensitiveNotice: '诊断快照仅短期保留，但 prompt 和个人信息仍可能包含敏感内容；脱敏不等于完全匿名。请仅在排查需要时查看或复制，复制只写入本机剪贴板。',
     loading: '正在加载诊断详情…',
     loadFailed: '无法加载这条记录的诊断详情，请检查权限与网络后重试。',
     retry: '重试',
@@ -297,7 +295,7 @@ const messages = {
     capturedAt: '捕获时间',
     expiresAt: '过期时间',
     captured: '已捕获快照',
-    capturedDescription: '下方可查看已保存的入站内容，以及每次已记录上游尝试实际发送的最终请求体。',
+    capturedDescription: '下方可查看已保存的请求体、模型输出和各次上游尝试的响应。',
     notCaptured: '未捕获',
     notCapturedDescription: '这条记录没有捕获请求快照（包括旧记录或当时未开启捕获的请求），历史内容无法事后还原。',
     expired: '快照已过期',
@@ -326,21 +324,24 @@ const messages = {
     inboundBody: '已保存的入站请求体',
     upstreamBody: '最终上游请求体',
     responseSummary: '上游有限响应摘要',
+    responseBody: '上游响应原文',
+    responseContentType: '响应 Content-Type',
+    modelOutput: '模型输出',
     expand: '展开',
     collapse: '收起',
     copy: '复制已保存文本',
+    copyOutput: '复制模型输出',
     copied: '已复制',
     copyFailed: '复制失败，浏览器可能未允许剪贴板访问。',
     originalBytes: '原始字节数',
     storedBytes: '保存字节数',
-    redacted: '已部分脱敏',
     truncated: '已截断',
     omittedReason: '内容省略原因',
-    bodyNote: '展示的是保存的文本，可能已脱敏、截断或省略，并不保证是完整原始请求。',
     limitedSummary: '仅保存有限响应摘要，不是完整响应体，也不是完整 SSE 流。',
     emptyPayload: '没有已保存的内容。',
     noAttempts: '没有捕获到上游尝试。',
-    noResponseSummary: '未捕获上游响应摘要。'
+    noResponseBody: '未捕获上游响应原文。',
+    noModelOutput: '无法从已保存的响应中提取模型正文。'
   }
 }
 const text = computed(() => messages[String(locale?.value ?? 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en'])
@@ -431,8 +432,8 @@ const snapshotFields = computed<Field[]>(() => {
   ]
 })
 
-type PayloadBlock = { key: string; title: string; payload: UsageDiagnosticPayload; summary?: boolean }
-type CaptureSection = { key: string; title: string; fields: Field[]; payloads: PayloadBlock[]; noResponseSummary?: boolean }
+type PayloadBlock = { key: string; title: string; payload?: UsageDiagnosticPayload | null; output?: string | null; summary?: boolean }
+type CaptureSection = { key: string; title: string; fields: Field[]; payloads: PayloadBlock[] }
 const captureSections = computed<CaptureSection[]>(() => {
   const payload = snapshot.value
   if (!payload) return []
@@ -452,28 +453,39 @@ const captureSections = computed<CaptureSection[]>(() => {
       ],
       payloads: [{ key: 'inbound-body', title: m.inboundBody, payload: inbound.body }]
     },
-    ...payload.attempts.map((attempt, index): CaptureSection => ({
-      key: `attempt-${attempt.id}`,
-      title: `${m.attempt} #${index + 1}`,
-      fields: [
-        field(m.attemptId, attempt.id),
-        field(m.account, attempt.account_id),
-        field(m.platform, attempt.platform),
-        field(m.upstreamModel, attempt.model),
-        field(m.endpoint, attempt.endpoint),
-        field(m.method, attempt.method),
-        field(m.startedAt, dateTime(attempt.started_at)),
-        field(m.duration, duration(attempt.duration_ms)),
-        field(m.responseStatus, attempt.status || '—'),
-        field(m.upstreamRequestId, attempt.upstream_request_id),
-        field(m.error, attempt.error)
-      ],
-      payloads: [
-        { key: `attempt-${attempt.id}-body`, title: m.upstreamBody, payload: attempt.body },
-        ...(attempt.response_summary ? [{ key: `attempt-${attempt.id}-response`, title: m.responseSummary, payload: attempt.response_summary, summary: true }] : [])
-      ],
-      noResponseSummary: !attempt.response_summary
-    }))
+    ...payload.attempts.map((attempt, index): CaptureSection => {
+      // 仅缺少字段的旧快照回退摘要，显式 null 或省略的原文不能被摘要替代。
+      const legacySummary = attempt.response_body === undefined && !!attempt.response_summary
+      const response = attempt.response_body === undefined ? attempt.response_summary : attempt.response_body
+      return {
+        key: `attempt-${attempt.id}`,
+        title: `${m.attempt} #${index + 1}`,
+        fields: [
+          field(m.attemptId, attempt.id),
+          field(m.account, attempt.account_id),
+          field(m.platform, attempt.platform),
+          field(m.upstreamModel, attempt.model),
+          field(m.endpoint, attempt.endpoint),
+          field(m.method, attempt.method),
+          field(m.startedAt, dateTime(attempt.started_at)),
+          field(m.duration, duration(attempt.duration_ms)),
+          field(m.responseStatus, attempt.status || '—'),
+          field(m.upstreamRequestId, attempt.upstream_request_id),
+          ...(attempt.response_content_type ? [field(m.responseContentType, attempt.response_content_type)] : []),
+          field(m.error, attempt.error)
+        ],
+        payloads: [
+          { key: `attempt-${attempt.id}-body`, title: m.upstreamBody, payload: attempt.body },
+          {
+            key: `attempt-${attempt.id}-output`,
+            title: m.modelOutput,
+            output: response?.content ? extractUsageDiagnosticOutput(response.content, attempt.response_content_type) : null,
+            summary: legacySummary
+          },
+          { key: `attempt-${attempt.id}-response`, title: legacySummary ? m.responseSummary : m.responseBody, payload: response ?? null, summary: legacySummary }
+        ]
+      }
+    })
   ]
 })
 
@@ -506,6 +518,9 @@ async function loadDiagnostic() {
     const response = await getUsageDiagnostic(props.usageId, { signal: current.signal })
     if (revision !== requestRevision || current.signal.aborted) return
     detail.value = response
+    expandedPayloads.value = new Set(captureSections.value.flatMap(section =>
+      section.payloads.filter(block => block.output).map(block => block.key)
+    ))
   } catch {
     if (revision !== requestRevision || current.signal.aborted) return
     loadFailed.value = true

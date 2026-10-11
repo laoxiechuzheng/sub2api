@@ -5,6 +5,7 @@ import "fmt"
 // RequestDiagnosticsConfig 控制管理员排障正文采集，与用量列表和计费独立。
 type RequestDiagnosticsConfig struct {
 	Enabled         bool  `mapstructure:"enabled"`
+	PreserveRaw     bool  `mapstructure:"preserve_raw"`
 	RetentionHours  int   `mapstructure:"retention_hours"`
 	MaxEntryBytes   int   `mapstructure:"max_entry_bytes"`
 	MaxActive       int   `mapstructure:"max_active"`
