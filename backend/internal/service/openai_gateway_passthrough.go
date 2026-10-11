@@ -214,11 +214,13 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	if account != nil && account.IsOpenAI() {
 		responsesLite := isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) || isOpenAIResponsesLiteWebSocketPayload(body)
 		// OpenRouter native Claude Responses keeps its reasoning replay payload:
-		// the compatibility wrapper below skips only the reasoning-history
-		// removals for that destination and retains every other normalization.
-		normalizedBody, normalized, normalizeErr := normalizeOpenAIResponsesCompatibilityBodyWithReasoningReplay(
-			body, account, responsesLite, shouldPreserveOpenRouterClaudeResponsesReasoningReplay(s, c, account, body),
-		)
+		// the compatibility options below skip only the reasoning-history
+		// removals for that destination and retain every other normalization.
+		normalizedBody, normalized, normalizeErr := normalizeOpenAIResponsesCompatibilityBodyWithOptions(body, account, openAIResponsesCompatibilityOptions{
+			ResponsesLite:           responsesLite,
+			Compact:                 isOpenAIResponsesCompactPath(c),
+			PreserveReasoningReplay: shouldPreserveOpenRouterClaudeResponsesReasoningReplay(s, c, account, body),
+		})
 		if normalizeErr != nil {
 			return nil, fmt.Errorf("normalize passthrough Responses compatibility: %w", normalizeErr)
 		}

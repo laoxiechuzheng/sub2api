@@ -12,6 +12,85 @@ type compositeRouteRepoStub struct {
 	routes []CompositeModelRoute
 }
 
+func TestCompositeRouteResolverCodexFilteringMatchesProductionPriority(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		routes []CompositeModelRoute
+		want   []string
+	}{
+		{
+			name: "endpoint beats priority",
+			routes: []CompositeModelRoute{
+				{ID: 1, PublicModel: "alias", MatchType: CompositeRouteMatchExact, Endpoint: CompositeRouteEndpointAny, TargetPlatform: PlatformOpenAI, Priority: 1},
+				{ID: 2, PublicModel: "alias", MatchType: CompositeRouteMatchExact, Endpoint: CompositeRouteEndpointResponses, TargetPlatform: PlatformTypeSafe, Priority: 100},
+			},
+			want: []string{"unrouted"},
+		},
+		{
+			name: "Responses OpenAI overrides any TypeSafe",
+			routes: []CompositeModelRoute{
+				{ID: 1, PublicModel: "alias", MatchType: CompositeRouteMatchExact, Endpoint: CompositeRouteEndpointAny, TargetPlatform: PlatformTypeSafe, Priority: 1},
+				{ID: 2, PublicModel: "alias", MatchType: CompositeRouteMatchExact, Endpoint: CompositeRouteEndpointResponses, TargetPlatform: PlatformOpenAI, Priority: 100},
+			},
+			want: []string{"alias", "unrouted"},
+		},
+		{
+			name: "longer prefix beats priority",
+			routes: []CompositeModelRoute{
+				{ID: 1, PublicModel: "a", MatchType: CompositeRouteMatchPrefix, TargetPlatform: PlatformOpenAI, Priority: 1},
+				{ID: 2, PublicModel: "ali", MatchType: CompositeRouteMatchPrefix, TargetPlatform: PlatformTypeSafe, Priority: 100},
+			},
+			want: []string{"unrouted"},
+		},
+		{
+			name: "exact beats endpoint prefix",
+			routes: []CompositeModelRoute{
+				{ID: 1, PublicModel: "alias", MatchType: CompositeRouteMatchPrefix, Endpoint: CompositeRouteEndpointResponses, TargetPlatform: PlatformTypeSafe},
+				{ID: 2, PublicModel: "alias", MatchType: CompositeRouteMatchExact, Endpoint: CompositeRouteEndpointAny, TargetPlatform: PlatformOpenAI},
+			},
+			want: []string{"alias", "unrouted"},
+		},
+		{
+			name: "lower priority wins",
+			routes: []CompositeModelRoute{
+				{ID: 1, PublicModel: "alias", MatchType: CompositeRouteMatchExact, TargetPlatform: PlatformTypeSafe, Priority: 100},
+				{ID: 2, PublicModel: "alias", MatchType: CompositeRouteMatchExact, TargetPlatform: PlatformOpenAI, Priority: 1},
+			},
+			want: []string{"alias", "unrouted"},
+		},
+		{
+			name: "lower ID breaks tie",
+			routes: []CompositeModelRoute{
+				{ID: 2, PublicModel: "alias", MatchType: CompositeRouteMatchExact, TargetPlatform: PlatformOpenAI},
+				{ID: 1, PublicModel: "alias", MatchType: CompositeRouteMatchExact, TargetPlatform: PlatformTypeSafe},
+			},
+			want: []string{"unrouted"},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			for index := range scenario.routes {
+				scenario.routes[index].Enabled = true
+				scenario.routes[index].GroupID = 7
+			}
+			resolver := NewCompositeRouteResolver(compositeRouteRepoStub{routes: scenario.routes})
+			models, err := resolver.FilterCodexModels(context.Background(), 7, []string{"alias", "unrouted"})
+			require.NoError(t, err)
+			require.Equal(t, scenario.want, models)
+			decision, err := resolver.Resolve(context.Background(), 7, "alias", CompositeRouteEndpointResponses)
+			require.NoError(t, err)
+			require.True(t, decision.Matched)
+			require.Equal(t, decision.TargetPlatform != PlatformTypeSafe, len(models) == 2)
+			exactModels, err := resolver.ListExactPublicModels(context.Background(), 7, CompositeRouteEndpointResponses, false)
+			require.NoError(t, err)
+			if decision.TargetPlatform == PlatformTypeSafe {
+				require.Empty(t, exactModels)
+			} else {
+				require.Contains(t, exactModels, "alias")
+			}
+		})
+	}
+}
+
 func (s compositeRouteRepoStub) ListByGroup(ctx context.Context, groupID int64, includeDisabled bool) ([]CompositeModelRoute, error) {
 	routes := make([]CompositeModelRoute, 0, len(s.routes))
 	for _, route := range s.routes {
@@ -40,6 +119,161 @@ func (s compositeRouteRepoStub) Delete(ctx context.Context, id int64) error {
 
 func (s compositeRouteRepoStub) DeleteByGroup(ctx context.Context, groupID int64) error {
 	return nil
+}
+
+func TestCompositeRouteCatalogFiltersConditionalSystemOneRoutes(t *testing.T) {
+	for _, condition := range []struct {
+		name  string
+		route CompositeModelRoute
+		match CompositeRouteRequestMatch
+	}{
+		{
+			name:  "user agent",
+			route: CompositeModelRoute{UserAgentContains: "codex"},
+			match: CompositeRouteRequestMatch{UserAgent: "codex-cli"},
+		},
+		{
+			name: "scoped body with exclusion",
+			route: CompositeModelRoute{
+				BodyContains: "summarize", BodyNotContains: "quoted example",
+				BodyMatchScope: CompositeRouteBodyScopeLastMessage, BodyMatchMode: CompositeRouteBodyMatchPrefix,
+			},
+			match: CompositeRouteRequestMatch{Body: []byte(`{"input":"summarize this session"}`)},
+		},
+		{
+			name:  "native compaction",
+			route: CompositeModelRoute{RequestKind: CompositeRouteRequestKindCompaction},
+			match: CompositeRouteRequestMatch{Body: []byte(`{"input":"summarize this session"}`), NativeCompaction: true},
+		},
+	} {
+		for _, pattern := range []struct {
+			matchType string
+			model     string
+		}{
+			{CompositeRouteMatchExact, "shared-alias"},
+			{CompositeRouteMatchPrefix, "shared-"},
+			{CompositeRouteMatchContains, "alias"},
+		} {
+			t.Run(condition.name+"/"+pattern.matchType, func(t *testing.T) {
+				route := condition.route
+				route.ID, route.GroupID = 2, 7
+				route.PublicModel, route.MatchType = pattern.model, pattern.matchType
+				route.TargetPlatform = PlatformTypeSafe
+				route.Endpoint, route.Enabled = CompositeRouteEndpointResponses, true
+				resolver := NewCompositeRouteResolver(compositeRouteRepoStub{routes: []CompositeModelRoute{
+					{ID: 1, GroupID: 7, PublicModel: "shared-alias", MatchType: CompositeRouteMatchExact, TargetPlatform: PlatformOpenAI, Endpoint: CompositeRouteEndpointResponses, Enabled: true},
+					route,
+					{ID: 3, GroupID: 7, PublicModel: "responses-control", MatchType: CompositeRouteMatchExact, TargetPlatform: PlatformOpenAI, Endpoint: CompositeRouteEndpointResponses, Enabled: true},
+				}})
+
+				models, err := resolver.ListExactPublicModels(context.Background(), 7, "", true)
+				require.NoError(t, err)
+				require.Contains(t, models, "shared-alias")
+				require.Contains(t, models, "responses-control")
+
+				models, err = resolver.ListExactPublicModels(context.Background(), 7, CompositeRouteEndpointResponses, false)
+				require.NoError(t, err)
+				require.Equal(t, []string{"responses-control"}, models)
+				models, err = resolver.FilterCodexModels(context.Background(), 7, []string{"shared-alias", "responses-control", "unrouted"})
+				require.NoError(t, err)
+				require.Equal(t, []string{"responses-control", "unrouted"}, models)
+
+				decision, err := resolver.Resolve(context.Background(), 7, "shared-alias", CompositeRouteEndpointResponses)
+				require.NoError(t, err)
+				require.Equal(t, PlatformOpenAI, decision.TargetPlatform)
+				decision, err = resolver.ResolveWithMatch(context.Background(), 7, "shared-alias", CompositeRouteEndpointResponses, condition.match)
+				require.NoError(t, err)
+				require.Equal(t, PlatformTypeSafe, decision.TargetPlatform)
+			})
+		}
+	}
+}
+
+func TestCompositeRouteCatalogConditionalOpenAICannotHideSystemOne(t *testing.T) {
+	for _, scenario := range []struct {
+		name          string
+		routes        []CompositeModelRoute
+		typeSafeMatch CompositeRouteRequestMatch
+		openAIMatch   CompositeRouteRequestMatch
+	}{
+		{
+			name: "unconditional TypeSafe with conditional OpenAI",
+			routes: []CompositeModelRoute{
+				{TargetPlatform: PlatformTypeSafe, Endpoint: CompositeRouteEndpointAny},
+				{TargetPlatform: PlatformOpenAI, Endpoint: CompositeRouteEndpointResponses, UserAgentContains: "curl"},
+			},
+			typeSafeMatch: CompositeRouteRequestMatch{UserAgent: "codex-cli"},
+			openAIMatch:   CompositeRouteRequestMatch{UserAgent: "curl/8.6.0"},
+		},
+		{
+			name: "conditional TypeSafe with unconditional OpenAI",
+			routes: []CompositeModelRoute{
+				{TargetPlatform: PlatformOpenAI, Endpoint: CompositeRouteEndpointAny},
+				{TargetPlatform: PlatformTypeSafe, Endpoint: CompositeRouteEndpointResponses, UserAgentContains: "codex"},
+			},
+			typeSafeMatch: CompositeRouteRequestMatch{UserAgent: "codex-cli"},
+			openAIMatch:   CompositeRouteRequestMatch{UserAgent: "curl/8.6.0"},
+		},
+		{
+			name: "different conditional user agents",
+			routes: []CompositeModelRoute{
+				{TargetPlatform: PlatformOpenAI, Endpoint: CompositeRouteEndpointResponses, Priority: 1, UserAgentContains: "curl"},
+				{TargetPlatform: PlatformTypeSafe, Endpoint: CompositeRouteEndpointResponses, Priority: 100, UserAgentContains: "codex"},
+			},
+			typeSafeMatch: CompositeRouteRequestMatch{UserAgent: "codex-cli"},
+			openAIMatch:   CompositeRouteRequestMatch{UserAgent: "curl/8.6.0"},
+		},
+		{
+			name: "different conditional body signatures",
+			routes: []CompositeModelRoute{
+				{TargetPlatform: PlatformOpenAI, Endpoint: CompositeRouteEndpointResponses, Priority: 1, BodyContains: "openai"},
+				{TargetPlatform: PlatformTypeSafe, Endpoint: CompositeRouteEndpointResponses, Priority: 100, BodyContains: "systemone"},
+			},
+			typeSafeMatch: CompositeRouteRequestMatch{Body: []byte(`{"input":"use systemone"}`)},
+			openAIMatch:   CompositeRouteRequestMatch{Body: []byte(`{"input":"use openai"}`)},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			for i := range scenario.routes {
+				scenario.routes[i].ID = int64(i + 1)
+				scenario.routes[i].GroupID = 7
+				scenario.routes[i].PublicModel = "shared-alias"
+				scenario.routes[i].MatchType = CompositeRouteMatchExact
+				scenario.routes[i].Enabled = true
+			}
+			routes := append(scenario.routes, CompositeModelRoute{
+				ID: 3, GroupID: 7, PublicModel: "responses-control", MatchType: CompositeRouteMatchExact,
+				TargetPlatform: PlatformOpenAI, Endpoint: CompositeRouteEndpointResponses, Enabled: true,
+				UserAgentContains: "curl",
+			})
+			resolver := NewCompositeRouteResolver(compositeRouteRepoStub{routes: routes})
+
+			decision, err := resolver.ResolveWithMatch(context.Background(), 7, "shared-alias", CompositeRouteEndpointResponses, scenario.typeSafeMatch)
+			require.NoError(t, err)
+			require.True(t, decision.Matched)
+			require.Equal(t, PlatformTypeSafe, decision.TargetPlatform)
+			decision, err = resolver.ResolveWithMatch(context.Background(), 7, "shared-alias", CompositeRouteEndpointResponses, scenario.openAIMatch)
+			require.NoError(t, err)
+			require.True(t, decision.Matched)
+			require.Equal(t, PlatformOpenAI, decision.TargetPlatform)
+
+			models, err := resolver.ListExactPublicModels(context.Background(), 7, "", true)
+			require.NoError(t, err)
+			require.Contains(t, models, "shared-alias")
+			require.Contains(t, models, "responses-control")
+
+			t.Run("exact catalog", func(t *testing.T) {
+				models, err := resolver.ListExactPublicModels(context.Background(), 7, CompositeRouteEndpointResponses, false)
+				require.NoError(t, err)
+				require.Equal(t, []string{"responses-control"}, models)
+			})
+			t.Run("Codex filter", func(t *testing.T) {
+				models, err := resolver.FilterCodexModels(context.Background(), 7, []string{"shared-alias", "responses-control", "unrouted"})
+				require.NoError(t, err)
+				require.Equal(t, []string{"responses-control", "unrouted"}, models)
+			})
+		})
+	}
 }
 
 func TestCompositeRouteResolverConditionalRouteOverridesExactRoute(t *testing.T) {

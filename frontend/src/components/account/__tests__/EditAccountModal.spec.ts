@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
+import {
+  BUILTIN_PLATFORM_CATALOG,
+  resetPlatformCatalog,
+  setPlatformCatalog
+} from '@/constants/platformCatalog'
 
 const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
@@ -349,6 +354,33 @@ describe('EditAccountModal', () => {
     ])
   })
 
+  it.each([undefined, 'https://typesafe-relay.example'])('preserves TypeSafe models and resolves its endpoint from %s', async (baseUrl) => {
+    const account = {
+      ...buildAccount(),
+      platform: 'typesafe',
+      credentials: {
+        api_key: 'ts-test',
+        base_url: baseUrl,
+        model_mapping: { 'jev-latest': 'jev-latest' }
+      }
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.get('[data-testid="model-whitelist-value"]').text()).toBe('jev-latest')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledOnce()
+    const credentials = updateAccountMock.mock.calls[0][1].credentials
+    expect(credentials).toMatchObject({
+      base_url: baseUrl ?? 'https://api.typesafe.ai',
+      model_mapping: { 'jev-latest': 'jev-latest' }
+    })
+    expect(credentials).not.toHaveProperty('api_protocol')
+    expect(credentials).not.toHaveProperty('api_base_urls')
+    wrapper.unmount()
+  })
+
   it('sets expiry presets from now instead of extending the saved expiry', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2028-02-29T12:34:00'))
@@ -535,6 +567,104 @@ describe('EditAccountModal', () => {
       account_mode: 'go',
       api_protocol: 'adaptive',
       base_url: 'https://opencode.ai/zen/go/v1'
+    })
+  })
+
+  describe('providers using the generic form', () => {
+    beforeEach(() => {
+      setPlatformCatalog({
+        platforms: [
+          ...BUILTIN_PLATFORM_CATALOG.platforms,
+          {
+            id: 'acme_router',
+            display_name: 'Acme Router',
+            gateway: 'openai',
+            cn_provider: false,
+            multi_protocol: {
+              default_mode: 'standard',
+              routing: 'by_model',
+              modes: [
+                {
+                  mode: 'standard',
+                  base_urls: {
+                    chat_completions: 'https://api.acme-router.example/provider/v1',
+                    anthropic: 'https://api.acme-router.example/provider'
+                  },
+                  protocol_rules: [{ pattern: 'claude-*', protocol: 'anthropic' }]
+                },
+                {
+                  mode: 'team',
+                  base_urls: {
+                    chat_completions: 'https://team.acme-router.example/provider/v1',
+                    anthropic: 'https://team.acme-router.example/provider'
+                  },
+                  protocol_rules: [{ pattern: 'sonnet-*', protocol: 'anthropic' }]
+                }
+              ]
+            }
+          }
+        ],
+        composite_precedence: [...BUILTIN_PLATFORM_CATALOG.composite_precedence, 'acme_router']
+      })
+      checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    })
+
+    afterEach(() => {
+      resetPlatformCatalog()
+    })
+
+    function commandCodeAccount() {
+      const account = buildAccount()
+      account.platform = 'acme_router'
+      account.credentials = {
+        api_key: 'sk-cc',
+        account_mode: 'standard',
+        api_protocol: 'adaptive',
+        base_url: 'https://relay.example.com/v1',
+        api_base_urls: {
+          chat_completions: 'https://relay.example.com/v1',
+          anthropic: 'https://relay.example.com'
+        },
+        protocol_rules: [{ pattern: 'custom-*', protocol: 'anthropic' }]
+      }
+      updateAccountMock.mockReset().mockResolvedValue(account)
+      return account
+    }
+
+    it('preserves stored endpoints and rules on submit', async () => {
+      const wrapper = mountModal(commandCodeAccount())
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+      expect(updateAccountMock).toHaveBeenCalledTimes(1)
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+        account_mode: 'standard',
+        api_protocol: 'adaptive',
+        base_url: 'https://relay.example.com/v1',
+        api_base_urls: {
+          chat_completions: 'https://relay.example.com/v1',
+          anthropic: 'https://relay.example.com'
+        },
+        protocol_rules: [{ pattern: 'custom-*', protocol: 'anthropic' }]
+      })
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.api_base_urls).not.toHaveProperty('responses')
+    })
+
+    it('offers the provider modes and keeps customised endpoints when switching mode', async () => {
+      const wrapper = mountModal(commandCodeAccount())
+      const modeButtons = wrapper.get('[data-testid="edit-generic-account-mode"]').findAll('button')
+      expect(modeButtons.map(button => button.text())).toEqual(['standard', 'team'])
+      await modeButtons[1].trigger('click')
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+        account_mode: 'team',
+        // 自定义端点与规则不是上一模式的默认值，切换模式时保留。
+        api_base_urls: {
+          chat_completions: 'https://relay.example.com/v1',
+          anthropic: 'https://relay.example.com'
+        },
+        protocol_rules: [{ pattern: 'custom-*', protocol: 'anthropic' }]
+      })
     })
   })
 

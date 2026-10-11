@@ -217,8 +217,8 @@ func openAIRequestNeedsCompactionProtocol(c *gin.Context, body []byte) bool {
 		(IsBareOpenAIResponsesPath(c) && HasCompactionTriggerInInput(body))
 }
 
-// CanForwardOpenAICompaction checks the protocol actually used after model
-// mapping, not asynchronous capability probes that may still be unknown.
+// CanForwardOpenAICompaction checks the configured protocol after model mapping.
+// Forward rechecks compaction after resolving live model catalog capabilities.
 func CanForwardOpenAICompaction(account *Account, body []byte) bool {
 	if account == nil {
 		return false
@@ -226,9 +226,5 @@ func CanForwardOpenAICompaction(account *Account, body []byte) bool {
 	if account.Platform == PlatformGrok {
 		return true // Grok has a dedicated compaction bridge.
 	}
-	if account.IsOpenCodeGo() {
-		model := resolveOpenCodeGoMappedModel(account, body, "")
-		return openCodeGoNativeProtocol(account, model) == APIProtocolResponses
-	}
-	return !account.IsAnthropicProtocol() && !shouldForwardOpenAIResponsesViaRawChatCompletions(account)
+	return resolveUpstreamProtocol(account, APIProtocolResponses, upstreamRoutingModel(account, body, ""), nil) == APIProtocolResponses
 }

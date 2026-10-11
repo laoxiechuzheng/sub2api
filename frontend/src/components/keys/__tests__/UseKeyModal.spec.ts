@@ -40,6 +40,35 @@ describe('UseKeyModal', () => {
     saveAsMock.mockClear()
   })
 
+  it.each(['macOS / Linux', 'Windows CMD', 'PowerShell'])('keeps the TypeSafe System One setup for %s', async (shell) => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKey: 'sk-typesafe-test',
+        baseUrl: 'https://example.com/v1',
+        platform: 'typesafe'
+      },
+      global: {
+        stubs: {
+          BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
+          Icon: { template: '<span />' }
+        }
+      }
+    })
+    const clientTabs = wrapper.get('nav[aria-label="Client"]').findAll('button')
+    expect(clientTabs.map(button => button.text())).toEqual(['keys.useKeyModal.cliTabs.systemOne'])
+    const shellTab = wrapper.get('nav[aria-label="Tabs"]').findAll('button').find(button => button.text() === shell)
+    expect(shellTab).toBeDefined()
+    await shellTab!.trigger('click')
+    const command = wrapper.get('pre code').text()
+    expect(command).toContain('https://example.com/v1/systemone')
+    expect(command).toContain('Bearer sk-typesafe-test')
+    expect(command).toContain('jev-latest')
+    expect(command).not.toContain('/v1/v1/')
+    expect(wrapper.find('[data-testid="codex-model-catalog"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('shows only Claude Code for Claude Code-only groups', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {
@@ -415,7 +444,9 @@ describe('UseKeyModal', () => {
     expect(configToml).not.toContain('image_generation')
     expect(configToml).not.toContain('supports_websockets')
     expect(configToml).not.toContain('responses_websockets_v2')
-    expect(configToml).toContain('[features]\napi_key_model_discovery = true\ngoals = true')
+    const features = configToml?.split('[features]\n')[1]?.split('\n[')[0]
+    expect(features).toContain('api_key_model_discovery = true')
+    expect(features).toContain('goals = true')
     expect(configToml).not.toContain('model_reasoning_effort = "xhigh"')
     expect(codeBlocks).toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
     expect(wrapper.text()).toContain('auth.json')
@@ -557,7 +588,10 @@ describe('UseKeyModal', () => {
     expect(configToml).not.toContain('env_key')
     expect(configToml).not.toContain('image_generation')
     expect(configToml).toContain('supports_websockets = true')
-    expect(configToml).toContain('[features]\napi_key_model_discovery = true\nresponses_websockets_v2 = true\ngoals = true')
+    const features = configToml?.split('[features]\n')[1]?.split('\n[')[0]
+    expect(features).toContain('api_key_model_discovery = true')
+    expect(features).toContain('responses_websockets_v2 = true')
+    expect(features).toContain('goals = true')
     expect(codeBlocks).toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
     expect(wrapper.text()).toContain('auth.json')
   })
@@ -605,7 +639,10 @@ describe('UseKeyModal', () => {
     expect(configToml).not.toContain('env_key')
     expect(configToml).not.toContain('image_generation')
     expect(configToml).toContain('supports_websockets = true')
-    expect(configToml).toContain('[features]\napi_key_model_discovery = true\nresponses_websockets_v2 = true\ngoals = true')
+    const features = configToml?.split('[features]\n')[1]?.split('\n[')[0]
+    expect(features).toContain('api_key_model_discovery = true')
+    expect(features).toContain('responses_websockets_v2 = true')
+    expect(features).toContain('goals = true')
     expect(codeBlocks).not.toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
     expect(wrapper.text()).not.toContain('auth.json')
   })
