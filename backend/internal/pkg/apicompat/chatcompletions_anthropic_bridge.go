@@ -517,19 +517,6 @@ func convertAnthropicToolChoiceToChat(raw json.RawMessage, declared map[string]b
 	}
 }
 
-// joinResponsesContentPartText concatenates the text of input_text parts. Used
-// for the system prompt where parseAnthropicSystemContentParts returns
-// ResponsesContentPart values.
-func joinResponsesContentPartText(parts []ResponsesContentPart) string {
-	var texts []string
-	for _, p := range parts {
-		if p.Type == "input_text" && p.Text != "" {
-			texts = append(texts, p.Text)
-		}
-	}
-	return strings.Join(texts, "\n\n")
-}
-
 // ---------------------------------------------------------------------------
 // Non-streaming response: ChatCompletionsResponse → AnthropicResponse
 // ---------------------------------------------------------------------------

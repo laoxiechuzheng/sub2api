@@ -286,7 +286,7 @@ func compositeFoldedJSONKey(key string) string {
 		for {
 			next := unicode.SimpleFold(r)
 			if next <= r {
-				folded.WriteRune(next)
+				_, _ = folded.WriteRune(next)
 				break
 			}
 			r = next
@@ -378,7 +378,7 @@ func compositeLastDirectTextBlock(content gjson.Result, endpoint string) string 
 	for index := len(blocks) - 1; index >= 0; index-- {
 		block := blocks[index]
 		blockType := block.Get("type").String()
-		if blockType != "text" && !(endpoint == CompositeRouteEndpointResponses && blockType == "input_text") {
+		if blockType != "text" && (endpoint != CompositeRouteEndpointResponses || blockType != "input_text") {
 			return ""
 		}
 		value := block.Get("text")

@@ -1435,17 +1435,6 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 	return normalizeOpenAIResponsesCompatibilityBodyWithOptions(body, account, openAIResponsesCompatibilityOptions{ResponsesLite: responsesLite})
 }
 
-// normalizeOpenAIResponsesCompatibilityBodyWithReasoningReplay keeps the
-// existing compatibility normalization order (ID/tool/schema/compaction). When
-// preserveReasoningReplay is true only the two destructive reasoning replay
-// cleanups are skipped.
-func normalizeOpenAIResponsesCompatibilityBodyWithReasoningReplay(body []byte, account *Account, responsesLite bool, preserveReasoningReplay bool) ([]byte, bool, error) {
-	return normalizeOpenAIResponsesCompatibilityBodyWithOptions(body, account, openAIResponsesCompatibilityOptions{
-		ResponsesLite:           responsesLite,
-		PreserveReasoningReplay: preserveReasoningReplay,
-	})
-}
-
 type openAIResponsesCompatibilityOptions struct {
 	ResponsesLite bool
 	// Compact marks the /responses/compact wire shape, which is left as-is

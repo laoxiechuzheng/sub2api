@@ -312,7 +312,7 @@ func (b *upstreamDiagnosticBlockingBody) Close() error {
 func TestHTTPUpstreamDiagnosticCloseUnblocksReadBeforeCompletingCapture(t *testing.T) {
 	capture, ready := newUpstreamDiagnosticCapture(1 << 20)
 	body := &upstreamDiagnosticBlockingBody{started: make(chan struct{}), closed: make(chan struct{})}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	req, err := http.NewRequestWithContext(requestdiagnostic.WithCapture(context.Background(), capture), http.MethodPost, "https://fixture.invalid/v1/messages", nil)
 	require.NoError(t, err)
 	transport := &diagnosticTransport{base: upstreamDiagnosticRoundTripFunc(func(*http.Request) (*http.Response, error) {

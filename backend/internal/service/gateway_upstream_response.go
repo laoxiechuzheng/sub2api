@@ -1226,7 +1226,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 						if len(block) > anthropicFirstVisibleOutputMaxBytes-stagedOutput.Len() {
 							return failBeforeVisibleOutput("first_visible_output_buffer_overflow", "Upstream SSE exceeded the 8 MiB first-visible-output buffer limit")
 						}
-						stagedOutput.WriteString(block)
+						_, _ = stagedOutput.WriteString(block)
 						continue
 					}
 					firstVisibleOutputScanGuard.Store(false)

@@ -166,8 +166,11 @@ func TestCaptureRejectsInvalidAndConflictingCanonicalBindings(t *testing.T) {
 	if snapshot != nil {
 		t.Fatal("ops/client IDs must not substitute for a canonical usage key")
 	}
-	if !capture.BindUsage(1, "authoritative-key", created) || !capture.BindUsage(1, "authoritative-key", created) {
-		t.Fatal("valid/idempotent canonical binding rejected")
+	if !capture.BindUsage(1, "authoritative-key", created) {
+		t.Fatal("valid canonical binding rejected")
+	}
+	if !capture.BindUsage(1, "authoritative-key", created) {
+		t.Fatal("idempotent canonical binding rejected")
 	}
 	if capture.BindUsage(2, "authoritative-key", created) || capture.BindUsage(1, "other-key", created) || capture.BindUsage(1, "authoritative-key", created.Add(time.Second)) {
 		t.Fatal("conflicting binding was accepted")

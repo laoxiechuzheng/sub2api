@@ -508,7 +508,7 @@ func joinDeepSeekReasoningTextParts(parts map[int]string) string {
 	sort.Ints(indexes)
 	var builder strings.Builder
 	for _, index := range indexes {
-		builder.WriteString(parts[index])
+		_, _ = builder.WriteString(parts[index])
 	}
 	return builder.String()
 }

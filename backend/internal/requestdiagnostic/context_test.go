@@ -99,6 +99,7 @@ func TestCopyContextCopiesOnlyCaptureAndKeepsBaseCancellation(t *testing.T) {
 	if copied.Err() != context.Canceled {
 		t.Fatal("copy lost base cancellation")
 	}
+	//nolint:staticcheck // Exercises the defensive nil-context fallback.
 	if requestdiagnostic.FromContext(nil) != nil || requestdiagnostic.CopyContext(context.Background(), base) != base {
 		t.Fatal("nil/absent capture must be harmless")
 	}

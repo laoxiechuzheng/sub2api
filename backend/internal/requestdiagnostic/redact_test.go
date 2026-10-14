@@ -94,9 +94,23 @@ func TestCaptureOmitsBinaryImagesButPreservesOrdinaryLongText(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload.Content), &decoded); err != nil {
 		t.Fatalf("binary omission broke JSON: %v", err)
 	}
-	messages := decoded["messages"].([]any)
-	content := messages[0].(map[string]any)["content"].([]any)
-	if content[0].(map[string]any)["text"] != ordinary {
+	messages, ok := decoded["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatal("binary omission lost the messages array")
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatal("binary omission lost the first message")
+	}
+	content, ok := message["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatal("binary omission lost the content blocks")
+	}
+	block, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatal("binary omission lost the first content block")
+	}
+	if block["text"] != ordinary {
 		t.Fatal("ordinary long text was shortened")
 	}
 }

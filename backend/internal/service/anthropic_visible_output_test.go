@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func runAnthropicVisibleOutputStream(t *testing.T, payload string) (*streamingResult, error, *httptest.ResponseRecorder) {
+func runAnthropicVisibleOutputStream(t *testing.T, payload string) (*streamingResult, *httptest.ResponseRecorder, error) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -30,9 +30,9 @@ func runAnthropicVisibleOutputStream(t *testing.T, payload string) (*streamingRe
 		Header:     http.Header{"X-Request-Id": []string{"attempt-private"}},
 		Body:       io.NopCloser(strings.NewReader(payload)),
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "public-model", "upstream-model", false)
-	return result, err, recorder
+	return result, recorder, err
 }
 
 // 服务端搜索不是客户端答案或待执行的工具调用；其 input delta 不能
@@ -45,7 +45,7 @@ func TestAnthropicVisibleOutput_ServerToolInputDoesNotCommitAttempt(t *testing.T
 		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":12}}\n\n" +
 		"data: {\"type\":\"message_stop\"}\n\n"
 
-	result, err, recorder := runAnthropicVisibleOutputStream(t, payload)
+	result, recorder, err := runAnthropicVisibleOutputStream(t, payload)
 
 	var failover *UpstreamFailoverError
 	require.ErrorAs(t, err, &failover)
@@ -63,7 +63,7 @@ func TestAnthropicVisibleOutput_StagingOverflowReturnsFailoverWithoutPartialOutp
 	payload := "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n" +
 		strings.Repeat(thinking, 9)
 
-	result, err, recorder := runAnthropicVisibleOutputStream(t, payload)
+	result, recorder, err := runAnthropicVisibleOutputStream(t, payload)
 
 	var failover *UpstreamFailoverError
 	require.ErrorAs(t, err, &failover)
@@ -85,8 +85,8 @@ func TestAnthropicVisibleOutput_TerminalGraceCollectsLateUsageWithoutWaitingForE
 		rateLimitService: &RateLimitService{},
 	}
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: reader}
 	go func() {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n"+
@@ -165,8 +165,8 @@ func TestAnthropicVisibleOutput_TerminalExitClosesBodyAndWaitsForReader(t *testi
 		closed:     make(chan struct{}),
 		readExited: make(chan struct{}),
 	}
-	defer body.Close()
-	defer writer.Close()
+	defer func() { _ = body.Close() }()
+	defer func() { _ = writer.Close() }()
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: body}
 	go func() {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n"+
@@ -199,8 +199,8 @@ func TestAnthropicVisibleOutput_TerminalDeadlineEndsContinuousPingStream(t *test
 		rateLimitService: &RateLimitService{},
 	}
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: reader}
 	writerDone := make(chan struct{})
 	go func() {
@@ -243,12 +243,12 @@ func TestAnthropicVisibleOutput_BeforeVisibleHeartbeatIsOnlyTransportComment(t *
 		rateLimitService: &RateLimitService{},
 	}
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Request-Id": []string{"attempt-private"}}, Body: reader}
 	const raw = `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`
 	go func() {
-		defer writer.Close()
+		defer func() { _ = writer.Close() }()
 		_, _ = io.WriteString(writer, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7}}}\n\n"+
 			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n")
 		time.Sleep(1100 * time.Millisecond)
@@ -272,7 +272,7 @@ func TestAnthropicVisibleOutput_InterleavedIndexesDoNotBorrowClientToolType(t *t
 		"data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\":\\\"status\\\"}\"}}\n\n" +
 		"data: {\"type\":\"content_block_stop\",\"index\":2}\n\n" +
 		"data: {\"type\":\"message_stop\"}\n\n"
-	_, err, recorder := runAnthropicVisibleOutputStream(t, payload)
+	_, recorder, err := runAnthropicVisibleOutputStream(t, payload)
 	var failover *UpstreamFailoverError
 	require.ErrorAs(t, err, &failover)
 	require.Empty(t, recorder.Body.String(), "server-tool input must not borrow a different index's client-tool type")
@@ -295,7 +295,7 @@ func TestAnthropicVisibleOutput_ClientTextAndToolReleaseStagedEvents(t *testing.
 			payload := "data: {\"type\":\"message_start\",\"message\":{\"model\":\"upstream-model\",\"usage\":{\"input_tokens\":7}}}\n\n" +
 				tc.events + "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":11}}\n\n" +
 				"data: {\"type\":\"message_stop\"}\n\n"
-			result, err, recorder := runAnthropicVisibleOutputStream(t, payload)
+			result, recorder, err := runAnthropicVisibleOutputStream(t, payload)
 			require.NoError(t, err)
 			require.NotNil(t, result.firstTokenMs)
 			require.Equal(t, 11, result.usage.OutputTokens)
@@ -325,7 +325,7 @@ func TestAnthropicVisibleOutput_EmptyThinkingAndMetadataDoNotSucceed(t *testing.
 			if payload != "" {
 				payload += "data: {\"type\":\"message_stop\"}\n\n"
 			}
-			result, err, recorder := runAnthropicVisibleOutputStream(t, payload)
+			result, recorder, err := runAnthropicVisibleOutputStream(t, payload)
 			var failover *UpstreamFailoverError
 			require.ErrorAs(t, err, &failover)
 			require.Nil(t, result)
@@ -345,7 +345,7 @@ func TestAnthropicVisibleOutput_LargeLineAfterVisibleOutputUsesConfiguredLimit(t
 		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":37}}\n\n" +
 		"data: {\"type\":\"message_stop\"}\n\n"
 
-	result, err, recorder := runAnthropicVisibleOutputStream(t, payload)
+	result, recorder, err := runAnthropicVisibleOutputStream(t, payload)
 	require.NoError(t, err, "读取协程提前扫描后续大行，不能误用首可见输出前的限制")
 	require.Equal(t, 37, result.usage.OutputTokens)
 	require.Contains(t, recorder.Body.String(), laterText)
@@ -353,7 +353,7 @@ func TestAnthropicVisibleOutput_LargeLineAfterVisibleOutputUsesConfiguredLimit(t
 
 func TestAnthropicVisibleOutput_OversizedSingleLineIsBoundedBeforeCommit(t *testing.T) {
 	payload := "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"" + strings.Repeat("x", 8*1024*1024+1)
-	result, err, recorder := runAnthropicVisibleOutputStream(t, payload)
+	result, recorder, err := runAnthropicVisibleOutputStream(t, payload)
 	var failover *UpstreamFailoverError
 	require.ErrorAs(t, err, &failover)
 	require.Nil(t, result)
@@ -367,7 +367,7 @@ func TestAnthropicVisibleOutput_SSEErrorsKeepTypedUpstreamClassification(t *test
 	for _, prefix := range []string{"event: error\n", ""} {
 		t.Run(prefix, func(t *testing.T) {
 			payload := "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7}}}\n\n" + prefix + "data: " + raw + "\n\n"
-			result, err, recorder := runAnthropicVisibleOutputStream(t, payload)
+			result, recorder, err := runAnthropicVisibleOutputStream(t, payload)
 			var streamErr *sseStreamErrorEventError
 			require.ErrorAs(t, err, &streamErr)
 			require.Equal(t, raw, streamErr.RawData)

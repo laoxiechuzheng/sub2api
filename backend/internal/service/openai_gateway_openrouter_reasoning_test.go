@@ -195,7 +195,7 @@ func TestNormalizeOpenAIResponsesCompatibilityBodyWithReasoningReplay(t *testing
 	require.NoError(t, err)
 
 	t.Run("preserve reasoning replay keeps content and other handling", func(t *testing.T) {
-		out, _, normalizeErr := normalizeOpenAIResponsesCompatibilityBodyWithReasoningReplay(body, account, false, true)
+		out, _, normalizeErr := normalizeOpenAIResponsesCompatibilityBodyWithOptions(body, account, openAIResponsesCompatibilityOptions{PreserveReasoningReplay: true})
 		require.NoError(t, normalizeErr)
 		require.Len(t, gjson.GetBytes(out, "input").Array(), 5, string(out))
 		require.Equal(t, "reasoning", gjson.GetBytes(out, "input.1.type").String(), string(out))

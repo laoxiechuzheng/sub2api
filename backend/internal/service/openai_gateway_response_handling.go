@@ -1546,7 +1546,7 @@ func openAIUsageFromGJSON(value gjson.Result, outputIncludesReasoning ...bool) (
 		value.Get("completion_tokens_details.reasoning_tokens"),
 		value.Get("output_tokens_details.reasoning_tokens"),
 	)), 0)
-	if reasoningTokens > 0 && !(len(outputIncludesReasoning) > 0 && outputIncludesReasoning[0]) {
+	if reasoningTokens > 0 && (len(outputIncludesReasoning) == 0 || !outputIncludesReasoning[0]) {
 		outputTokens = xai.IncludeIndependentReasoningTokens(
 			inputTokens, outputTokens, value.Get("total_tokens").Int(), int64(reasoningTokens),
 		)
