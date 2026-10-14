@@ -6,8 +6,11 @@ on:
       release_version:
         description: Image tag to publish
         required: true
-        default: 0.2.15-custom-20261011
+        default: 0.2.16-custom-20261014
         type: string
+  push:
+    branches:
+      - 'deploy/**'
 
 permissions:
   contents: read
