@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -79,7 +80,7 @@ func TestResponsesChatFallbackRejectsNativeCompactionBeforeUpstream(t *testing.T
 					var result *OpenAIForwardResult
 					var err error
 					if direct {
-						result, err = svc.forwardResponsesViaRawChatCompletions(context.Background(), c, account, body)
+						result, err = svc.forwardResponsesViaRawChatCompletions(context.Background(), c, account, body, time.Now())
 					} else {
 						result, err = svc.Forward(context.Background(), c, account, body)
 					}

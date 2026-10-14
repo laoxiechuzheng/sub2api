@@ -78,12 +78,15 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           set -euo pipefail
+          version_file="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
           version="$RELEASE_VERSION"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            version="$version_file"
+          fi
           if [[ ! "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
             echo "release_version must be a valid Docker tag" >&2
             exit 1
           fi
-          version_file="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
           if [[ "$version" != "$version_file" ]]; then
             echo "release_version '$version' does not match backend/cmd/server/VERSION '$version_file'" >&2
             exit 1
