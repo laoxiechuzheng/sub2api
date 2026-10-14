@@ -98,17 +98,17 @@ func (t *diagnosticTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		capture.EndAttempt(attempt, result)
 		return resp, nil
 	}
-	resp.Body = &diagnosticResponseBody{
+	diagnosticBody := &diagnosticResponseBody{
 		ReadCloser: resp.Body, capture: capture, attempt: attempt, result: result,
 		stream:  strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream"),
 		encoded: resp.Header.Get("Content-Encoding") != "", usage: make(map[string]int64),
 		preserveRaw: capture.PreserveRaw(), responseLimit: min(capture.MaxBytes(), requestdiagnostic.MaxResponseBodyBytes),
 	}
 	if capture.PreserveRaw() {
-		body := resp.Body.(*diagnosticResponseBody)
-		body.result.ResponseContentType = resp.Header.Get("Content-Type")
-		body.responseBuffer = make([]byte, 0)
+		diagnosticBody.result.ResponseContentType = resp.Header.Get("Content-Type")
+		diagnosticBody.responseBuffer = make([]byte, 0)
 	}
+	resp.Body = diagnosticBody
 	return resp, nil
 }
 

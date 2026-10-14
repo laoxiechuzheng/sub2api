@@ -278,7 +278,7 @@ func TestGatewayService_Forward_CommentOnlySSEOverloadKeepsSafeFailover(t *testi
 	t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
 	const raw = `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`
 	go func() {
-		defer writer.Close()
+		defer func() { _ = writer.Close() }()
 		_, _ = io.WriteString(writer, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7}}}\n\n")
 		time.Sleep(1100 * time.Millisecond)
 		_, _ = io.WriteString(writer, "event: error\ndata: "+raw+"\n\n")
