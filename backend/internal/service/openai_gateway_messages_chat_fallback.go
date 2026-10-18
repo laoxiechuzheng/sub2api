@@ -67,6 +67,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	chatReq, err := apicompat.AnthropicToChatCompletionsRequestWithOptions(&anthropicReq, apicompat.AnthropicChatCompletionsOptions{
 		PreserveCacheControl:   isClaudeFamilyModelName(upstreamModel),
 		DefaultCacheControlTTL: chatCompletionsAnthropicCacheTTL,
+		MinOutputTokens:        configuredMinOutputTokens(s.cfg),
 	})
 	if err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())

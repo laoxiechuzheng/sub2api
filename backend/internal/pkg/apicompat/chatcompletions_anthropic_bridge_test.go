@@ -267,6 +267,43 @@ func TestAnthropicToChatCompletionsRequest_MaxTokensFloor(t *testing.T) {
 	require.Equal(t, minMaxOutputTokens, *out.MaxCompletionTokens)
 }
 
+func TestAnthropicToChatCompletionsRequestWithMinOutputTokens_ConfiguredFloor(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 16,
+		Messages:  []AnthropicMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+	}
+
+	out, err := AnthropicToChatCompletionsRequestWithMinOutputTokens(req, 64)
+	require.NoError(t, err)
+	require.NotNil(t, out.MaxCompletionTokens)
+	require.Equal(t, 64, *out.MaxCompletionTokens)
+}
+
+func TestAnthropicToResponses_ConfiguredMaxTokensFloor(t *testing.T) {
+	for _, input := range []int{16, 64, 127} {
+		req := &AnthropicRequest{
+			Model:     "claude-sonnet-4-20250514",
+			MaxTokens: input,
+			Messages:  []AnthropicMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+		}
+		out, err := AnthropicToResponsesWithMinOutputTokens(req, 16)
+		require.NoError(t, err)
+		require.NotNil(t, out.MaxOutputTokens)
+		require.Equal(t, input, *out.MaxOutputTokens)
+	}
+
+	req := &AnthropicRequest{
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 1,
+		Messages:  []AnthropicMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+	}
+	out, err := AnthropicToResponsesWithMinOutputTokens(req, 16)
+	require.NoError(t, err)
+	require.NotNil(t, out.MaxOutputTokens)
+	require.Equal(t, 16, *out.MaxOutputTokens)
+}
+
 func TestAnthropicToChatCompletionsRequest_ReasoningEffortMapping(t *testing.T) {
 	req := &AnthropicRequest{
 		Model:        "gpt-5.4",
@@ -1162,6 +1199,38 @@ func TestAnthropicToChatCompletionsRequest_OptionsPreserveCacheControl(t *testin
 	require.NoError(t, err)
 	require.Equal(t, 3, strings.Count(string(raw), "cache_control"))
 	require.NotContains(t, string(raw), "x-anthropic-billing-header")
+}
+
+func TestAnthropicToChatCompletionsRequest_OptionsPreserveCacheControlAndMinOutputTokens(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:     "claude-haiku-5-5",
+		MaxTokens: 10,
+		System:    json.RawMessage(`[{"type":"text","text":"stable prefix","cache_control":{"type":"ephemeral"}}]`),
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"explicit ttl","cache_control":{"type":"ephemeral","ttl":"1h"}}]`)},
+		},
+	}
+
+	out, err := AnthropicToChatCompletionsRequestWithOptions(req, AnthropicChatCompletionsOptions{
+		PreserveCacheControl:   true,
+		DefaultCacheControlTTL: "5m",
+		MinOutputTokens:        64,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out.MaxCompletionTokens)
+	require.Equal(t, 64, *out.MaxCompletionTokens)
+
+	var sysParts []ChatContentPart
+	require.NoError(t, json.Unmarshal(out.Messages[0].Content, &sysParts))
+	require.Len(t, sysParts, 1)
+	require.NotNil(t, sysParts[0].CacheControl)
+	require.Equal(t, "5m", sysParts[0].CacheControl.TTL)
+
+	var userParts []ChatContentPart
+	require.NoError(t, json.Unmarshal(out.Messages[1].Content, &userParts))
+	require.Len(t, userParts, 1)
+	require.NotNil(t, userParts[0].CacheControl)
+	require.Equal(t, "1h", userParts[0].CacheControl.TTL)
 }
 
 // TestAnthropicToChatCompletionsRequest_DefaultDropsCacheControl pins the

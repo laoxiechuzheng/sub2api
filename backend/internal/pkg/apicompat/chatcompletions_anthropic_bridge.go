@@ -47,6 +47,9 @@ type AnthropicChatCompletionsOptions struct {
 	// breakpoint. An explicit client ttl always wins; an empty default leaves
 	// the upstream's own default untouched.
 	DefaultCacheControlTTL string
+	// MinOutputTokens is the floor applied to max_completion_tokens. A
+	// non-positive value retains the historical default floor.
+	MinOutputTokens int
 }
 
 // AnthropicToChatCompletionsRequest converts an Anthropic Messages request
@@ -55,7 +58,17 @@ type AnthropicChatCompletionsOptions struct {
 // ResponsesToChatCompletionsRequest but avoids materializing the intermediate
 // ResponsesRequest and the extra marshal/unmarshal cycle.
 func AnthropicToChatCompletionsRequest(req *AnthropicRequest) (*ChatCompletionsRequest, error) {
-	return AnthropicToChatCompletionsRequestWithOptions(req, AnthropicChatCompletionsOptions{})
+	return AnthropicToChatCompletionsRequestWithOptions(req, AnthropicChatCompletionsOptions{
+		MinOutputTokens: DefaultMinMaxOutputTokens,
+	})
+}
+
+// AnthropicToChatCompletionsRequestWithMinOutputTokens converts an Anthropic
+// Messages request using the supplied max_completion_tokens floor.
+func AnthropicToChatCompletionsRequestWithMinOutputTokens(req *AnthropicRequest, minOutputTokens int) (*ChatCompletionsRequest, error) {
+	return AnthropicToChatCompletionsRequestWithOptions(req, AnthropicChatCompletionsOptions{
+		MinOutputTokens: minOutputTokens,
+	})
 }
 
 // AnthropicToChatCompletionsRequestWithOptions is
@@ -63,6 +76,9 @@ func AnthropicToChatCompletionsRequest(req *AnthropicRequest) (*ChatCompletionsR
 func AnthropicToChatCompletionsRequestWithOptions(req *AnthropicRequest, opts AnthropicChatCompletionsOptions) (*ChatCompletionsRequest, error) {
 	if req == nil {
 		return nil, fmt.Errorf("anthropic request is nil")
+	}
+	if opts.MinOutputTokens <= 0 {
+		opts.MinOutputTokens = minMaxOutputTokens
 	}
 
 	messages, err := anthropicToChatMessages(req.System, req.Messages, opts)
@@ -84,8 +100,8 @@ func AnthropicToChatCompletionsRequestWithOptions(req *AnthropicRequest, opts An
 
 	if req.MaxTokens > 0 {
 		v := req.MaxTokens
-		if v < minMaxOutputTokens {
-			v = minMaxOutputTokens
+		if v < opts.MinOutputTokens {
+			v = opts.MinOutputTokens
 		}
 		out.MaxCompletionTokens = &v
 	}

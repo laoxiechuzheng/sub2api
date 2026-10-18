@@ -898,15 +898,22 @@ func TestForwardAdaptiveNativeDeepSeekResponsesStreamReasoningRoundTrip(t *testi
 	require.NotNil(t, round1Result)
 	require.Equal(t, "https://api.deepseek.com/responses", round1Upstream.lastReq.URL.String())
 
-	// 客户端 SSE 字节保持：上游每个事件 data 行都应原样出现在转发流里。裸
-	// [DONE] 终结符由既有 relay 归一化吞掉（Responses 协议以 response.completed
-	// 为终态），属于既有差异而非本次 reasoning 往返改动。
+	// 客户端 SSE 保留上游事件及 reasoning 原文；v0.2.17 的 created_at 补齐会改写
+	// response.created/completed 生命周期对象，但同一条流内必须保持一致。
 	relayed := rec1.Body.String()
-	for _, line := range strings.Split(round1SSE, "\n") {
-		if strings.HasPrefix(line, "data: ") && line != "data: [DONE]" {
-			require.Contains(t, relayed, line)
-		}
-	}
+	upstreamPayloads := sseDataPayloads(round1SSE)
+	relayedPayloads := sseDataPayloads(relayed)
+	require.Len(t, relayedPayloads, len(upstreamPayloads))
+	createdAt := gjson.Get(relayedPayloads[0], "response.created_at")
+	require.Equal(t, "response.created", gjson.Get(relayedPayloads[0], "type").String())
+	require.Equal(t, "resp_stream_native", gjson.Get(relayedPayloads[0], "response.id").String())
+	require.Equal(t, gjson.Number, createdAt.Type)
+	require.Positive(t, createdAt.Int())
+	require.Equal(t, upstreamPayloads[1], relayedPayloads[1])
+	require.Equal(t, upstreamPayloads[2], relayedPayloads[2])
+	require.Equal(t, "response.completed", gjson.Get(relayedPayloads[3], "type").String())
+	require.Equal(t, createdAt.Int(), gjson.Get(relayedPayloads[3], "response.created_at").Int())
+	require.Equal(t, fullReasoningText, gjson.Get(relayedPayloads[3], "response.output.0.content.0.text").String())
 	require.NotContains(t, relayed, "response.failed")
 
 	// 写入侧：完整 content 落 scoped content 槽位（不写裸 id、不写 summary 槽位）。
