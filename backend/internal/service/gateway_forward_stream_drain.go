@@ -28,17 +28,6 @@ func newGatewayForwardStreamDrain(scanner *bufio.Scanner, body io.ReadCloser, in
 	}
 }
 
-func (s *GatewayService) forwardStreamInterval() time.Duration {
-	if s == nil || s.cfg == nil {
-		// 未传配置时沿用现有配置的默认值。
-		return 180 * time.Second
-	}
-	if s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
-		return time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
-	}
-	return 0 // 与 native 路径一致，保留显式禁用语义。
-}
-
 // startTerminalTail 首次收到 message_stop 时启动固定尾窗口；后续 terminal、
 // keepalive 或 usage 都不能延长总期限。
 func (d *gatewayForwardStreamDrain) startTerminalTail() {
@@ -51,10 +40,6 @@ func (d *gatewayForwardStreamDrain) startTerminalTail() {
 
 func (d *gatewayForwardStreamDrain) terminalSeen() bool {
 	return d.tailTimer != nil
-}
-
-func (d *gatewayForwardStreamDrain) next() (string, error) {
-	return d.nextOrClientGone(nil)
 }
 
 // nextOrClientGone 在等待上游行时同时观察客户端断开。terminal 固定期限、
