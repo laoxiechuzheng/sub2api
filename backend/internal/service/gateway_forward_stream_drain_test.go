@@ -197,6 +197,11 @@ const gatewayForwardDrainStart = "event: message_start\n" +
 const gatewayForwardDrainDelta = "event: message_delta\n" +
 	`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":27,"cache_read_input_tokens":15,"cache_creation_input_tokens":6}}` + "\n\n"
 
+// stop_reason 是 upstream 的成功终态；用于验证 terminal 前 idle/read error 的
+// fixture 必须去掉它，同时保留本次 delta 的 usage。
+const gatewayForwardDrainNonTerminalDelta = "event: message_delta\n" +
+	`data: {"type":"message_delta","delta":{},"usage":{"output_tokens":27,"cache_read_input_tokens":15,"cache_creation_input_tokens":6}}` + "\n\n"
+
 const gatewayForwardDrainStop = "event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"
 
 func TestGatewayForwardStreamDrain_ClientWriteFailurePreservesTailUsage(t *testing.T) {
@@ -370,7 +375,7 @@ func TestGatewayForwardStreamDrain_IdleClosesReaderAndPreservesUsage(t *testing.
 		t.Run(name, func(t *testing.T) {
 			writer := &gatewayForwardDrainFailWriter{ResponseRecorder: httptest.NewRecorder(), failAt: 1, failedCh: make(chan struct{})}
 			c, _ := gin.CreateTestContext(writer)
-			body := newGatewayForwardDrainBlockingBody(gatewayForwardDrainStart + gatewayForwardDrainDelta)
+			body := newGatewayForwardDrainBlockingBody(gatewayForwardDrainStart + gatewayForwardDrainNonTerminalDelta)
 			defer body.Close()
 			svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{StreamDataIntervalTimeout: 1}}}
 			result, err := runGatewayForwardDrainHandler(t, handle, svc, &http.Response{Body: body}, c)
@@ -393,7 +398,7 @@ func TestGatewayForwardStreamDrain_ReadErrorClosesReaderAndPreservesUsage(t *tes
 			t.Run(name+"/terminal="+fmt.Sprint(terminal), func(t *testing.T) {
 				writer := &gatewayForwardDrainFailWriter{ResponseRecorder: httptest.NewRecorder(), failAt: 1, failedCh: make(chan struct{})}
 				c, _ := gin.CreateTestContext(writer)
-				prefix := gatewayForwardDrainStart + gatewayForwardDrainDelta
+				prefix := gatewayForwardDrainStart + gatewayForwardDrainNonTerminalDelta
 				if terminal {
 					prefix += gatewayForwardDrainStop
 				}

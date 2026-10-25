@@ -54,6 +54,13 @@ func (d *gatewayForwardStreamDrain) terminalSeen() bool {
 }
 
 func (d *gatewayForwardStreamDrain) next() (string, error) {
+	return d.nextOrClientGone(nil)
+}
+
+// nextOrClientGone 在等待上游行时同时观察客户端断开。terminal 固定期限、
+// 逐行 idle 计时器和已缓冲事件均沿用同一套优先级；clientGone 仅影响等待，
+// 不阻止继续排水和合并 usage。
+func (d *gatewayForwardStreamDrain) nextOrClientGone(clientGone <-chan struct{}) (string, error) {
 	var tailCh, idleCh <-chan time.Time
 	if d.tailTimer != nil {
 		// 持续到达的事件不能因 select 总选中队列而拖长尾窗口。
@@ -65,9 +72,28 @@ func (d *gatewayForwardStreamDrain) next() (string, error) {
 	if d.pump.timer != nil {
 		idleCh = d.pump.timer.C
 	}
+
+	// 已缓冲事件优先于 idle 和连接取消；terminal deadline 已在上面优先判定。
 	select {
 	case ev, ok := <-d.pump.events:
 		if !ok {
+			return "", io.EOF
+		}
+		if d.tailTimer != nil && !time.Now().Before(d.tailDeadline) {
+			return "", io.EOF
+		}
+		d.pump.resetTimer()
+		return ev.line, ev.err
+	default:
+	}
+
+	select {
+	case ev, ok := <-d.pump.events:
+		if !ok {
+			return "", io.EOF
+		}
+		// 如果事件与 terminal 定时器同时就绪，固定期限仍然优先。
+		if d.tailTimer != nil && !time.Now().Before(d.tailDeadline) {
 			return "", io.EOF
 		}
 		d.pump.resetTimer()
@@ -75,7 +101,19 @@ func (d *gatewayForwardStreamDrain) next() (string, error) {
 	case <-tailCh:
 		return "", io.EOF
 	case <-idleCh:
-		return "", errAnthropicNativeStreamIdle
+		// 与 native pump 一致：计时器到期时若已有缓冲行，优先交付该行。
+		select {
+		case ev, ok := <-d.pump.events:
+			if !ok {
+				return "", io.EOF
+			}
+			d.pump.resetTimer()
+			return ev.line, ev.err
+		default:
+			return "", errAnthropicNativeStreamIdle
+		}
+	case <-clientGone:
+		return "", errAnthropicNativeClientGone
 	}
 }
 

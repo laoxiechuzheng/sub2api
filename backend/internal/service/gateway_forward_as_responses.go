@@ -237,7 +237,15 @@ func (s *GatewayService) ForwardAsResponses(
 	var result *ForwardResult
 	var handleErr error
 	if clientStream {
+		writerSizeBeforeStream := c.Writer.Size()
 		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		var sseErr *sseStreamErrorEventError
+		switch {
+		case errors.As(handleErr, &sseErr):
+			return nil, s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, mappedModel, c.Writer.Size() != writerSizeBeforeStream, sseErr.SafeToFailoverAfterWrite)
+		case errors.Is(handleErr, errAnthropicNativeStreamIdle) && s.rateLimitService != nil:
+			s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
+		}
 	} else {
 		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
 	}
@@ -587,16 +595,10 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
-	clientDisconnected := false
+	writerSizeBeforeStream := c.Writer.Size()
 
-	scanner := bufio.NewScanner(resp.Body)
-	maxLineSize := defaultMaxLineSize
-	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
-		maxLineSize = s.cfg.Gateway.MaxLineSize
-	}
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
-	drain := newGatewayForwardStreamDrain(scanner, resp.Body, s.forwardStreamInterval())
-	defer drain.stop()
+	stream := newAnthropicCompatStream(s.cfg, c, resp, "forward_as_responses", requestID)
+	defer stream.stop()
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
@@ -609,13 +611,13 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			Stream:           true,
 			Duration:         time.Since(startTime),
 			FirstTokenMs:     firstTokenMs,
-			ClientDisconnect: clientDisconnected,
+			ClientDisconnect: stream.clientDisconnected,
 		}
 	}
 
 	// 所有输出（包括补发的最终事件）共用此写失败保护。
 	writeEvents := func(events []apicompat.ResponsesStreamEvent) {
-		if clientDisconnected {
+		if stream.disconnected() {
 			return
 		}
 		for _, evt := range events {
@@ -637,17 +639,21 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				continue
 			}
 			for _, restored := range payloads {
+				if stream.disconnected() {
+					return
+				}
 				eventType := gjson.GetBytes(restored, "type").String()
 				if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
-					clientDisconnected = true
+					stream.markClientDisconnected()
 					logger.L().Info("forward_as_responses stream: client disconnected",
 						zap.String("request_id", requestID),
 					)
 					return
 				}
+				stream.markDownstreamWrote()
 			}
 		}
-		if len(events) > 0 && !clientDisconnected {
+		if len(events) > 0 && !stream.disconnected() {
 			c.Writer.Flush()
 		}
 	}
@@ -671,24 +677,34 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		// restore the provider's overlapping raw input total.
 		syncAnthropicResponsesUsage(state, usage)
 		normalizeAnthropicEventUsageForResponses(event, usage)
-		if clientDisconnected {
+		if stream.disconnected() {
 			return
 		}
 		// 等固定 usage 尾窗口排水结束后，再转换最终事件。
-		if drain.terminalSeen() && event.Type != "message_delta" {
+		if stream.drain.terminalSeen() && event.Type != "message_delta" {
 			return
 		}
 		writeEvents(apicompat.AnthropicEventToResponsesEvents(event, state))
 	}
 
+	finalizeStream := func() (*ForwardResult, error) {
+		if failure := stream.failure(); failure != nil {
+			return finishAnthropicCompatStreamFailure(c, writerSizeBeforeStream, failure, resultWithUsage(), func() {
+				writeAnthropicCompatResponsesStreamFailure(c, state, clientToolRestorer, failure)
+			})
+		}
+		if stream.disconnected() {
+			return resultWithUsage(), nil
+		}
+		writeEvents(apicompat.FinalizeAnthropicResponsesStream(state))
+		return resultWithUsage(), nil
+	}
+
 	// 读取不受下游请求取消影响：上游请求已有 WithoutCancel，脱离取消后的读取
 	// 由闲置超时和 terminal 尾窗口限制。
-	var readErr error
-	explicitStreamError := false
 	for {
-		line, err := drain.next()
-		if err != nil {
-			readErr = err
+		line, ok := stream.nextLine()
+		if !ok {
 			break
 		}
 		eventType, ok := parseAnthropicSSEField(line, "event")
@@ -696,9 +712,8 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			continue
 		}
 
-		dataLine, err := drain.next()
-		if err != nil {
-			readErr = err
+		dataLine, ok := stream.nextLine()
+		if !ok {
 			break
 		}
 		payload, ok := parseAnthropicSSEField(dataLine, "data")
@@ -706,7 +721,6 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			continue
 		}
 		if strings.TrimSpace(payload) == "[DONE]" {
-			drain.startTerminalTail()
 			continue
 		}
 
@@ -722,37 +736,14 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		if event.Type == "" {
 			event.Type = eventType
 		}
-		if anthropicStreamEventIsTerminal(eventType, payload) {
-			drain.startTerminalTail()
-		}
-		processEvent(&event)
-		if event.Type == "error" {
-			explicitStreamError = true
-			readErr = errors.New("upstream stream error event")
+		stream.observe(&event, payload)
+		if stream.upstreamErrType != "" {
 			break
 		}
+		processEvent(&event)
 	}
 
-	// 成功终态后的传输收尾可忽略，尾窗口内显式上游错误仍须返回。
-	if !explicitStreamError && (drain.terminalSeen() || errors.Is(readErr, io.EOF)) {
-		readErr = nil
-	}
-	if readErr != nil {
-		if !errors.Is(readErr, context.Canceled) && !errors.Is(readErr, context.DeadlineExceeded) {
-			logger.L().Warn("forward_as_responses stream: read error",
-				zap.Error(readErr),
-				zap.String("request_id", requestID),
-			)
-		}
-		// 上游失败时不补发成功 completion，下游写失败后也不触发 failover 重放；
-		// 已采集 usage 与错误一同返回。
-		return resultWithUsage(), readErr
-	}
-
-	if !clientDisconnected {
-		writeEvents(apicompat.FinalizeAnthropicResponsesStream(state))
-	}
-	return resultWithUsage(), nil
+	return finalizeStream()
 }
 
 // appendRawJSON appends a JSON fragment string to existing raw JSON.

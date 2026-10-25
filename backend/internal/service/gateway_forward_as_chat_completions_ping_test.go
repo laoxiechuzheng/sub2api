@@ -198,12 +198,11 @@ func TestHandleCCStreamingFromAnthropic_PingWriteFailureStopsDownstream(t *testi
 			require.Zero(t, writer.flushesAfterError)
 			require.NotContains(t, writer.Body.String(), "[DONE]")
 			require.Equal(t, 7, result.Usage.OutputTokens)
+			require.NotNil(t, result.FirstTokenMs)
 			if withUsage {
 				require.Equal(t, 10, result.Usage.InputTokens)
-				require.NotNil(t, result.FirstTokenMs)
 			} else {
 				require.Zero(t, result.Usage.InputTokens)
-				require.NotNil(t, result.FirstTokenMs, "the real message_delta after the failed ping still sets TTFT")
 			}
 		})
 	}
