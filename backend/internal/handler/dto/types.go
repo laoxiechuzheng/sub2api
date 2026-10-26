@@ -697,6 +697,13 @@ type AdminUsageLog struct {
 	// BillingTier 计费层级标签（per_request/image 模式）
 	BillingTier *string `json:"billing_tier,omitempty"`
 
+	// CompositeRouteID 是承接本次请求的 Composite 显式路由；仅管理端可见。
+	CompositeRouteID *int64 `json:"composite_route_id,omitempty"`
+	// CompositeRouteKind 是路由时的请求分类：compaction / conversation / unknown。
+	CompositeRouteKind *string `json:"composite_route_kind,omitempty"`
+	// CompositeFallbackChain 记录切换到备用模型前失败的目标，如 "a (429) → b"。
+	CompositeFallbackChain *string `json:"composite_fallback_chain,omitempty"`
+
 	// AccountRateMultiplier 账号计费倍率快照（nil 表示按 1.0 处理）
 	AccountRateMultiplier *float64 `json:"account_rate_multiplier"`
 	// AccountStatsCost 自定义定价规则计算的账号统计费用（nil 表示使用默认公式）

@@ -7,10 +7,12 @@ import "time"
 
 const (
 	SchemaVersion           = 1
+	CompressedSchemaVersion = 2
 	DefaultMaxBytes         = 8 << 20
 	DefaultMaxAttempts      = 16
 	MaxResponseSummaryBytes = 64 << 10
-	MaxResponseBodyBytes    = 1 << 20
+	// Expansion resource guard; compressed storage has no 64 MiB plaintext cap.
+	MaxExpandedBodyBytes = 512 << 20
 )
 
 const (
@@ -22,17 +24,18 @@ const (
 
 // 固定省略原因供管理员 UI 使用，无需解析正文或保留任意错误文本。
 const (
-	OmittedNotCaptured = "not_captured"
-	OmittedEmptyBody   = "empty_body"
-	OmittedInvalidJSON = "invalid_json"
-	OmittedInvalidUTF8 = "invalid_utf8"
-	OmittedDepthLimit  = "depth_limit"
-	OmittedNodeLimit   = "node_limit"
-	OmittedBinaryData  = "binary_data"
-	OmittedBudget      = "budget_exceeded"
-	OmittedEvicted     = "evicted_for_latest_attempt"
-	OmittedDropped     = "dropped"
-	OmittedTooLarge    = "body_too_large"
+	OmittedNotCaptured        = "not_captured"
+	OmittedEmptyBody          = "empty_body"
+	OmittedInvalidJSON        = "invalid_json"
+	OmittedInvalidUTF8        = "invalid_utf8"
+	OmittedDepthLimit         = "depth_limit"
+	OmittedNodeLimit          = "node_limit"
+	OmittedBinaryData         = "binary_data"
+	OmittedBudget             = "budget_exceeded"
+	OmittedEvicted            = "evicted_for_latest_attempt"
+	OmittedDropped            = "dropped"
+	OmittedTooLarge           = "body_too_large"
+	OmittedDecompressionLimit = "decompression_limit"
 )
 
 // Options 只控制单条采集，不控制 service 的全局并发或队列大小。
@@ -50,15 +53,18 @@ type Options struct {
 // Content preserves the original text when PreserveRaw is enabled.
 // Truncated content is a UTF-8-safe prefix and can be incomplete.
 // 前缀自身可能不是有效 JSON，但外层 Snapshot 始终可正常序列化。
-// StoredBytes 等于 len(Content)，不包含 JSON wire 转义的额外开销。
+// StoredBytes counts ContentGzip when present, otherwise len(Content). V2
+// compressed payloads declare UncompressedBytes; Get restores the V1 text API.
 // 即使保留了其他内容，也会明确标记二进制内容或嵌套限制导致的局部省略。
 type Payload struct {
-	Content       string `json:"content"`
-	OriginalBytes int    `json:"original_bytes"`
-	StoredBytes   int    `json:"stored_bytes"`
-	Truncated     bool   `json:"truncated"`
-	OmittedReason string `json:"omitted_reason,omitempty"`
-	Redacted      bool   `json:"redacted"`
+	Content           string `json:"content"`
+	ContentGzip       []byte `json:"content_gzip,omitempty"`
+	UncompressedBytes int    `json:"uncompressed_bytes,omitempty"`
+	OriginalBytes     int    `json:"original_bytes"`
+	StoredBytes       int    `json:"stored_bytes"`
+	Truncated         bool   `json:"truncated"`
+	OmittedReason     string `json:"omitted_reason,omitempty"`
+	Redacted          bool   `json:"redacted"`
 }
 
 // Inbound 只包含选定元数据，不包含原始 headers 或 cookies。
@@ -105,14 +111,17 @@ type Attempt struct {
 // observed response bytes when PreserveRaw is enabled; it may be a prefix.
 // EndAttempt 采用首次结果并以内置单调时钟计算 DurationMs。
 type AttemptResult struct {
-	Status              int
-	Error               string
-	UpstreamRequestID   string
-	ResponseSummary     []byte
-	ResponseBody        []byte
-	ResponseBytes       int
-	ResponseContentType string
-	ResponseIncomplete  bool
+	Status                int
+	Error                 string
+	UpstreamRequestID     string
+	ResponseSummary       []byte
+	ResponseBody          []byte
+	ResponseBodyGzip      []byte
+	ResponseBodyBytes     int
+	ResponseOmittedReason string
+	ResponseBytes         int
+	ResponseContentType   string
+	ResponseIncomplete    bool
 }
 
 // UsageBinding 必须来自权威 usage 创建或计费路径。

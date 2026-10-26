@@ -397,6 +397,8 @@ func omittedPayload(originalBytes int, reason string) Payload {
 
 func droppedPayload(p Payload, reason string) Payload {
 	p.Content = ""
+	p.ContentGzip = nil
+	p.UncompressedBytes = 0
 	p.StoredBytes = 0
 	p.OmittedReason = normalizeReason(reason, OmittedDropped)
 	return p
@@ -404,7 +406,7 @@ func droppedPayload(p Payload, reason string) Payload {
 
 func normalizeReason(reason, fallback string) string {
 	switch reason {
-	case OmittedNotCaptured, OmittedEmptyBody, OmittedInvalidJSON, OmittedInvalidUTF8, OmittedDepthLimit, OmittedNodeLimit, OmittedBinaryData, OmittedBudget, OmittedEvicted, OmittedDropped, OmittedTooLarge:
+	case OmittedNotCaptured, OmittedEmptyBody, OmittedInvalidJSON, OmittedInvalidUTF8, OmittedDepthLimit, OmittedNodeLimit, OmittedBinaryData, OmittedBudget, OmittedEvicted, OmittedDropped, OmittedTooLarge, OmittedDecompressionLimit:
 		return reason
 	default:
 		return fallback

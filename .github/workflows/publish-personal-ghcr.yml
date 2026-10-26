@@ -6,7 +6,7 @@ on:
       release_version:
         description: Image tag to publish
         required: true
-        default: 0.2.18-custom-20261025
+        default: 0.2.18-custom-20261027
         type: string
   push:
     branches:
@@ -42,11 +42,11 @@ jobs:
           ./internal/requestdiagnostic ./internal/service ./internal/repository
           ./internal/handler ./internal/handler/admin ./internal/server/middleware ./internal/server/routes
           ./internal/config ./internal/pkg/httputil
-          -run 'Composite|NativeCompaction|DeepSeek|OpenRouter|CacheTTL|CacheControl|UpstreamProtocol|ResponsesChatFallback|ResponsesNativeGuard|Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|AnthropicCompat|ForwardAsCompat|GatewayForwardStreamDrain|CommentOnlySSEOverload|V0218'
+          -run 'Composite|NativeCompaction|DeepSeek|OpenRouter|CacheTTL|CacheControl|UpstreamProtocol|ResponsesChatFallback|ResponsesNativeGuard|Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|AnthropicCompat|ForwardAsCompat|GatewayForwardStreamDrain|CommentOnlySSEOverload|V0218|Gzip|Compressed|PartialUsage|ServerTiming'
           -count=1 -timeout=10m
       - name: PostgreSQL diagnostic and precise routing integration tests
         working-directory: backend
-        run: go test -mod=readonly -tags=integration ./internal/repository -run '^Test(RequestDiagnosticRepositoryIntegration|CompositeRoutePreciseConditions|Migration242DropsPlatformCheckConstraints|UserPlatformQuotaRepository_RejectsUnregisteredPlatform|CompositeModelRouteRepository_RejectsUnregisteredTargetPlatform)' -count=1 -timeout=5m
+        run: go test -v -mod=readonly -tags=integration ./internal/repository -run '^Test(RequestDiagnosticRepositoryIntegration|CompositeRoutePreciseConditions|Migration242DropsPlatformCheckConstraints|UserPlatformQuotaRepository_RejectsUnregisteredPlatform|CompositeModelRouteRepository_RejectsUnregisteredTargetPlatform)|^TestCompositeUsage|^TestCompositeRouteFallback' -count=1 -timeout=5m
       - uses: pnpm/action-setup@v6
         with:
           version: 9

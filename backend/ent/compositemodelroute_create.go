@@ -13,6 +13,7 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // CompositeModelRouteCreate is the builder for creating a CompositeModelRoute entity.
@@ -214,6 +215,12 @@ func (_c *CompositeModelRouteCreate) SetNillableBodyNotContains(v *string) *Comp
 	if v != nil {
 		_c.SetBodyNotContains(*v)
 	}
+	return _c
+}
+
+// SetFallbackModels sets the "fallback_models" field.
+func (_c *CompositeModelRouteCreate) SetFallbackModels(v []domain.CompositeRouteFallback) *CompositeModelRouteCreate {
+	_c.mutation.SetFallbackModels(v)
 	return _c
 }
 
@@ -547,6 +554,10 @@ func (_c *CompositeModelRouteCreate) createSpec() (*CompositeModelRoute, *sqlgra
 		_spec.SetField(compositemodelroute.FieldBodyNotContains, field.TypeString, value)
 		_node.BodyNotContains = value
 	}
+	if value, ok := _c.mutation.FallbackModels(); ok {
+		_spec.SetField(compositemodelroute.FieldFallbackModels, field.TypeJSON, value)
+		_node.FallbackModels = value
+	}
 	if value, ok := _c.mutation.Priority(); ok {
 		_spec.SetField(compositemodelroute.FieldPriority, field.TypeInt, value)
 		_node.Priority = value
@@ -799,6 +810,24 @@ func (u *CompositeModelRouteUpsert) SetBodyNotContains(v string) *CompositeModel
 // UpdateBodyNotContains sets the "body_not_contains" field to the value that was provided on create.
 func (u *CompositeModelRouteUpsert) UpdateBodyNotContains() *CompositeModelRouteUpsert {
 	u.SetExcluded(compositemodelroute.FieldBodyNotContains)
+	return u
+}
+
+// SetFallbackModels sets the "fallback_models" field.
+func (u *CompositeModelRouteUpsert) SetFallbackModels(v []domain.CompositeRouteFallback) *CompositeModelRouteUpsert {
+	u.Set(compositemodelroute.FieldFallbackModels, v)
+	return u
+}
+
+// UpdateFallbackModels sets the "fallback_models" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsert) UpdateFallbackModels() *CompositeModelRouteUpsert {
+	u.SetExcluded(compositemodelroute.FieldFallbackModels)
+	return u
+}
+
+// ClearFallbackModels clears the value of the "fallback_models" field.
+func (u *CompositeModelRouteUpsert) ClearFallbackModels() *CompositeModelRouteUpsert {
+	u.SetNull(compositemodelroute.FieldFallbackModels)
 	return u
 }
 
@@ -1095,6 +1124,27 @@ func (u *CompositeModelRouteUpsertOne) SetBodyNotContains(v string) *CompositeMo
 func (u *CompositeModelRouteUpsertOne) UpdateBodyNotContains() *CompositeModelRouteUpsertOne {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.UpdateBodyNotContains()
+	})
+}
+
+// SetFallbackModels sets the "fallback_models" field.
+func (u *CompositeModelRouteUpsertOne) SetFallbackModels(v []domain.CompositeRouteFallback) *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetFallbackModels(v)
+	})
+}
+
+// UpdateFallbackModels sets the "fallback_models" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertOne) UpdateFallbackModels() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateFallbackModels()
+	})
+}
+
+// ClearFallbackModels clears the value of the "fallback_models" field.
+func (u *CompositeModelRouteUpsertOne) ClearFallbackModels() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.ClearFallbackModels()
 	})
 }
 
@@ -1565,6 +1615,27 @@ func (u *CompositeModelRouteUpsertBulk) SetBodyNotContains(v string) *CompositeM
 func (u *CompositeModelRouteUpsertBulk) UpdateBodyNotContains() *CompositeModelRouteUpsertBulk {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.UpdateBodyNotContains()
+	})
+}
+
+// SetFallbackModels sets the "fallback_models" field.
+func (u *CompositeModelRouteUpsertBulk) SetFallbackModels(v []domain.CompositeRouteFallback) *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetFallbackModels(v)
+	})
+}
+
+// UpdateFallbackModels sets the "fallback_models" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertBulk) UpdateFallbackModels() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateFallbackModels()
+	})
+}
+
+// ClearFallbackModels clears the value of the "fallback_models" field.
+func (u *CompositeModelRouteUpsertBulk) ClearFallbackModels() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.ClearFallbackModels()
 	})
 }
 

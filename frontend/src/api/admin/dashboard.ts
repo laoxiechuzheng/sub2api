@@ -13,7 +13,8 @@ import type {
   UserUsageTrendPoint,
   UserSpendingRankingResponse,
   UserBreakdownItem,
-  UsageRequestType
+  UsageRequestType,
+  CompositeRouteUsageFilter
 } from '@/types'
 
 /**
@@ -45,6 +46,7 @@ export async function getRealtimeMetrics(): Promise<{
 }
 
 export interface TrendParams {
+  billing_mode?: string | null
   start_date?: string
   end_date?: string
   granularity?: 'day' | 'hour'
@@ -58,6 +60,7 @@ export interface TrendParams {
   native_compaction_v2?: boolean | null
   billing_type?: number | null
 	upstream_model_mismatch?: boolean
+  composite_route?: CompositeRouteUsageFilter | null
 }
 
 export interface TrendResponse {
@@ -78,6 +81,7 @@ export async function getUsageTrend(params?: TrendParams): Promise<TrendResponse
 }
 
 export interface ModelStatsParams {
+  billing_mode?: string | null
   start_date?: string
   end_date?: string
   user_id?: number
@@ -91,6 +95,7 @@ export interface ModelStatsParams {
   native_compaction_v2?: boolean | null
   billing_type?: number | null
 	upstream_model_mismatch?: boolean
+  composite_route?: CompositeRouteUsageFilter | null
 }
 
 export interface ModelStatsResponse {
@@ -110,6 +115,8 @@ export async function getModelStats(params?: ModelStatsParams): Promise<ModelSta
 }
 
 export interface GroupStatsParams {
+  model?: string
+  billing_mode?: string | null
   start_date?: string
   end_date?: string
   user_id?: number
@@ -121,6 +128,7 @@ export interface GroupStatsParams {
   native_compaction_v2?: boolean | null
   billing_type?: number | null
 	upstream_model_mismatch?: boolean
+  composite_route?: CompositeRouteUsageFilter | null
 }
 
 export interface GroupStatsResponse {
@@ -165,6 +173,9 @@ export async function getGroupStats(params?: GroupStatsParams): Promise<GroupSta
 }
 
 export interface UserBreakdownParams {
+  requested_model?: string
+  billing_mode?: string | null
+  upstream_model_mismatch?: boolean
   start_date?: string
   end_date?: string
   group_id?: number
@@ -183,6 +194,7 @@ export interface UserBreakdownParams {
   stream?: boolean
   native_compaction_v2?: boolean | null
   billing_type?: number | null
+  composite_route?: CompositeRouteUsageFilter | null
 }
 
 export interface UserBreakdownResponse {

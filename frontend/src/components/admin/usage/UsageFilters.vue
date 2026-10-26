@@ -128,7 +128,7 @@
         </div>
 
         <!-- Native compaction is independent of the transport request type. -->
-        <div v-if="mode !== 'errors'" class="w-full sm:w-auto sm:min-w-[180px]">
+        <div v-if="mode !== 'errors' && !cleanup" class="w-full sm:w-auto sm:min-w-[180px]">
           <label class="input-label">{{ t('usage.compactionFilter') }}</label>
           <Select v-model="filters.native_compaction_v2" :options="compactionOptions" @change="emitChange" />
         </div>
@@ -140,14 +140,20 @@
         </div>
 
         <!-- Billing Mode Filter (usage only；用户排行的 user-breakdown 接口不支持该维度) -->
-        <div v-if="mode === 'usage'" class="w-full sm:w-auto sm:min-w-[200px]">
+        <div v-if="mode === 'usage' && !cleanup" class="w-full sm:w-auto sm:min-w-[200px]">
           <label class="input-label">{{ t('admin.usage.billingMode') }}</label>
           <Select v-model="filters.billing_mode" :options="billingModeOptions" @change="emitChange" />
         </div>
 
-        <div v-if="mode === 'usage'" class="w-full sm:w-auto sm:min-w-[220px]">
+        <div v-if="mode === 'usage' && !cleanup" class="w-full sm:w-auto sm:min-w-[220px]">
           <label class="input-label">{{ t('admin.usage.upstreamModelAudit') }}</label>
           <Select v-model="filters.upstream_model_mismatch" :options="upstreamModelMismatchOptions" @change="emitChange" />
+        </div>
+
+        <!-- Composite 显式路由归属：命中路由 / 压缩会话路由 / 使用了备用模型 -->
+        <div v-if="mode === 'usage' && !cleanup" class="w-full sm:w-auto sm:min-w-[200px]" data-testid="usage-composite-route-filter">
+          <label class="input-label">{{ t('admin.usage.compositeRouteFilter') }}</label>
+          <Select v-model="filters.composite_route" :options="compositeRouteOptions" @change="emitChange" />
         </div>
 
         <!-- Error Phase Filter (errors only) -->
@@ -222,12 +228,15 @@ interface Props {
   mode?: 'usage' | 'errors' | 'ranking'
   /** 嵌入统一卡片内使用：去掉自身卡片外观 */
   flat?: boolean
+  /** 清理对话框：隐藏清理接口不支持的筛选（压缩/计费模式/上游模型审计/Composite 路由），避免删除范围比所见更宽 */
+  cleanup?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   showActions: true,
   mode: 'usage',
-  flat: false
+  flat: false,
+  cleanup: false
 })
 const emit = defineEmits([
   'update:modelValue',
@@ -327,6 +336,14 @@ const upstreamModelMismatchOptions = ref<SelectOption[]>([
   { value: null, label: t('admin.usage.allUpstreamModelAudit') },
   { value: true, label: t('admin.usage.upstreamModelMismatchOnly') },
   { value: false, label: t('admin.usage.upstreamModelMatchedOnly') }
+])
+
+const compositeRouteOptions = computed<SelectOption[]>(() => [
+  { value: null, label: t('admin.usage.compositeRouteAll') },
+  { value: 'routed', label: t('admin.usage.compositeRouteRouted') },
+  { value: 'compaction', label: t('admin.usage.compositeRouteCompaction') },
+  { value: 'fallback', label: t('admin.usage.compositeRouteFallback') },
+  { value: 'none', label: t('admin.usage.compositeRouteNone') }
 ])
 
 const emitChange = () => emit('change')

@@ -25,6 +25,9 @@ type dashboardUsageRepoCapture struct {
 	trendMismatch         *bool
 	modelMismatch         *bool
 	groupMismatch         *bool
+	trendCompositeRoute   string
+	modelCompositeRoute   string
+	groupCompositeRoute   string
 	rankingLimit          int
 	ranking               []usagestats.UserSpendingRankingItem
 	rankingTotal          float64
@@ -40,6 +43,7 @@ func (s *dashboardUsageRepoCapture) GetUsageTrendWithUsageFilters(
 	s.trendStream = filters.Stream
 	s.trendNativeCompaction = filters.NativeCompactionV2
 	s.trendMismatch = filters.UpstreamModelMismatch
+	s.trendCompositeRoute = filters.CompositeRoute
 	return []usagestats.TrendDataPoint{}, nil
 }
 
@@ -68,6 +72,7 @@ func (s *dashboardUsageRepoCapture) GetModelStatsWithUsageFiltersBySource(
 	s.modelStream = filters.Stream
 	s.modelNativeCompaction = filters.NativeCompactionV2
 	s.modelMismatch = filters.UpstreamModelMismatch
+	s.modelCompositeRoute = filters.CompositeRoute
 	return []usagestats.ModelStat{}, nil
 }
 
@@ -78,6 +83,7 @@ func (s *dashboardUsageRepoCapture) GetGroupStatsWithUsageFilters(
 ) ([]usagestats.GroupStat, error) {
 	s.groupNativeCompaction = filters.NativeCompactionV2
 	s.groupMismatch = filters.UpstreamModelMismatch
+	s.groupCompositeRoute = filters.CompositeRoute
 	return []usagestats.GroupStat{}, nil
 }
 
@@ -116,6 +122,7 @@ func newDashboardRequestTypeTestRouter(repo *dashboardUsageRepoCapture) *gin.Eng
 	router.GET("/admin/dashboard/trend", handler.GetUsageTrend)
 	router.GET("/admin/dashboard/models", handler.GetModelStats)
 	router.GET("/admin/dashboard/groups", handler.GetGroupStats)
+	router.GET("/admin/dashboard/snapshot-v2", handler.GetSnapshotV2)
 	router.GET("/admin/dashboard/users-ranking", handler.GetUserSpendingRanking)
 	return router
 }
@@ -293,6 +300,125 @@ func TestDashboardModelAuditFilterRejectsInvalidBoolean(t *testing.T) {
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 		require.Equal(t, http.StatusBadRequest, rec.Code, path)
+	}
+}
+
+func TestDashboardCompositeRouteFilterPropagatesToTrendModelAndGroupQueries(t *testing.T) {
+	resetDashboardReadCachesForTest()
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	for _, path := range []string{
+		"/admin/dashboard/trend?composite_route=compaction",
+		"/admin/dashboard/models?composite_route=compaction",
+		"/admin/dashboard/groups?composite_route=compaction",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, path)
+	}
+
+	require.Equal(t, usagestats.CompositeRouteFilterCompaction, repo.trendCompositeRoute)
+	require.Equal(t, usagestats.CompositeRouteFilterCompaction, repo.modelCompositeRoute)
+	require.Equal(t, usagestats.CompositeRouteFilterCompaction, repo.groupCompositeRoute)
+}
+
+func TestDashboardCompositeRouteFilterNormalizesAndDefaultsToEmpty(t *testing.T) {
+	resetDashboardReadCachesForTest()
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/dashboard/trend?composite_route=%20Fallback%20", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, usagestats.CompositeRouteFilterFallback, repo.trendCompositeRoute)
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/dashboard/trend", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "", repo.trendCompositeRoute)
+}
+
+func TestDashboardCompositeRouteFilterIsPartOfCacheKey(t *testing.T) {
+	resetDashboardReadCachesForTest()
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	for _, tc := range []struct {
+		route string
+		cache string
+	}{
+		{"routed", "miss"},
+		{"none", "miss"},
+		{"routed", "hit"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/admin/dashboard/trend?composite_route="+tc.route, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, tc.route)
+		require.Equal(t, tc.cache, rec.Header().Get("X-Snapshot-Cache"), tc.route)
+	}
+}
+
+func TestDashboardCompositeRouteFilterRejectsInvalidValue(t *testing.T) {
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	for _, path := range []string{
+		"/admin/dashboard/trend?composite_route=bogus",
+		"/admin/dashboard/models?composite_route=bogus",
+		"/admin/dashboard/groups?composite_route=bogus",
+		"/admin/dashboard/snapshot-v2?include_stats=false&composite_route=bogus",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, path)
+		require.Contains(t, rec.Body.String(), "composite_route", path)
+	}
+}
+
+func TestDashboardSnapshotV2CompositeRouteFilterPropagates(t *testing.T) {
+	resetDashboardReadCachesForTest()
+	t.Cleanup(resetDashboardReadCachesForTest)
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/dashboard/snapshot-v2?start_date=2026-03-01&end_date=2026-03-02&include_stats=false&include_trend=true&include_model_stats=true&include_group_stats=true&composite_route=compaction", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Equal(t, usagestats.CompositeRouteFilterCompaction, repo.trendCompositeRoute)
+	require.Equal(t, usagestats.CompositeRouteFilterCompaction, repo.modelCompositeRoute)
+	require.Equal(t, usagestats.CompositeRouteFilterCompaction, repo.groupCompositeRoute)
+}
+
+func TestDashboardSnapshotV2CompositeRouteFilterIsPartOfCacheKey(t *testing.T) {
+	resetDashboardReadCachesForTest()
+	t.Cleanup(resetDashboardReadCachesForTest)
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	const base = "/admin/dashboard/snapshot-v2?start_date=2026-03-01&end_date=2026-03-02&include_stats=false&include_trend=true&include_model_stats=false"
+	for _, tc := range []struct {
+		route string
+		cache string
+		want  string
+	}{
+		{"routed", "miss", usagestats.CompositeRouteFilterRouted},
+		{"none", "miss", usagestats.CompositeRouteFilterNone},
+		{"", "miss", ""},
+	} {
+		req := httptest.NewRequest(http.MethodGet, base+"&composite_route="+tc.route, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, tc.route)
+		require.Equal(t, tc.cache, rec.Header().Get("X-Snapshot-Cache"), tc.route)
+		require.Equal(t, tc.want, repo.trendCompositeRoute, tc.route)
 	}
 }
 

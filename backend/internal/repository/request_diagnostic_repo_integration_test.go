@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -170,7 +172,8 @@ func TestRequestDiagnosticRepositoryIntegrationMigration242(t *testing.T) {
 	requireColumn(t, tx, "usage_request_diagnostics", "payload_gzip", "bytea", 0, false)
 	requireColumn(t, tx, "usage_request_diagnostics", "payload_bytes", "integer", 0, false)
 	requireConstraintDefinitionContains(t, tx, "usage_request_diagnostics", "usage_request_diagnostics_pkey", "api_key_id, usage_request_id")
-	requireConstraintDefinitionContains(t, tx, "usage_request_diagnostics", "usage_request_diagnostics_payload_bytes_check", "payload_bytes >= 0", "payload_bytes <= 16777216")
+	// 242 建表时上限 16 MiB，248 放宽到 512 MiB 以容纳 128 MiB 单条预算编码后的正文。
+	requireConstraintDefinitionContains(t, tx, "usage_request_diagnostics", "usage_request_diagnostics_payload_bytes_check", "payload_bytes >= 0", "payload_bytes <= 536870912")
 	requireIndex(t, tx, "usage_request_diagnostics", "usage_request_diagnostics_expiry_idx")
 	requireIndex(t, tx, "usage_request_diagnostics", "usage_request_diagnostics_captured_idx")
 }
@@ -332,6 +335,115 @@ func TestRequestDiagnosticRepositoryIntegrationCapacityEvictsOldestBody(t *testi
 	detail, err = svc.Get(f.ctx, newUsage)
 	require.NoError(t, err)
 	require.Equal(t, "captured", detail.Status)
+}
+
+func TestRequestDiagnosticRepositoryIntegrationRetentionOnlyKeepsUnexpiredBodies(t *testing.T) {
+	f := newRequestDiagnosticIntegrationFixture(t)
+	now := f.now(t)
+	oldUsage := f.createUsage(t, f.keys[0], "diagnostic-it-"+uuid.NewString(), now.Add(-5*time.Hour))
+	newUsage := f.createUsage(t, f.keys[0], "diagnostic-it-"+uuid.NewString(), now)
+	oldRecord := requestDiagnosticIntegrationRecord(t, oldUsage, oldUsage.CreatedAt, now.Add(-5*time.Hour), now.Add(time.Hour), "retention-only-old-body")
+	newRecord := requestDiagnosticIntegrationRecord(t, newUsage, newUsage.CreatedAt, now, now.Add(6*time.Hour), "retention-only-new-body")
+	f.save(t, oldRecord, 0)
+
+	// A positive-budget writer owns the global capacity lock. Retention-only
+	// writes must neither contend on it nor run the global capacity window.
+	lockTx, err := integrationDB.BeginTx(f.ctx, nil)
+	require.NoError(t, err)
+	defer lockTx.Rollback()
+	_, err = lockTx.ExecContext(f.ctx, `SELECT pg_advisory_xact_lock(242, 1)`)
+	require.NoError(t, err)
+	f.save(t, newRecord, 0)
+	require.NoError(t, lockTx.Rollback())
+	for _, record := range []*service.RequestDiagnosticRecord{oldRecord, newRecord} {
+		got, err := f.repo.Get(f.ctx, record.APIKeyID, record.UsageRequestID)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		require.Equal(t, record.PayloadBytes, got.PayloadBytes)
+		require.Equal(t, record.PayloadGzip, got.PayloadGzip)
+		require.Equal(t, 6*time.Hour, got.ExpiresAt.Sub(got.CapturedAt))
+	}
+	for _, usage := range []*service.UsageLog{oldUsage, newUsage} {
+		detail, err := f.service(t).Get(f.ctx, usage)
+		require.NoError(t, err)
+		require.Equal(t, "captured", detail.Status)
+	}
+}
+
+func TestRequestDiagnosticRepositoryIntegrationRetentionOnlySixHourBoundaryAndCleanup(t *testing.T) {
+	f := newRequestDiagnosticIntegrationFixture(t)
+	now := f.now(t)
+	active := f.createUsage(t, f.keys[0], "diagnostic-it-"+uuid.NewString(), now.Add(-5*time.Hour))
+	expired := f.createUsage(t, f.keys[0], "diagnostic-it-"+uuid.NewString(), now.Add(-6*time.Hour))
+	activeRecord := requestDiagnosticIntegrationRecord(t, active, active.CreatedAt, now.Add(-5*time.Hour), now.Add(time.Hour), "active-six-hour-body")
+	expiredRecord := requestDiagnosticIntegrationRecord(t, expired, expired.CreatedAt, now.Add(-6*time.Hour), now, "expired-at-six-hours-body")
+	f.save(t, activeRecord, 0)
+	f.save(t, expiredRecord, 0)
+	var physical int
+	require.NoError(t, integrationDB.QueryRowContext(f.ctx, `SELECT octet_length(payload_gzip) FROM usage_request_diagnostics WHERE api_key_id = $1 AND usage_request_id = $2`, expired.APIKeyID, expired.RequestID).Scan(&physical))
+	require.Positive(t, physical)
+	svc := f.service(t) // New capture disabled; cleanup remains available.
+	detail, err := svc.Get(f.ctx, expired)
+	require.NoError(t, err)
+	require.Equal(t, "expired", detail.Status)
+	require.Nil(t, detail.Payload)
+	f.requireOwnDiagnosticRows(t)
+	require.NoError(t, f.repo.Cleanup(f.ctx))
+	require.NoError(t, integrationDB.QueryRowContext(f.ctx, `SELECT octet_length(payload_gzip) FROM usage_request_diagnostics WHERE api_key_id = $1 AND usage_request_id = $2`, expired.APIKeyID, expired.RequestID).Scan(&physical))
+	require.Zero(t, physical)
+	detail, err = svc.Get(f.ctx, active)
+	require.NoError(t, err)
+	require.Equal(t, "captured", detail.Status)
+	for _, usage := range []*service.UsageLog{active, expired} {
+		stored, err := f.usageRepo.GetByID(f.ctx, usage.ID)
+		require.NoError(t, err)
+		require.Equal(t, usage.InputTokens, stored.InputTokens)
+		require.Equal(t, usage.OutputTokens, stored.OutputTokens)
+	}
+}
+
+func TestRequestDiagnosticRepositoryIntegrationCompressedSnapshotRoundTrip(t *testing.T) {
+	f := newRequestDiagnosticIntegrationFixture(t)
+	now := f.now(t)
+	usage := f.createUsage(t, f.keys[0], "diagnostic-it-"+uuid.NewString(), now)
+	text := strings.Repeat("data: {\"delta\":\"\u4f60\u597d\"}\n\n", 50000) + "data: [DONE]\n\nfixture-db-tail"
+	var compressed bytes.Buffer
+	writer, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	require.NoError(t, err)
+	_, err = writer.Write([]byte(text))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	f.requireOwnDiagnosticRows(t)
+	svc := service.NewRequestDiagnosticService(f.repo, &config.Config{RequestDiagnostics: config.RequestDiagnosticsConfig{
+		Enabled: true, PreserveRaw: true, RetentionHours: 6, MaxEntryBytes: 1 << 20,
+		MaxActive: 1, MaxPendingBytes: 1 << 20, MaxStorageBytes: 0,
+	}})
+	t.Cleanup(svc.Stop)
+	capture := svc.Begin(requestdiagnostic.Inbound{})
+	require.NotNil(t, capture)
+	capture.SetInbound([]byte("{}"))
+	id := capture.BeginAttempt(requestdiagnostic.Attempt{}, []byte("{}"))
+	capture.EndAttempt(id, requestdiagnostic.AttemptResult{ResponseBodyGzip: compressed.Bytes(), ResponseBodyBytes: len(text), ResponseBytes: len(text)})
+	capture.Finish(200)
+	require.True(t, capture.BindUsage(usage.APIKeyID, usage.RequestID, usage.CreatedAt))
+	svc.Stop()
+	record, err := f.repo.Get(f.ctx, usage.APIKeyID, usage.RequestID)
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Positive(t, record.PayloadBytes)
+	require.Equal(t, 6*time.Hour, record.ExpiresAt.Sub(record.CapturedAt))
+	detail, err := svc.Get(f.ctx, usage)
+	require.NoError(t, err)
+	require.Equal(t, "captured", detail.Status)
+	require.Equal(t, requestdiagnostic.CompressedSchemaVersion, detail.Payload.SchemaVersion)
+	response := detail.Payload.Attempts[0].ResponseBody
+	require.NotNil(t, response)
+	require.False(t, response.Truncated)
+	require.Equal(t, len(text), response.StoredBytes)
+	require.Equal(t, sha256.Sum256([]byte(text)), sha256.Sum256([]byte(response.Content)))
+	require.True(t, strings.HasSuffix(response.Content, "fixture-db-tail"))
+	require.Nil(t, response.ContentGzip)
+	require.Zero(t, response.UncompressedBytes)
 }
 
 func TestRequestDiagnosticRepositoryIntegrationTTLReadAndCleanup(t *testing.T) {

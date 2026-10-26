@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -83,6 +85,95 @@ func CompositeRouteSourceFromContext(ctx context.Context) (string, bool) {
 		return "", false
 	}
 	return source, true
+}
+
+// CompositeRouteTrace attributes one attempt of a request served through an
+// explicit composite route. The fallback runner gives every attempt its own
+// trace (with the chain that led to it) in the request context, so the usage
+// writer stamps each row with the attempt that produced it, and the runner can
+// tell whether a failed attempt already handed usage to billing.
+type CompositeRouteTrace struct {
+	RouteID     int64
+	RequestKind string
+
+	mu             sync.Mutex
+	fallbackChain  string
+	usageSubmitted atomic.Bool
+	usageRecorded  atomic.Bool
+}
+
+type compositeRouteTraceKey struct{}
+
+func WithCompositeRouteTrace(ctx context.Context, trace *CompositeRouteTrace) context.Context {
+	if ctx == nil || trace == nil || trace.RouteID <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, compositeRouteTraceKey{}, trace)
+}
+
+func CompositeRouteTraceFromContext(ctx context.Context) *CompositeRouteTrace {
+	if ctx == nil {
+		return nil
+	}
+	trace, _ := ctx.Value(compositeRouteTraceKey{}).(*CompositeRouteTrace)
+	return trace
+}
+
+// SetFallbackChain records the failed targets and the target now serving,
+// e.g. "model-a (429) → model-b".
+func (t *CompositeRouteTrace) SetFallbackChain(chain string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.fallbackChain = chain
+	t.mu.Unlock()
+}
+
+func (t *CompositeRouteTrace) FallbackChain() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.fallbackChain
+}
+
+func (t *CompositeRouteTrace) UsageRecorded() bool {
+	return t != nil && t.usageRecorded.Load()
+}
+
+// MarkUsageSubmitted is called synchronously on the request goroutine when a
+// usage-record task is handed to billing (before the async worker runs it).
+func (t *CompositeRouteTrace) MarkUsageSubmitted() {
+	if t != nil {
+		t.usageSubmitted.Store(true)
+	}
+}
+
+// UsageCommitted reports whether this attempt submitted or persisted usage. A
+// failed attempt that did must not be replayed: the replay shares the request
+// id, so billing would conflict and could drop the successful attempt's bill.
+func (t *CompositeRouteTrace) UsageCommitted() bool {
+	return t != nil && (t.usageSubmitted.Load() || t.usageRecorded.Load())
+}
+
+// applyCompositeRouteTrace stamps route attribution onto a usage row about to
+// be persisted. Rows outside an explicit route keep NULL columns.
+func applyCompositeRouteTrace(ctx context.Context, usage *UsageLog) {
+	trace := CompositeRouteTraceFromContext(ctx)
+	if trace == nil || usage == nil {
+		return
+	}
+	trace.usageRecorded.Store(true)
+	routeID := trace.RouteID
+	usage.CompositeRouteID = &routeID
+	if kind := strings.TrimSpace(trace.RequestKind); kind != "" {
+		usage.CompositeRouteKind = &kind
+	}
+	if chain := trace.FallbackChain(); chain != "" {
+		usage.CompositeFallbackChain = &chain
+	}
 }
 
 // DetectModelPlatform maps common public model IDs to the concrete provider

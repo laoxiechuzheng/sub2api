@@ -79,7 +79,8 @@ func (w *serverTimingResponseWriter) finalize() {
 		return
 	}
 	w.once.Do(func() {
-		if value := ServerTimingHeaderValue(w.context); value != "" {
+		// Outer writers may hold a commit lock while calling into this writer.
+		if value := serverTimingHeaderValue(w.context, w.ResponseWriter); value != "" {
 			w.ResponseWriter.Header().Set(servertiming.HeaderName, value)
 		}
 	})
@@ -93,6 +94,13 @@ func ServerTimingHeaderValue(c *gin.Context) string {
 	if c == nil || c.Request == nil {
 		return ""
 	}
+	return serverTimingHeaderValue(c, c.Writer)
+}
+
+func serverTimingHeaderValue(c *gin.Context, writer gin.ResponseWriter) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
 	role, ok := GetUserRoleFromContext(c)
 	if !ok || role == "" {
 		return ""
@@ -100,7 +108,7 @@ func ServerTimingHeaderValue(c *gin.Context) string {
 	if role != "admin" && !isUserTimingPath(c.Request.URL.Path) {
 		return ""
 	}
-	return servertiming.HeaderValue(c.Request.Context(), time.Now(), responseCacheStatus(c.Writer.Header()))
+	return servertiming.HeaderValue(c.Request.Context(), time.Now(), responseCacheStatus(writer.Header()))
 }
 
 // ServerTimingResponseHeader builds the extra header map required by WebSocket upgrades.

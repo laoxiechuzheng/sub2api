@@ -604,6 +604,11 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": decision.AmbiguousMessage()}})
 				return
 			}
+			if decision.Matched && decision.Source == service.CompositeRouteSourceExplicit && decision.Route != nil {
+				// 显式路由：记录用量归属，并在配置了备用模型时按顺序失败重放。
+				runCompositeRouteWithFallback(c, c.Request, routePath, model, body, decision)
+				return
+			}
 			if decision.Matched {
 				c.Request = c.Request.WithContext(service.WithCompositeRouteDecision(c.Request.Context(), decision))
 				if upstreamModel := strings.TrimSpace(decision.UpstreamModel); upstreamModel != "" && upstreamModel != model && gjson.ValidBytes(body) {

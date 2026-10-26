@@ -38,6 +38,8 @@ import (
 type OpenAIGatewayHandler struct {
 	compositeResolver          *service.CompositeRouteResolver
 	gatewayService             *service.OpenAIGatewayService
+	forwardResponses           func(context.Context, *gin.Context, *service.Account, []byte) (*service.OpenAIForwardResult, error)
+	forwardMessages            func(context.Context, *gin.Context, *service.Account, []byte, string, string) (*service.OpenAIForwardResult, error)
 	billingCacheService        *service.BillingCacheService
 	apiKeyService              *service.APIKeyService
 	usageRecordWorkerPool      *service.UsageRecordWorkerPool
@@ -263,6 +265,8 @@ func usageRecordContext(parent context.Context, base context.Context) context.Co
 	if requestID, _ := parent.Value(ctxkey.RequestID).(string); strings.TrimSpace(requestID) != "" {
 		base = context.WithValue(base, ctxkey.RequestID, strings.TrimSpace(requestID))
 	}
+	// Composite 路由归属随用量写入，后台计费 worker 只能从这里拿到。
+	base = service.WithCompositeRouteTrace(base, service.CompositeRouteTraceFromContext(parent))
 	return requestdiagnostic.CopyContext(parent, base)
 }
 
@@ -276,6 +280,8 @@ func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecord
 	done := func() {}
 	if parent != nil {
 		done = service.InflightReservationFromContext(parent).Acquire()
+		// 同步登记"本次 Composite 尝试已提交用量"，回退判定不必等后台 worker 落库。
+		service.CompositeRouteTraceFromContext(parent).MarkUsageSubmitted()
 	}
 	return func(ctx context.Context) {
 		defer done()
@@ -381,6 +387,8 @@ func NewOpenAIGatewayHandler(
 	}
 	return &OpenAIGatewayHandler{
 		gatewayService:           gatewayService,
+		forwardResponses:         gatewayService.Forward,
+		forwardMessages:          gatewayService.ForwardAsAnthropic,
 		billingCacheService:      billingCacheService,
 		apiKeyService:            apiKeyService,
 		usageRecordWorkerPool:    usageRecordWorkerPool,
@@ -835,7 +843,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
+			forward := h.forwardResponses
+			if forward == nil {
+				forward = h.gatewayService.Forward
+			}
+			return forward(c.Request.Context(), c, account, attemptBody)
 		}()
 		var cyberBlockBodyHTTP []byte
 		if service.GetOpsCyberPolicy(c) != nil {
@@ -867,7 +879,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 			sessionID := service.ExtractClientSessionID(c)
 			cyberBlocked := service.GetOpsCyberPolicy(c) != nil
-			h.submitOpenAIUsageRecordTask(c.Request.Context(), res, func(ctx context.Context) {
+			channelUsageFields := clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel)
+			recordUsage := func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 					Result:             res,
 					APIKey:             apiKey,
@@ -882,7 +895,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					APIKeyService:      h.apiKeyService,
 					QuotaPlatform:      quotaPlatform,
 					SessionID:          sessionID,
-					ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel),
+					ChannelUsageFields: channelUsageFields,
 					PricingAt:          pricingAt,
 					CyberBlocked:       cyberBlocked,
 					NativeCompactionV2: nativeV2,
@@ -896,7 +909,29 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 					).Error("openai.record_usage_failed", zap.Error(err))
 				}
-			})
+			}
+			if err != nil {
+				h.submitMandatoryUsageRecordTask(c.Request.Context(), recordUsage)
+			} else {
+				h.submitOpenAIUsageRecordTask(c.Request.Context(), res, recordUsage)
+			}
+		}
+		if err != nil && service.GetOpsCyberPolicy(c) != nil {
+			// The dedicated cyber task already owns this attempt's bill.
+			if !openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) && !failoverClientGone(c) {
+				h.ensureForwardErrorResponse(c, streamStarted)
+			}
+			return
+		}
+		if err != nil && result.HasObservedUsage() {
+			// Observed upstream consumption is terminal even if the error is retryable.
+			submitResponsesUsage(result)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), false, nil, err)
+			if !result.ClientDisconnect && !failoverClientGone(c) && !openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+				h.ensureForwardErrorResponse(c, streamStarted)
+			}
+			reqLog.Warn("openai.forward_partial_error_with_usage", zap.Int64("account_id", account.ID), zap.Error(err))
+			return
 		}
 		if err != nil {
 			if result != nil && result.ClientDisconnect {
@@ -1419,7 +1454,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
+			forward := h.forwardMessages
+			if forward == nil {
+				forward = h.gatewayService.ForwardAsAnthropic
+			}
+			return forward(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
 		}()
 		var cyberBlockBodyMsg []byte
 		if service.GetOpsCyberPolicy(c) != nil {
@@ -1452,7 +1491,8 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 			sessionID := service.ExtractClientSessionID(c)
 			cyberBlocked := service.GetOpsCyberPolicy(c) != nil
-			h.submitOpenAIUsageRecordTask(c.Request.Context(), res, func(ctx context.Context) {
+			channelUsageFields := clientRequestedUsageFields(c, channelMappingMsg, reqModel, res.UpstreamModel)
+			recordUsage := func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 					Result:             res,
 					APIKey:             apiKey,
@@ -1467,7 +1507,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					APIKeyService:      h.apiKeyService,
 					QuotaPlatform:      quotaPlatform,
 					SessionID:          sessionID,
-					ChannelUsageFields: clientRequestedUsageFields(c, channelMappingMsg, reqModel, res.UpstreamModel),
+					ChannelUsageFields: channelUsageFields,
 					PricingAt:          pricingAt,
 					CyberBlocked:       cyberBlocked,
 				}); err != nil {
@@ -1480,7 +1520,27 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 					).Error("openai_messages.record_usage_failed", zap.Error(err))
 				}
-			})
+			}
+			if err != nil {
+				h.submitMandatoryUsageRecordTask(c.Request.Context(), recordUsage)
+			} else {
+				h.submitOpenAIUsageRecordTask(c.Request.Context(), res, recordUsage)
+			}
+		}
+		if err != nil && service.GetOpsCyberPolicy(c) != nil {
+			if !failoverClientGone(c) {
+				h.ensureAnthropicErrorResponse(c, streamStarted)
+			}
+			return
+		}
+		if err != nil && result.HasObservedUsage() {
+			submitMessagesUsage(result)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, currentRoutingModel, false, result), false, nil, err)
+			if !result.ClientDisconnect && !failoverClientGone(c) {
+				h.ensureAnthropicErrorResponse(c, streamStarted)
+			}
+			reqLog.Warn("openai_messages.forward_partial_error_with_usage", zap.Int64("account_id", account.ID), zap.Error(err))
+			return
 		}
 		if err != nil {
 			if result != nil && result.ImageCount > 0 {
@@ -4364,7 +4424,7 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 }
 
 // recordCyberPolicyIfMarked 在 gateway forward 返回后检查 cyber 标记，异步写风控日志/邮件，
-// 并在 forward 返回错误时写一条 tokens=0 用量行。标记由 gateway 服务层在透传 cyber 后设置；
+// 并在 forward 返回错误时按上游真实 usage 写用量行。标记由 gateway 服务层在透传 cyber 后设置；
 // 当前请求已发给用户，本方法只做事后记录，不影响响应。forwardErrored 为 true 时才写用量行，
 // 避免与正常 RecordUsage(forward 成功路径)重复。每请求至多记录一次。
 func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockBody []byte, channelFields service.ChannelUsageFields, requestPayloadHash string) {
@@ -4459,9 +4519,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 			cancel()
 		}
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+	recordTask := func(ctx context.Context) {
 		if cmSvc != nil {
 			cmSvc.RecordCyberPolicyEvent(ctx, service.CyberPolicyRecordInput{
 				LogOnly:         cyberLogOnly,
@@ -4505,6 +4563,15 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		if opsSvc != nil {
 			enqueueOpsErrorLog(opsSvc, buildCyberPolicyOpsErrorEntry(opsMeta, mark))
 		}
+	}
+	if forwardErrored && gwSvc != nil {
+		// Acquire the original reservation and mark submission before fallback resumes.
+		recordTask, _ = wrapUsageRecordTaskContext(requestCtx, recordTask)
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		recordTask(ctx)
 	}()
 }
 

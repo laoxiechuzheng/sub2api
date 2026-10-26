@@ -1,6 +1,7 @@
 package requestdiagnostic
 
 import (
+	"bytes"
 	"strings"
 	"sync"
 	"time"
@@ -230,12 +231,19 @@ func (c *Capture) EndAttempt(id int64, result AttemptResult) {
 		} else {
 			state.ResponseSummary = c.capturePayload(result.ResponseSummary, min(c.maxBytes, MaxResponseSummaryBytes))
 		}
-		if c.preserveRaw && result.ResponseBody != nil {
+		if c.preserveRaw && (result.ResponseBody != nil || result.ResponseBodyGzip != nil || result.ResponseOmittedReason != "") {
 			var payload Payload
 			if c.dropped {
 				payload = omittedPayload(max(result.ResponseBytes, len(result.ResponseBody)), c.dropReason)
+			} else if result.ResponseOmittedReason != "" {
+				payload = omittedPayload(result.ResponseBytes, result.ResponseOmittedReason)
+				payload.Truncated = result.ResponseIncomplete
+			} else if result.ResponseBodyGzip != nil {
+				payload = Payload{ContentGzip: bytes.Clone(result.ResponseBodyGzip), UncompressedBytes: result.ResponseBodyBytes,
+					OriginalBytes: max(result.ResponseBytes, result.ResponseBodyBytes), StoredBytes: len(result.ResponseBodyGzip),
+					Truncated: result.ResponseIncomplete || result.ResponseBodyBytes < result.ResponseBytes}
 			} else {
-				payload = rawResponsePayload(result.ResponseBody, result.ResponseBytes, min(c.maxBytes, MaxResponseBodyBytes), result.ResponseIncomplete)
+				payload = rawResponsePayload(result.ResponseBody, result.ResponseBytes, min(c.maxBytes, MaxExpandedBodyBytes), result.ResponseIncomplete)
 			}
 			state.ResponseBody = &payload
 			state.ResponseContentType = cleanMetadata(result.ResponseContentType, 128, &state.MetadataRedacted, &state.MetadataTruncated)
@@ -355,11 +363,15 @@ func (c *Capture) readyLocked() (func(*Snapshot), *Snapshot) {
 	}
 	c.enforceBudgetLocked()
 	attempts := make([]Attempt, len(c.attempts))
+	version := SchemaVersion
 	for i := range c.attempts {
 		attempts[i] = c.attempts[i].Attempt
+		if payload := attempts[i].ResponseBody; payload != nil && payload.ContentGzip != nil {
+			version = CompressedSchemaVersion
+		}
 	}
 	snapshot := &Snapshot{
-		SchemaVersion:     SchemaVersion,
+		SchemaVersion:     version,
 		Binding:           c.binding,
 		Meta:              c.meta,
 		Status:            c.status,
@@ -412,7 +424,7 @@ func incompletePayload(p Payload) bool {
 }
 
 func (c *Capture) enforceBudgetLocked() {
-	// 元数据只占有限份额，避免超长错误或 URL 挤掉优先保留的两份请求正文。
+	// Bound metadata, then reserve the complete latest response before requests.
 	remaining := c.maxBytes - len(c.binding.CanonicalID)
 	metadataBudget := min(64<<10, remaining/8)
 	metadataUsed := c.limitMetadataLocked(metadataBudget)
@@ -426,12 +438,7 @@ func (c *Capture) enforceBudgetLocked() {
 		latestResponse = c.attempts[len(c.attempts)-1].ResponseBody
 	}
 	if latestResponse != nil {
-		// Keep useful output even when the two large request bodies fill the entry.
-		allowance := payloadBytes(latestResponse)
-		if allowance+c.meta.Body.StoredBytes+payloadBytes(latest) > remaining {
-			allowance = min(allowance, max(0, remaining/3))
-		}
-		limitPayload(latestResponse, allowance, OmittedBudget)
+		limitPayload(latestResponse, remaining, OmittedBudget)
 		remaining -= latestResponse.StoredBytes
 		c.storedBytes += latestResponse.StoredBytes
 	}
@@ -513,6 +520,11 @@ func payloadBytes(payload *Payload) int {
 
 func limitPayload(payload *Payload, maxBytes int, reason string) {
 	if payload.StoredBytes <= max(0, maxBytes) {
+		return
+	}
+	if payload.ContentGzip != nil {
+		*payload = droppedPayload(*payload, reason)
+		payload.Truncated = true
 		return
 	}
 	payload.Content = utf8Prefix(payload.Content, maxBytes)

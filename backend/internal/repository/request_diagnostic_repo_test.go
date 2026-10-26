@@ -41,6 +41,19 @@ func TestRequestDiagnosticRepositoryStorageLockNeverWaits(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestRequestDiagnosticRepositoryRetentionOnlySkipsCapacityLockAndEviction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now().UTC()
+	record := &service.RequestDiagnosticRecord{APIKeyID: 7, UsageRequestID: "client:retention-only", UsageCreatedAt: now, CapturedAt: now, ExpiresAt: now.Add(6 * time.Hour), PayloadGzip: []byte{1, 2}, PayloadBytes: 123}
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO usage_request_diagnostics.*WHERE EXISTS.*ON CONFLICT`).WithArgs(record.APIKeyID, record.UsageRequestID, record.UsageCreatedAt, record.CapturedAt, record.ExpiresAt, record.PayloadGzip, record.PayloadBytes).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, NewRequestDiagnosticRepository(db).Save(context.Background(), record, 0))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestRequestDiagnosticRepositoryGetUsesKeyAndHidesExpiredPayload(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

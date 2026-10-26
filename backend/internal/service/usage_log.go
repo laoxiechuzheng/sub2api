@@ -144,6 +144,15 @@ type UsageLog struct {
 	// UpstreamEndpoint is the normalized upstream endpoint path, e.g. /v1/responses.
 	UpstreamEndpoint *string
 
+	// CompositeRouteID is the explicit composite route that served the request.
+	CompositeRouteID *int64
+	// CompositeRouteKind is the request classification at route time
+	// (compaction / conversation / unknown).
+	CompositeRouteKind *string
+	// CompositeFallbackChain lists failed targets before the serving fallback,
+	// e.g. "model-a (429) → model-b". Nil when the primary target served.
+	CompositeFallbackChain *string
+
 	GroupID        *int64
 	SubscriptionID *int64
 

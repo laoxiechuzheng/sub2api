@@ -45,6 +45,8 @@ const (
 	FieldBodyMatchMode = "body_match_mode"
 	// FieldBodyNotContains holds the string denoting the body_not_contains field in the database.
 	FieldBodyNotContains = "body_not_contains"
+	// FieldFallbackModels holds the string denoting the fallback_models field in the database.
+	FieldFallbackModels = "fallback_models"
 	// FieldPriority holds the string denoting the priority field in the database.
 	FieldPriority = "priority"
 	// FieldEnabled holds the string denoting the enabled field in the database.
@@ -82,6 +84,7 @@ var Columns = []string{
 	FieldBodyMatchScope,
 	FieldBodyMatchMode,
 	FieldBodyNotContains,
+	FieldFallbackModels,
 	FieldPriority,
 	FieldEnabled,
 	FieldNotes,

@@ -4,7 +4,13 @@
  */
 
 import { apiClient } from '../client'
-import type { AdminUsageLog, UsageQueryParams, PaginatedResponse, UsageRequestType } from '@/types'
+import type {
+  AdminUsageLog,
+  CompositeRouteUsageFilter,
+  UsageQueryParams,
+  PaginatedResponse,
+  UsageRequestType
+} from '@/types'
 import type { EndpointStat } from '@/types'
 
 // ==================== Types ====================
@@ -85,6 +91,7 @@ export interface AdminUsageQueryParams extends UsageQueryParams {
   exact_total?: boolean
   billing_mode?: string
   upstream_model_mismatch?: boolean
+  composite_route?: CompositeRouteUsageFilter | null
   sort_by?: string
   sort_order?: 'asc' | 'desc'
   // 错误请求 tab 专属筛选(仅传给错误列表接口;共用同一 filters 对象)
@@ -117,6 +124,8 @@ export async function list(
  * @returns Usage statistics
  */
 export async function getStats(params: {
+  billing_type?: number | null
+  billing_mode?: string | null
   user_id?: number
   api_key_id?: number
   account_id?: number
@@ -126,6 +135,7 @@ export async function getStats(params: {
   stream?: boolean
   native_compaction_v2?: boolean | null
   upstream_model_mismatch?: boolean
+  composite_route?: CompositeRouteUsageFilter | null
   period?: string
   start_date?: string
   end_date?: string

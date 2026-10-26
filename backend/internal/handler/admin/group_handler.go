@@ -346,9 +346,11 @@ type CompositeRouteRequest struct {
 	BodyMatchScope    *string `json:"body_match_scope" binding:"omitempty,oneof=full_body instructions last_message current_turn"`
 	BodyMatchMode     *string `json:"body_match_mode" binding:"omitempty,oneof=any all prefix"`
 	BodyNotContains   *string `json:"body_not_contains" binding:"omitempty,max=8192"`
-	Priority          int     `json:"priority"`
-	Enabled           *bool   `json:"enabled"`
-	Notes             string  `json:"notes"`
+	// nil 表示旧客户端未提交，更新时保留原备用列表；[] 显式清空。
+	FallbackModels *[]service.CompositeRouteFallback `json:"fallback_models" binding:"omitempty,max=8"`
+	Priority       int                               `json:"priority"`
+	Enabled        *bool                             `json:"enabled"`
+	Notes          string                            `json:"notes"`
 }
 
 type CompositeRoutePreviewRequest struct {
@@ -559,6 +561,10 @@ func compositeRouteRequestToInput(req CompositeRouteRequest, defaultEnabled bool
 	if req.BodyNotContains != nil {
 		input.BodyNotContains = *req.BodyNotContains
 		input.BodyNotContainsProvided = true
+	}
+	if req.FallbackModels != nil {
+		input.FallbackModels = *req.FallbackModels
+		input.FallbackModelsProvided = true
 	}
 	return input
 }

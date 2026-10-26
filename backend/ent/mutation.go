@@ -19707,33 +19707,35 @@ func (m *ChannelMonitorRequestTemplateMutation) ResetEdge(name string) error {
 // CompositeModelRouteMutation represents an operation that mutates the CompositeModelRoute nodes in the graph.
 type CompositeModelRouteMutation struct {
 	config
-	op                  Op
-	typ                 string
-	id                  *int64
-	created_at          *time.Time
-	updated_at          *time.Time
-	deleted_at          *time.Time
-	public_model        *string
-	match_type          *string
-	target_platform     *string
-	upstream_model      *string
-	endpoint            *string
-	user_agent_contains *string
-	body_contains       *string
-	request_kind        *string
-	body_match_scope    *string
-	body_match_mode     *string
-	body_not_contains   *string
-	priority            *int
-	addpriority         *int
-	enabled             *bool
-	notes               *string
-	clearedFields       map[string]struct{}
-	group               *int64
-	clearedgroup        bool
-	done                bool
-	oldValue            func(context.Context) (*CompositeModelRoute, error)
-	predicates          []predicate.CompositeModelRoute
+	op                    Op
+	typ                   string
+	id                    *int64
+	created_at            *time.Time
+	updated_at            *time.Time
+	deleted_at            *time.Time
+	public_model          *string
+	match_type            *string
+	target_platform       *string
+	upstream_model        *string
+	endpoint              *string
+	user_agent_contains   *string
+	body_contains         *string
+	request_kind          *string
+	body_match_scope      *string
+	body_match_mode       *string
+	body_not_contains     *string
+	fallback_models       *[]domain.CompositeRouteFallback
+	appendfallback_models []domain.CompositeRouteFallback
+	priority              *int
+	addpriority           *int
+	enabled               *bool
+	notes                 *string
+	clearedFields         map[string]struct{}
+	group                 *int64
+	clearedgroup          bool
+	done                  bool
+	oldValue              func(context.Context) (*CompositeModelRoute, error)
+	predicates            []predicate.CompositeModelRoute
 }
 
 var _ ent.Mutation = (*CompositeModelRouteMutation)(nil)
@@ -20387,6 +20389,71 @@ func (m *CompositeModelRouteMutation) ResetBodyNotContains() {
 	m.body_not_contains = nil
 }
 
+// SetFallbackModels sets the "fallback_models" field.
+func (m *CompositeModelRouteMutation) SetFallbackModels(drf []domain.CompositeRouteFallback) {
+	m.fallback_models = &drf
+	m.appendfallback_models = nil
+}
+
+// FallbackModels returns the value of the "fallback_models" field in the mutation.
+func (m *CompositeModelRouteMutation) FallbackModels() (r []domain.CompositeRouteFallback, exists bool) {
+	v := m.fallback_models
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldFallbackModels returns the old "fallback_models" field's value of the CompositeModelRoute entity.
+// If the CompositeModelRoute object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CompositeModelRouteMutation) OldFallbackModels(ctx context.Context) (v []domain.CompositeRouteFallback, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldFallbackModels is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldFallbackModels requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldFallbackModels: %w", err)
+	}
+	return oldValue.FallbackModels, nil
+}
+
+// AppendFallbackModels adds drf to the "fallback_models" field.
+func (m *CompositeModelRouteMutation) AppendFallbackModels(drf []domain.CompositeRouteFallback) {
+	m.appendfallback_models = append(m.appendfallback_models, drf...)
+}
+
+// AppendedFallbackModels returns the list of values that were appended to the "fallback_models" field in this mutation.
+func (m *CompositeModelRouteMutation) AppendedFallbackModels() ([]domain.CompositeRouteFallback, bool) {
+	if len(m.appendfallback_models) == 0 {
+		return nil, false
+	}
+	return m.appendfallback_models, true
+}
+
+// ClearFallbackModels clears the value of the "fallback_models" field.
+func (m *CompositeModelRouteMutation) ClearFallbackModels() {
+	m.fallback_models = nil
+	m.appendfallback_models = nil
+	m.clearedFields[compositemodelroute.FieldFallbackModels] = struct{}{}
+}
+
+// FallbackModelsCleared returns if the "fallback_models" field was cleared in this mutation.
+func (m *CompositeModelRouteMutation) FallbackModelsCleared() bool {
+	_, ok := m.clearedFields[compositemodelroute.FieldFallbackModels]
+	return ok
+}
+
+// ResetFallbackModels resets all changes to the "fallback_models" field.
+func (m *CompositeModelRouteMutation) ResetFallbackModels() {
+	m.fallback_models = nil
+	m.appendfallback_models = nil
+	delete(m.clearedFields, compositemodelroute.FieldFallbackModels)
+}
+
 // SetPriority sets the "priority" field.
 func (m *CompositeModelRouteMutation) SetPriority(i int) {
 	m.priority = &i
@@ -20589,7 +20656,7 @@ func (m *CompositeModelRouteMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *CompositeModelRouteMutation) Fields() []string {
-	fields := make([]string, 0, 18)
+	fields := make([]string, 0, 19)
 	if m.created_at != nil {
 		fields = append(fields, compositemodelroute.FieldCreatedAt)
 	}
@@ -20634,6 +20701,9 @@ func (m *CompositeModelRouteMutation) Fields() []string {
 	}
 	if m.body_not_contains != nil {
 		fields = append(fields, compositemodelroute.FieldBodyNotContains)
+	}
+	if m.fallback_models != nil {
+		fields = append(fields, compositemodelroute.FieldFallbackModels)
 	}
 	if m.priority != nil {
 		fields = append(fields, compositemodelroute.FieldPriority)
@@ -20682,6 +20752,8 @@ func (m *CompositeModelRouteMutation) Field(name string) (ent.Value, bool) {
 		return m.BodyMatchMode()
 	case compositemodelroute.FieldBodyNotContains:
 		return m.BodyNotContains()
+	case compositemodelroute.FieldFallbackModels:
+		return m.FallbackModels()
 	case compositemodelroute.FieldPriority:
 		return m.Priority()
 	case compositemodelroute.FieldEnabled:
@@ -20727,6 +20799,8 @@ func (m *CompositeModelRouteMutation) OldField(ctx context.Context, name string)
 		return m.OldBodyMatchMode(ctx)
 	case compositemodelroute.FieldBodyNotContains:
 		return m.OldBodyNotContains(ctx)
+	case compositemodelroute.FieldFallbackModels:
+		return m.OldFallbackModels(ctx)
 	case compositemodelroute.FieldPriority:
 		return m.OldPriority(ctx)
 	case compositemodelroute.FieldEnabled:
@@ -20847,6 +20921,13 @@ func (m *CompositeModelRouteMutation) SetField(name string, value ent.Value) err
 		}
 		m.SetBodyNotContains(v)
 		return nil
+	case compositemodelroute.FieldFallbackModels:
+		v, ok := value.([]domain.CompositeRouteFallback)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetFallbackModels(v)
+		return nil
 	case compositemodelroute.FieldPriority:
 		v, ok := value.(int)
 		if !ok {
@@ -20916,6 +20997,9 @@ func (m *CompositeModelRouteMutation) ClearedFields() []string {
 	if m.FieldCleared(compositemodelroute.FieldDeletedAt) {
 		fields = append(fields, compositemodelroute.FieldDeletedAt)
 	}
+	if m.FieldCleared(compositemodelroute.FieldFallbackModels) {
+		fields = append(fields, compositemodelroute.FieldFallbackModels)
+	}
 	if m.FieldCleared(compositemodelroute.FieldNotes) {
 		fields = append(fields, compositemodelroute.FieldNotes)
 	}
@@ -20935,6 +21019,9 @@ func (m *CompositeModelRouteMutation) ClearField(name string) error {
 	switch name {
 	case compositemodelroute.FieldDeletedAt:
 		m.ClearDeletedAt()
+		return nil
+	case compositemodelroute.FieldFallbackModels:
+		m.ClearFallbackModels()
 		return nil
 	case compositemodelroute.FieldNotes:
 		m.ClearNotes()
@@ -20991,6 +21078,9 @@ func (m *CompositeModelRouteMutation) ResetField(name string) error {
 		return nil
 	case compositemodelroute.FieldBodyNotContains:
 		m.ResetBodyNotContains()
+		return nil
+	case compositemodelroute.FieldFallbackModels:
+		m.ResetFallbackModels()
 		return nil
 	case compositemodelroute.FieldPriority:
 		m.ResetPriority()

@@ -155,6 +155,7 @@ func (r *CompositeRouteResolver) ResolveWithMatch(ctx context.Context, groupID i
 				UpstreamModel:  upstreamModel,
 				Endpoint:       endpoint,
 				Route:          &route,
+				RequestKind:    compositeDecisionRequestKind(route, match),
 			}, nil
 		}
 	}
@@ -206,6 +207,23 @@ func (r *CompositeRouteResolver) ResolveWithMatch(ctx context.Context, groupID i
 	}
 	decision.Reason = "no explicit route or built-in detector match"
 	return decision, nil
+}
+
+// compositeDecisionRequestKind labels a live explicit match for usage records:
+// a route scoped to a request kind already proved it, otherwise the request
+// facts are classified (lazily parsed once and shared with condition checks).
+func compositeDecisionRequestKind(route CompositeModelRoute, match CompositeRouteRequestMatch) string {
+	if match.IgnoreRequestConditions || match.facts == nil {
+		return ""
+	}
+	switch kind := compositeConditionDefault(route.RequestKind, CompositeRouteRequestKindAny); kind {
+	case CompositeRouteRequestKindCompaction, CompositeRouteRequestKindConversation:
+		return kind
+	}
+	if len(match.Body) == 0 && !match.NativeCompaction && match.ClaudeCompactionHint == "" {
+		return ""
+	}
+	return match.facts.classify().Kind
 }
 
 func matchCompositeRoute(routes []CompositeModelRoute, model, endpoint string, match CompositeRouteRequestMatch) (CompositeModelRoute, bool) {

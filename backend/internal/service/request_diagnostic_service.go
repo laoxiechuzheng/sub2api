@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -17,7 +18,9 @@ import (
 )
 
 const (
-	maxDiagnosticJSONBytes        = 16 << 20
+	// 单条字符串预算最多 128 MiB；JSON 转义会放大，读写共用同一硬上限。
+	maxDiagnosticJSONBytes        = 512 << 20
+	minDiagnosticQueueReservation = 64 << 10
 	requestDiagnosticDrainTimeout = 6 * time.Second
 )
 
@@ -162,8 +165,16 @@ func (s *RequestDiagnosticService) enqueue(snapshot *requestdiagnostic.Snapshot)
 	if s.stopped || snapshot == nil {
 		return
 	}
-	// 核心限制的是所有保存字符串字节；按单条上限预留队列额度，不在请求线程编码大 JSON。
-	reserved := int64(s.cfg.MaxEntryBytes)
+	// 核心限制的是所有保存字符串字节；按快照实际字符串字节预留（不超过单条上限），
+	// 大单条预算不会让小请求挤占队列，也不在请求线程编码大 JSON。
+	// service 包内有同名 int max/min 辅助函数，这里显式比较 int64。
+	reserved := int64(snapshot.StoredBytes)
+	if reserved < minDiagnosticQueueReservation {
+		reserved = minDiagnosticQueueReservation
+	}
+	if limit := int64(s.cfg.MaxEntryBytes); reserved > limit {
+		reserved = limit
+	}
 	if s.pending.Add(reserved) > s.cfg.MaxPendingBytes {
 		s.pending.Add(-reserved)
 		s.dropped.Add(1)
@@ -261,7 +272,7 @@ func (s *RequestDiagnosticService) persist(item diagnosticWrite) {
 		CapturedAt:     now, ExpiresAt: now.Add(time.Duration(s.cfg.RetentionHours) * time.Hour),
 		PayloadGzip: compressed.Bytes(), PayloadBytes: len(body),
 	}
-	ctx, cancel := context.WithTimeout(s.workerCtx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(s.workerCtx, requestDiagnosticSaveTimeout(len(record.PayloadGzip)))
 	defer cancel()
 	// 编码期间也可能耗尽收尾预算，进入 Save 前再检查，避免发起新的 DB 操作。
 	if ctx.Err() != nil {
@@ -272,6 +283,16 @@ func (s *RequestDiagnosticService) persist(item diagnosticWrite) {
 		s.dropped.Add(1)
 		logger.LegacyPrintf("service.request_diagnostic", "Persist failed")
 	}
+}
+
+// requestDiagnosticSaveTimeout 按压缩后正文大小放宽写库超时：大条目（长输出原文）
+// 不应因固定 5s 超时被丢弃；上限避免单条写入长期阻塞后台队列。
+func requestDiagnosticSaveTimeout(compressedBytes int) time.Duration {
+	timeout := 5*time.Second + time.Duration(compressedBytes/(4<<20))*time.Second
+	if timeout > 60*time.Second {
+		return 60 * time.Second
+	}
+	return timeout
 }
 
 func (s *RequestDiagnosticService) Get(ctx context.Context, usage *UsageLog) (*RequestDiagnosticDetail, error) {
@@ -298,24 +319,30 @@ func (s *RequestDiagnosticService) Get(ctx context.Context, usage *UsageLog) (*R
 		result.Status = "evicted"
 		return result, nil
 	}
+	if record.PayloadBytes < 0 || record.PayloadBytes > maxDiagnosticJSONBytes {
+		return nil, errors.New("invalid stored request diagnostic size")
+	}
 	reader, err := gzip.NewReader(bytes.NewReader(record.PayloadGzip))
 	if err != nil {
 		return nil, errors.New("invalid stored request diagnostic")
 	}
 	defer func() { _ = reader.Close() }()
-	body, err := io.ReadAll(io.LimitReader(reader, maxDiagnosticJSONBytes+1))
-	if err != nil || len(body) > maxDiagnosticJSONBytes || len(body) != record.PayloadBytes {
+	body, err := io.ReadAll(io.LimitReader(reader, int64(record.PayloadBytes)+1))
+	if err != nil || len(body) != record.PayloadBytes || !utf8.Valid(body) {
 		return nil, errors.New("invalid stored request diagnostic size")
 	}
 	var snapshot requestdiagnostic.Snapshot
 	if err := json.Unmarshal(body, &snapshot); err != nil {
 		return nil, errors.New("invalid stored request diagnostic payload")
 	}
-	if snapshot.Binding.APIKeyID != usage.APIKeyID || snapshot.Binding.CanonicalID != usage.RequestID || snapshot.SchemaVersion != requestdiagnostic.SchemaVersion {
+	if snapshot.Binding.APIKeyID != usage.APIKeyID || snapshot.Binding.CanonicalID != usage.RequestID || (snapshot.SchemaVersion != requestdiagnostic.SchemaVersion && snapshot.SchemaVersion != requestdiagnostic.CompressedSchemaVersion) {
 		return nil, errors.New("invalid stored request diagnostic binding")
 	}
 	if delta := snapshot.Binding.UsageCreatedAt.Sub(usage.CreatedAt); delta < -time.Microsecond || delta > time.Microsecond {
 		return nil, errors.New("invalid stored request diagnostic timestamp")
+	}
+	if err := expandDiagnosticPayloads(&snapshot); err != nil {
+		return nil, err
 	}
 	result.Status, result.Payload = "captured", &snapshot
 	return result, nil

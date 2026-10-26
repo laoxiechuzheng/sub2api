@@ -34,7 +34,7 @@
             :show-metric-toggle="true"
             :start-date="startDate"
             :end-date="endDate"
-            :filters="breakdownFilters"
+            :filters="chartBreakdownFilters"
           />
           <GroupDistributionChart
             v-model:metric="groupDistributionMetric"
@@ -43,7 +43,7 @@
             :show-metric-toggle="true"
             :start-date="startDate"
             :end-date="endDate"
-            :filters="breakdownFilters"
+            :filters="chartBreakdownFilters"
           />
         </div>
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -59,7 +59,7 @@
             :title="t('usage.endpointDistribution')"
             :start-date="startDate"
             :end-date="endDate"
-            :filters="breakdownFilters"
+            :filters="chartBreakdownFilters"
           />
           <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
         </div>
@@ -200,6 +200,7 @@ import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admi
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatReasoningEffort } from '@/utils/format'
 import { resolveUsageRequestType, requestTypeToLegacyStream } from '@/utils/usageRequestType'
+import { compositeRouteExportText } from '@/utils/compositeRouteUsage'
 import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination from '@/components/common/Pagination.vue'; import Select from '@/components/common/Select.vue'; import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
@@ -264,6 +265,19 @@ const breakdownFilters = computed(() => {
   if (filters.value.request_type != null) f.request_type = filters.value.request_type
   if (filters.value.native_compaction_v2 != null) f.native_compaction_v2 = filters.value.native_compaction_v2
   if (filters.value.billing_type != null) f.billing_type = filters.value.billing_type
+  return f
+})
+
+// 图表钻取的用户明细要与带 Composite 筛选的图表口径一致；用户排行 tab 不显示该筛选，故不带上。
+const chartBreakdownFilters = computed(() => {
+  const f: Record<string, any> = { ...breakdownFilters.value }
+  if (filters.value.model) {
+    f.model = filters.value.model
+    f.requested_model = filters.value.model
+  }
+  if (filters.value.billing_mode) f.billing_mode = filters.value.billing_mode
+  if (filters.value.upstream_model_mismatch != null) f.upstream_model_mismatch = filters.value.upstream_model_mismatch
+  if (filters.value.composite_route) f.composite_route = filters.value.composite_route
   return f
 })
 
@@ -470,7 +484,9 @@ const loadModelStats = async (source: ModelDistributionSource, force = false) =>
       stream: legacyStream === null ? undefined : legacyStream,
       native_compaction_v2: filters.value.native_compaction_v2,
       billing_type: filters.value.billing_type,
+      billing_mode: filters.value.billing_mode,
 	  upstream_model_mismatch: filters.value.upstream_model_mismatch,
+      composite_route: filters.value.composite_route,
     }
 
     const response = await adminAPI.dashboard.getModelStats({ ...baseParams, model_source: source })
@@ -521,7 +537,9 @@ const loadChartData = async () => {
       stream: legacyStream === null ? undefined : legacyStream,
       native_compaction_v2: filters.value.native_compaction_v2,
       billing_type: filters.value.billing_type,
+      billing_mode: filters.value.billing_mode,
 	  upstream_model_mismatch: filters.value.upstream_model_mismatch,
+      composite_route: filters.value.composite_route,
       include_stats: false,
       include_trend: true,
       include_model_stats: false,
@@ -596,7 +614,7 @@ const exportToExcel = async () => {
     const XLSX = await import('xlsx')
     const headers = [
       t('usage.time'), t('admin.usage.user'), t('usage.apiKeyFilter'),
-      t('admin.usage.account'), t('usage.requestedModel'), t('usage.sentUpstreamModel'), t('usage.upstreamResponseModel'), t('usage.upstreamModelMismatch'), t('usage.requestedReasoningEffort'), t('usage.reasoningEffort'), t('admin.usage.group'),
+      t('admin.usage.account'), t('usage.requestedModel'), t('usage.sentUpstreamModel'), t('usage.upstreamResponseModel'), t('usage.upstreamModelMismatch'), t('usage.requestedReasoningEffort'), t('usage.reasoningEffort'), t('admin.usage.group'), t('usage.compositeRouteColumn'),
       t('usage.inboundEndpoint'), t('usage.upstreamEndpoint'),
       t('usage.type'),
       t('admin.usage.inputTokens'), t('admin.usage.outputTokens'),
@@ -616,7 +634,7 @@ const exportToExcel = async () => {
       if (c.signal.aborted) break; if (p === 1) { total = res.total; exportProgress.total = total }
       const rows = (res.items || []).map((log: AdminUsageLog) => [
         log.created_at, log.user?.email || '', log.api_key?.name || '', log.account?.name || '', log.model,
-        log.upstream_model || log.model, log.upstream_response_model || '', log.upstream_model_mismatch == null ? '' : t(log.upstream_model_mismatch ? 'common.yes' : 'common.no'), formatReasoningEffort(log.reasoning_effort), formatReasoningEffort(log.upstream_reasoning_effort || log.reasoning_effort), log.group?.name || '',
+        log.upstream_model || log.model, log.upstream_response_model || '', log.upstream_model_mismatch == null ? '' : t(log.upstream_model_mismatch ? 'common.yes' : 'common.no'), formatReasoningEffort(log.reasoning_effort), formatReasoningEffort(log.upstream_reasoning_effort || log.reasoning_effort), log.group?.name || '', compositeRouteExportText(log, t),
         log.inbound_endpoint || '', log.upstream_endpoint || '', getRequestTypeLabel(log),
         log.input_tokens, log.output_tokens, log.cache_read_tokens, log.cache_creation_tokens,
         log.input_cost?.toFixed(6) || '0.000000', log.output_cost?.toFixed(6) || '0.000000',

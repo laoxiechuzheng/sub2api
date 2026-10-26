@@ -102,11 +102,11 @@ func (t *diagnosticTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		ReadCloser: resp.Body, capture: capture, attempt: attempt, result: result,
 		stream:  strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream"),
 		encoded: resp.Header.Get("Content-Encoding") != "", usage: make(map[string]int64),
-		preserveRaw: capture.PreserveRaw(), responseLimit: min(capture.MaxBytes(), requestdiagnostic.MaxResponseBodyBytes),
+		preserveRaw: capture.PreserveRaw(),
 	}
 	if capture.PreserveRaw() {
 		diagnosticBody.result.ResponseContentType = resp.Header.Get("Content-Type")
-		diagnosticBody.responseBuffer = make([]byte, 0)
+		diagnosticBody.responseCompressor = requestdiagnostic.NewResponseBodyCompressor(capture.MaxBytes())
 	}
 	resp.Body = diagnosticBody
 	return resp, nil
@@ -127,29 +127,27 @@ func diagnosticRequestLength(length int64) int {
 // Close 先关闭原 body，保留取消阻塞 Read 的既有行为，再完成一次诊断结果。
 type diagnosticResponseBody struct {
 	io.ReadCloser
-	capture        *requestdiagnostic.Capture
-	attempt        int64
-	result         requestdiagnostic.AttemptResult
-	mu             sync.Mutex
-	done           bool
-	stream         bool
-	encoded        bool
-	buffer         []byte
-	tooLarge       bool
-	lineOverflow   bool
-	bytesRead      int64
-	events         int64
-	complete       bool
-	terminal       bool
-	frameTerminal  bool
-	sseBytes       int64
-	lineStart      int64
-	usage          map[string]int64
-	stopReason     string
-	upstreamError  json.RawMessage
-	preserveRaw    bool
-	responseLimit  int
-	responseBuffer []byte
+	capture            *requestdiagnostic.Capture
+	attempt            int64
+	result             requestdiagnostic.AttemptResult
+	mu                 sync.Mutex
+	done               bool
+	stream             bool
+	encoded            bool
+	buffer             []byte
+	tooLarge           bool
+	lineOverflow       bool
+	bytesRead          int64
+	events             int64
+	complete           bool
+	terminal           bool
+	frameTerminal      bool
+	terminalLine       diagnosticTerminalLine
+	usage              map[string]int64
+	stopReason         string
+	upstreamError      json.RawMessage
+	preserveRaw        bool
+	responseCompressor *requestdiagnostic.ResponseBodyCompressor
 }
 
 func (b *diagnosticResponseBody) Read(p []byte) (int, error) {
@@ -161,12 +159,11 @@ func (b *diagnosticResponseBody) Read(p []byte) (int, error) {
 	}
 	b.bytesRead += int64(n)
 	if b.preserveRaw && !b.capture.RawCaptureActive() {
-		b.preserveRaw, b.responseBuffer = false, nil
+		b.releaseRawLocked()
 	}
 	if !b.encoded {
-		if b.preserveRaw && len(b.responseBuffer) < b.responseLimit {
-			count := min(n, b.responseLimit-len(b.responseBuffer))
-			b.responseBuffer = append(b.responseBuffer, p[:count]...)
+		if b.preserveRaw {
+			b.responseCompressor.Observe(p[:n])
 		}
 		if b.stream {
 			b.observeSSE(p[:n])
@@ -207,7 +204,7 @@ func (b *diagnosticResponseBody) observeSSE(chunk []byte) {
 			end = newline
 		}
 		part := chunk[:end]
-		b.sseBytes += int64(len(part))
+		b.terminalLine.observe(part)
 		if !b.lineOverflow {
 			if len(b.buffer)+len(part) > requestdiagnostic.MaxResponseSummaryBytes {
 				b.lineOverflow, b.buffer = true, nil
@@ -225,14 +222,10 @@ func (b *diagnosticResponseBody) observeSSE(chunk []byte) {
 				b.frameTerminal = false
 			} else {
 				b.observeDataLine(line)
-				b.observeTerminalLine(line)
 			}
-		} else if b.preserveRaw && b.lineStart >= 0 && b.sseBytes <= int64(len(b.responseBuffer)) {
-			// Terminal detection must not depend on the smaller summary budget.
-			b.observeTerminalLine(bytes.TrimSpace(b.responseBuffer[b.lineStart:b.sseBytes]))
 		}
-		b.sseBytes++
-		b.lineStart = b.sseBytes
+		b.frameTerminal = b.frameTerminal || b.terminalLine.terminal()
+		b.terminalLine = diagnosticTerminalLine{}
 		b.buffer = b.buffer[:0]
 		b.lineOverflow = false
 		chunk = chunk[newline+1:]
@@ -280,23 +273,11 @@ func (b *diagnosticResponseBody) observeDataLine(line []byte) {
 	}
 }
 
-func (b *diagnosticResponseBody) observeTerminalLine(line []byte) {
-	if !bytes.HasPrefix(line, []byte("data:")) {
-		return
-	}
-	data := bytes.TrimSpace(line[5:])
-	if bytes.Equal(data, []byte("[DONE]")) {
-		b.frameTerminal = true
-		return
-	}
-	if !gjson.ValidBytes(data) {
-		return
-	}
-	kind := gjson.GetBytes(data, "type").String()
-	switch kind {
-	case "message_stop", "response.completed", "response.done", "response.failed",
-		"response.incomplete", "response.cancelled", "response.canceled", "error":
-		b.frameTerminal = true
+func (b *diagnosticResponseBody) releaseRawLocked() {
+	b.preserveRaw = false
+	if b.responseCompressor != nil {
+		b.responseCompressor.Discard()
+		b.responseCompressor = nil
 	}
 }
 
@@ -306,18 +287,14 @@ func (b *diagnosticResponseBody) finishLocked() {
 	}
 	b.done = true
 	if b.preserveRaw && !b.capture.RawCaptureActive() {
-		b.preserveRaw, b.responseBuffer = false, nil
+		b.releaseRawLocked()
 	}
 	if b.stream && !b.encoded {
 		if !b.lineOverflow && len(b.buffer) > 0 {
 			b.observeDataLine(bytes.TrimSpace(b.buffer))
-			if b.complete {
-				b.observeTerminalLine(bytes.TrimSpace(b.buffer))
-			}
-		} else if b.complete && b.preserveRaw && b.sseBytes <= int64(len(b.responseBuffer)) {
-			b.observeTerminalLine(bytes.TrimSpace(b.responseBuffer[b.lineStart:b.sseBytes]))
 		}
 		if b.complete {
+			b.frameTerminal = b.frameTerminal || b.terminalLine.terminal()
 			b.terminal = b.terminal || b.frameTerminal
 		}
 		b.result.ResponseSummary, _ = json.Marshal(map[string]any{
@@ -334,11 +311,16 @@ func (b *diagnosticResponseBody) finishLocked() {
 		})
 	}
 	if b.preserveRaw && !b.encoded {
-		b.result.ResponseBody = b.responseBuffer
+		payload := b.responseCompressor.Finish(!b.complete && !b.terminal)
+		b.result.ResponseBodyGzip = payload.ContentGzip
+		b.result.ResponseBodyBytes = payload.UncompressedBytes
+		b.result.ResponseOmittedReason = payload.OmittedReason
 		b.result.ResponseBytes = diagnosticRequestLength(b.bytesRead)
-		b.result.ResponseIncomplete = !b.complete && !b.terminal
+		b.result.ResponseIncomplete = payload.Truncated
 	}
 	b.capture.EndAttempt(b.attempt, b.result)
-	b.result.ResponseBody, b.result.ResponseSummary = nil, nil
-	b.buffer, b.upstreamError, b.usage, b.responseBuffer = nil, nil, nil, nil
+	b.result.ResponseBody, b.result.ResponseBodyGzip, b.result.ResponseSummary = nil, nil, nil
+	b.buffer, b.upstreamError, b.usage = nil, nil, nil
+	b.terminalLine = diagnosticTerminalLine{}
+	b.releaseRawLocked()
 }

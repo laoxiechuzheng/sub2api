@@ -627,6 +627,7 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 	}
 	usageCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
+	applyCompositeRouteTrace(ctx, usageLog)
 	// 冲突兜底 Create 可能回填历史 created_at；正文绑定只能用本次原始时间。
 	diagnosticCreatedAt := usageLog.CreatedAt
 

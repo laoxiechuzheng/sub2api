@@ -1010,6 +1010,16 @@ func BodyNotContainsContainsFold(v string) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldContainsFold(FieldBodyNotContains, v))
 }
 
+// FallbackModelsIsNil applies the IsNil predicate on the "fallback_models" field.
+func FallbackModelsIsNil() predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldIsNull(FieldFallbackModels))
+}
+
+// FallbackModelsNotNil applies the NotNil predicate on the "fallback_models" field.
+func FallbackModelsNotNil() predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNotNull(FieldFallbackModels))
+}
+
 // PriorityEQ applies the EQ predicate on the "priority" field.
 func PriorityEQ(v int) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldEQ(FieldPriority, v))

@@ -183,8 +183,43 @@ describe('GroupsView precise Composite routes', () => {
       public_model: 'new-model', match_type: 'exact', target_platform: 'openai',
       upstream_model: '', endpoint: 'any', user_agent_contains: '', body_contains: '',
       request_kind: 'any', body_match_scope: 'current_turn', body_match_mode: 'any',
-      body_not_contains: '', priority: 100, enabled: true, notes: ''
+      body_not_contains: '', fallback_models: [], priority: 100, enabled: true, notes: ''
     })
+  })
+
+  it('edits ordered fallback models, drops blank rows, and restores saved fallbacks', async () => {
+    listCompositeRoutes.mockResolvedValue([{
+      ...legacyRoute,
+      fallback_models: [{ upstream_model: 'deepseek-v4-flash' }, { target_platform: 'openai', upstream_model: 'gpt-5.5' }]
+    }])
+    await openRoutes()
+    expect(wrapper.get('tbody').text()).toContain('deepseek-v4-flash')
+    expect(wrapper.get('tbody').text()).toContain('gpt-5.5')
+
+    await editFirstRoute()
+    const inputs = () => wrapper.findAll<HTMLInputElement>('[data-testid="composite-route-fallbacks"] input')
+    expect(inputs().map((input) => input.element.value)).toEqual(['deepseek-v4-flash', 'gpt-5.5'])
+
+    await wrapper.get('[data-testid="composite-route-add-fallback"]').trigger('click')
+    await inputs()[2].setValue(' gemini-3.8-flash ')
+    await wrapper.get('[data-testid="composite-route-add-fallback"]').trigger('click')
+    await submitRoute()
+
+    expect(updateCompositeRoute).toHaveBeenCalledWith(42, 7, expect.objectContaining({
+      fallback_models: [
+        { target_platform: '', upstream_model: 'deepseek-v4-flash' },
+        { target_platform: 'openai', upstream_model: 'gpt-5.5' },
+        { target_platform: '', upstream_model: 'gemini-3.8-flash' }
+      ]
+    }))
+  })
+
+  it('caps the fallback editor at eight rows', async () => {
+    await openRoutes()
+    const add = wrapper.get('[data-testid="composite-route-add-fallback"]')
+    for (let i = 0; i < 10; i++) await add.trigger('click')
+    expect(wrapper.findAll('[data-testid="composite-route-fallbacks"] input')).toHaveLength(8)
+    expect(add.attributes('disabled')).toBeDefined()
   })
 
   it.each([
@@ -201,7 +236,7 @@ describe('GroupsView precise Composite routes', () => {
       public_model: 'public-model', match_type: 'prefix', target_platform: 'deepseek',
       upstream_model: 'upstream-model', endpoint: 'responses', user_agent_contains: 'codex',
       body_contains: 'checkpoint', request_kind: 'any', body_match_scope: 'full_body',
-      body_match_mode: 'any', body_not_contains: '', priority: 3, enabled: true, notes: 'existing route'
+      body_match_mode: 'any', body_not_contains: '', fallback_models: [], priority: 3, enabled: true, notes: 'existing route'
     })
   })
 
@@ -253,7 +288,7 @@ describe('GroupsView precise Composite routes', () => {
       public_model: 'public-model', match_type: 'prefix', target_platform: 'deepseek',
       upstream_model: 'upstream-model', endpoint: 'responses', user_agent_contains: 'codex',
       body_contains: '', request_kind: 'compaction', body_match_scope: 'current_turn',
-      body_match_mode: 'any', body_not_contains: '', priority: 3, enabled: true, notes: 'existing route'
+      body_match_mode: 'any', body_not_contains: '', fallback_models: [], priority: 3, enabled: true, notes: 'existing route'
     })
   })
 

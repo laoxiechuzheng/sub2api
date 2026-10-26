@@ -8,6 +8,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	gocache "github.com/patrickmn/go-cache"
 )
@@ -210,6 +211,42 @@ func appendNativeCompactionV2WhereCondition(conditions []string, args []any, nat
 	conditions = append(conditions, fmt.Sprintf("%s = $%d", column, len(args)+1))
 	args = append(args, *nativeCompactionV2)
 	return conditions, args
+}
+
+// appendCompositeRouteWhereCondition filters on explicit composite route
+// attribution; the conditions use only constant SQL and no arguments.
+func appendCompositeRouteWhereCondition(conditions []string, filter string) []string {
+	return append(conditions, compositeRouteConditions(filter, "")...)
+}
+
+// compositeRouteConditions returns the constant SQL conditions for a
+// composite_route filter, prefixing the columns with alias when it is not
+// empty. Empty or unknown filters yield nil.
+func compositeRouteConditions(filter, alias string) []string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	switch filter {
+	case usagestats.CompositeRouteFilterRouted:
+		return []string{prefix + "composite_route_id IS NOT NULL"}
+	case usagestats.CompositeRouteFilterCompaction:
+		return []string{prefix + "composite_route_id IS NOT NULL", prefix + "composite_route_kind = 'compaction'"}
+	case usagestats.CompositeRouteFilterFallback:
+		return []string{prefix + "composite_route_id IS NOT NULL", prefix + "composite_fallback_chain IS NOT NULL"}
+	case usagestats.CompositeRouteFilterNone:
+		return []string{prefix + "composite_route_id IS NULL"}
+	}
+	return nil
+}
+
+// appendCompositeRouteQueryFilter appends the composite_route conditions to a
+// query that already has a WHERE clause.
+func appendCompositeRouteQueryFilter(query, filter, alias string) string {
+	for _, condition := range compositeRouteConditions(filter, alias) {
+		query += " AND " + condition
+	}
+	return query
 }
 
 func appendNativeCompactionV2QueryFilter(query string, args []any, nativeCompactionV2 *bool, alias string) (string, []any) {

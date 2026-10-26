@@ -145,6 +145,35 @@ const baseImageRow = {
 }
 
 describe('admin UsageTable tooltip', () => {
+  it('marks Composite-routed rows with route kind, rule id and fallback chain', () => {
+    const row = { ...baseImageRow, image_count: 0, billing_mode: 'token', model: 'gpt-6.1-sol', upstream_model: 'backup' }
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          { ...row, request_id: 'routed-compaction', composite_route_id: 12, composite_route_kind: 'compaction',
+            composite_fallback_chain: 'gemini-3.8-flash-high (429) → backup' },
+          { ...row, request_id: 'routed-plain', composite_route_id: 3, composite_route_kind: 'conversation' },
+          { ...row, request_id: 'not-routed' },
+        ],
+        loading: false,
+        columns: [{ key: 'model', label: 'Model' }],
+      },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+
+    const compaction = wrapper.get('[data-request-id="routed-compaction"]')
+    expect(compaction.get('[data-testid="composite-route-badge"]').text()).toBe('usage.compositeRouteCompaction #12')
+    expect(compaction.get('[data-testid="composite-fallback-badge"]').text()).toBe('usage.compositeFallbackUsed')
+    expect(compaction.get('[data-testid="composite-fallback-chain"]').text()).toContain('gemini-3.8-flash-high (429) → backup')
+    expect(compaction.get('[data-testid="composite-route-badges"]').attributes('title')).toContain('#12')
+
+    const plain = wrapper.get('[data-request-id="routed-plain"]')
+    expect(plain.get('[data-testid="composite-route-badge"]').text()).toBe('usage.compositeRouteRouted #3')
+    expect(plain.find('[data-testid="composite-fallback-badge"]').exists()).toBe(false)
+
+    expect(wrapper.get('[data-request-id="not-routed"]').find('[data-testid="composite-route-badges"]').exists()).toBe(false)
+  })
+
   it('shows output TPS in the latency cell using total duration', () => {
     const row = { ...baseImageRow, image_count: 0, billing_mode: 'token', output_tokens: 1000, duration_ms: 20_000, first_token_ms: 10_000 }
     const wrapper = mount(UsageTable, {

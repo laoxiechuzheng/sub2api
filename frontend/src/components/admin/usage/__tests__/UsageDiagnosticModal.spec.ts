@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -129,7 +131,100 @@ async function open() {
   return wrapper
 }
 
+const largeProtocols = ['Responses JSON', 'Responses SSE', 'Chat JSON', 'Chat SSE', 'Anthropic JSON', 'Anthropic SSE', 'Gemini JSON', 'Gemini SSE'] as const
+type LargeProtocol = typeof largeProtocols[number]
+const largeCases = [
+  ...largeProtocols.map(protocol => ({ protocol, schemaVersion: 1 as const })),
+  { protocol: 'Responses SSE' as const, schemaVersion: 2 as const }
+]
+
+function largeFixture(protocol: LargeProtocol, schemaVersion: 1 | 2 = 1) {
+  const row = 'UTF8 \u6a21\u578b\u8f93\u51fa \u03bb \uD83D\uDE80 <literal> ' + '0123456789abcdef'.repeat(12) + '\n'
+  const tail = `UNIQUE_MODAL_TAIL_${protocol.replace(/ /g, '_')}_20261027${schemaVersion === 2 ? '_V2' : ''}_\u7ec8\u70b9`
+  const text = ' \r\n' + row.repeat(Math.ceil((3.6 * 1024 * 1024 + 4096) / Buffer.byteLength(row, 'utf8'))) + tail + '\r\n  '
+  const chunks: string[] = []
+  for (let offset = 0; offset < text.length; offset += 65521) chunks.push(text.slice(offset, offset + 65521))
+  const message = { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }
+  let content: string
+  switch (protocol) {
+    case 'Responses JSON':
+      content = JSON.stringify({ output: [{ type: 'reasoning', summary: [{ text: 'hidden reasoning' }] }, message] })
+      break
+    case 'Responses SSE':
+      content = chunks.map(delta => `data: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta })}\n\n`).join('') +
+        `data: ${JSON.stringify({ type: 'response.output_text.done', output_index: 0, content_index: 0, text })}\n\n` +
+        `data: ${JSON.stringify({ type: 'response.completed', response: { output: [message] } })}\n\n`
+      break
+    case 'Chat JSON':
+      content = JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: text, reasoning_content: 'hidden reasoning' } }] })
+      break
+    case 'Chat SSE':
+      content = chunks.map(content => `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content } }] })}\n\n`).join('') + 'data: [DONE]\n\n'
+      break
+    case 'Anthropic JSON':
+      content = JSON.stringify({ type: 'message', role: 'assistant', content: [{ type: 'thinking', thinking: 'hidden reasoning' }, { type: 'text', text }] })
+      break
+    case 'Anthropic SSE':
+      content = 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+        chunks.map(text => `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })}\n\n`).join('') +
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      break
+    case 'Gemini JSON':
+      content = JSON.stringify({ candidates: [{ index: 0, content: { role: 'model', parts: [{ thought: true, text: 'hidden reasoning' }, { text }] } }] })
+      break
+    case 'Gemini SSE':
+      content = chunks.map(text => `data: ${JSON.stringify({ candidates: [{ index: 0, content: { role: 'model', parts: [{ thought: true, text: 'hidden reasoning' }, { text }] } }] })}\n\n`).join('')
+      break
+  }
+  return { content, text, tail, contentType: protocol.endsWith('SSE') ? 'text/event-stream' : 'application/json' }
+}
+
+function expectExactOutput(actual: string, expected: string, tail: string) {
+  expect(actual.length).toBe(expected.length)
+  expect(Buffer.byteLength(actual, 'utf8')).toBe(Buffer.byteLength(expected, 'utf8'))
+  expect(createHash('sha256').update(actual, 'utf8').digest('hex')).toBe(createHash('sha256').update(expected, 'utf8').digest('hex'))
+  expect(actual.endsWith(tail + '\r\n  ')).toBe(true)
+  expect(actual.split(tail)).toHaveLength(2)
+  expect(actual === expected).toBe(true)
+}
+
 describe('admin usage diagnostic modal', () => {
+  it.each(largeCases)('renders and copies the entire UTF8 model output above 3.6 MiB from $protocol schema v$schemaVersion', async ({ protocol, schemaVersion }) => {
+    const fixture = largeFixture(protocol, schemaVersion)
+    const bytes = Buffer.byteLength(fixture.content, 'utf8')
+    expect(Buffer.byteLength(fixture.text, 'utf8')).toBeGreaterThan(3.6 * 1024 * 1024)
+    expect(bytes).toBeGreaterThan(3.6 * 1024 * 1024)
+    const result = responseWithBody(fixture.content, 1, { original_bytes: bytes, stored_bytes: bytes }, fixture.contentType)
+    result.diagnostic.payload!.schema_version = schemaVersion
+    result.retention_hours = 6
+    result.diagnostic.expires_at = '2026-10-03T15:10:12Z'
+    getDiagnostic.mockResolvedValueOnce(result)
+    const wrapper = await open()
+    const output = wrapper.get('[data-testid="diagnostic-payload-attempt-1-output"]')
+    const toggle = output.get('[data-testid="diagnostic-toggle-attempt-1-output"]')
+
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    await toggle.trigger('click')
+    expect(output.find('pre').exists()).toBe(false)
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expectExactOutput(output.get('pre code').element.textContent!, fixture.text, fixture.tail)
+    expect(wrapper.get('[data-testid="diagnostic-toggle-attempt-1-response"]').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('[data-testid="diagnostic-partial-attempt-1-output"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="diagnostic-status"]').text()).toContain('6 h')
+    expect(wrapper.get('[data-testid="diagnostic-status"]').text()).toContain('2026-10-03T15:10:12Z')
+    const schemaField = wrapper.findAll('section[aria-labelledby="diagnostic-snapshot-heading"] dl > div')
+      .find(field => field.get('dt').text() === 'Schema version')!
+    expect(schemaField.get('dd').text()).toBe(String(schemaVersion))
+    expect(wrapper.find('literal').exists()).toBe(false)
+
+    await output.get('[data-testid="diagnostic-copy-attempt-1-output"]').trigger('click')
+    await flushPromises()
+    expect(clipboard).toHaveBeenCalledTimes(1)
+    expectExactOutput(clipboard.mock.calls[0][0], fixture.text, fixture.tail)
+    expect(output.get('[data-testid="diagnostic-copy-attempt-1-output"]').text()).toContain('Copied')
+  }, 30000)
+
   it('loads on open only and displays usage, endpoints, timing, tokens and IDs', async () => {
     getDiagnostic.mockResolvedValueOnce(response())
     const wrapper = await open()
@@ -364,6 +459,7 @@ describe('admin usage diagnostic modal', () => {
     const wrapper = await open()
 
     expect(wrapper.get('[data-testid="diagnostic-payload-attempt-1-output"] pre code').text()).toBe('partial output')
+    expect(wrapper.get('[data-testid="diagnostic-partial-attempt-1-output"]').text()).toContain('may be incomplete')
     const raw = wrapper.get('[data-testid="diagnostic-payload-attempt-1-response"]')
     expect(raw.text()).toContain('Truncated')
     expect(raw.text()).toContain('response_read_error')

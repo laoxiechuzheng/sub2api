@@ -131,7 +131,8 @@ func TestRequestDiagnosticServiceBoundsAndStop(t *testing.T) {
 	repo := &diagnosticTestRepo{started: make(chan struct{}, 1), release: make(chan struct{})}
 	cfg := diagnosticTestConfig()
 	cfg.RequestDiagnostics.MaxActive = 1
-	cfg.RequestDiagnostics.MaxPendingBytes = int64(cfg.RequestDiagnostics.MaxEntryBytes)
+	// 队列按快照实际字节预留（最少 64 KiB），预算只容纳一条小快照。
+	cfg.RequestDiagnostics.MaxPendingBytes = minDiagnosticQueueReservation
 	s := NewRequestDiagnosticService(repo, cfg)
 	capture := s.Begin(requestdiagnostic.Inbound{})
 	require.NotNil(t, capture)
@@ -147,7 +148,7 @@ func TestRequestDiagnosticServiceBoundsAndStop(t *testing.T) {
 	}
 	second := diagnosticTestFinish(s, &UsageLog{APIKeyID: 1, RequestID: "client:dropped", CreatedAt: time.Now()}, true)
 	require.NotNil(t, second)
-	require.Equal(t, int64(cfg.RequestDiagnostics.MaxEntryBytes), s.pending.Load())
+	require.Equal(t, int64(minDiagnosticQueueReservation), s.pending.Load())
 	require.GreaterOrEqual(t, s.dropped.Load(), uint64(2))
 	close(repo.release)
 	s.Stop()
@@ -282,6 +283,13 @@ func TestRequestDiagnosticServiceMissingExpiredEvictedAndInvalid(t *testing.T) {
 	repo.getError = errors.New("db unavailable")
 	_, err = s.Get(context.Background(), usage)
 	require.Error(t, err)
+}
+
+// 表约束 usage_request_diagnostics_payload_bytes_check 由迁移 248 设为 512 MiB，
+// 此常量变化时必须同步新增迁移，否则超出约束的记录会整条写库失败。
+func TestRequestDiagnosticJSONLimitMatchesTableConstraint(t *testing.T) {
+	require.EqualValues(t, 536870912, maxDiagnosticJSONBytes)
+	require.GreaterOrEqual(t, int64(maxDiagnosticJSONBytes), int64(config.MaxRequestDiagnosticEntryBytes))
 }
 
 func TestRequestDiagnosticServicePersistFailureDoesNotAffectCapture(t *testing.T) {

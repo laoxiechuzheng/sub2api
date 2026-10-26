@@ -3989,6 +3989,15 @@
                       <div class="mt-1 break-all text-xs text-gray-500 dark:text-gray-400">
                         {{ route.upstream_model || route.public_model }}
                       </div>
+                      <div
+                        v-for="(fallback, index) in route.fallback_models || []"
+                        :key="`${route.id}-fallback-${index}`"
+                        class="break-all text-xs text-amber-600 dark:text-amber-400"
+                        :title="t('admin.groups.compositeRoutes.fallbackModels')"
+                      >
+                        <span class="mr-0.5">↳ {{ t("admin.groups.compositeRoutes.fallbackShort") }}{{ index + 1 }}:</span>
+                        <template v-if="fallback.target_platform && fallback.target_platform !== route.target_platform">{{ formatCompositePlatform(fallback.target_platform) }} / </template>{{ fallback.upstream_model }}
+                      </div>
                     </td>
                     <td class="px-3 py-2">
                       <div class="text-gray-700 dark:text-gray-300">
@@ -4224,6 +4233,53 @@
               />
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 {{ t("admin.groups.compositeRoutes.upstreamModelHint") }}
+              </p>
+            </div>
+
+            <div data-testid="composite-route-fallbacks">
+              <div class="flex items-center justify-between gap-2">
+                <label class="input-label mb-0">{{
+                  t("admin.groups.compositeRoutes.fallbackModels")
+                }}</label>
+                <button
+                  type="button"
+                  class="btn btn-secondary btn-xs"
+                  data-testid="composite-route-add-fallback"
+                  :disabled="compositeRouteForm.fallback_models.length >= COMPOSITE_ROUTE_MAX_FALLBACKS"
+                  @click="addCompositeRouteFallback"
+                >
+                  {{ t("admin.groups.compositeRoutes.addFallbackModel") }}
+                </button>
+              </div>
+              <div
+                v-for="(fallback, index) in compositeRouteForm.fallback_models"
+                :key="fallback.key"
+                class="mt-2 flex items-center gap-2"
+              >
+                <span class="w-5 shrink-0 text-center text-xs text-gray-400">{{ index + 1 }}</span>
+                <div class="w-40 shrink-0">
+                  <Select
+                    v-model="fallback.target_platform"
+                    :options="compositeRouteFallbackPlatformOptions"
+                  />
+                </div>
+                <input
+                  v-model.trim="fallback.upstream_model"
+                  type="text"
+                  class="input min-w-0 flex-1"
+                  :placeholder="t('admin.groups.compositeRoutes.fallbackModelPlaceholder')"
+                />
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-xs text-red-600 dark:text-red-400"
+                  :title="t('common.delete')"
+                  @click="removeCompositeRouteFallback(index)"
+                >
+                  <Icon name="trash" size="sm" />
+                </button>
+              </div>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.groups.compositeRoutes.fallbackModelsHint") }}
               </p>
             </div>
 
@@ -4526,6 +4582,7 @@ import type {
   CodexModelsManifestConfig,
   CompositeModelRoute,
   CompositeModelRouteInput,
+  CompositeRouteFallback,
   CompositeRouteBodyMatchMode,
   CompositeRouteBodyMatchScope,
   CompositeRouteDecision,
@@ -5143,10 +5200,21 @@ type CompositeRouteFormState = {
   body_match_scope: CompositeRouteBodyMatchScope;
   body_match_mode: CompositeRouteBodyMatchMode;
   body_not_contains: string;
+  fallback_models: CompositeRouteFallbackFormRow[];
   priority: number;
   enabled: boolean;
   notes: string;
 };
+
+// 备用模型行：target_platform 为空表示沿用主目标平台。key 仅用于 v-for。
+type CompositeRouteFallbackFormRow = {
+  key: number;
+  target_platform: ConcreteGroupPlatform | "";
+  upstream_model: string;
+};
+
+const COMPOSITE_ROUTE_MAX_FALLBACKS = 8;
+let compositeRouteFallbackKey = 0;
 
 const showCompositeRoutesModal = ref(false);
 const compositeRoutesGroup = ref<AdminGroup | null>(null);
@@ -5179,10 +5247,34 @@ const compositeRouteForm = reactive<CompositeRouteFormState>({
   body_match_scope: "current_turn",
   body_match_mode: "any",
   body_not_contains: "",
+  fallback_models: [],
   priority: 100,
   enabled: true,
   notes: "",
 });
+const compositeRouteFallbackPlatformOptions = computed(() => [
+  { value: "", label: t("admin.groups.compositeRoutes.fallbackSamePlatform") },
+  ...compositeRoutePlatformOptions.value,
+]);
+const addCompositeRouteFallback = () => {
+  if (compositeRouteForm.fallback_models.length >= COMPOSITE_ROUTE_MAX_FALLBACKS) return;
+  compositeRouteForm.fallback_models.push({
+    key: ++compositeRouteFallbackKey,
+    target_platform: "",
+    upstream_model: "",
+  });
+};
+const removeCompositeRouteFallback = (index: number) => {
+  compositeRouteForm.fallback_models.splice(index, 1);
+};
+const toCompositeRouteFallbackRows = (
+  fallbacks: CompositeRouteFallback[] | null | undefined,
+): CompositeRouteFallbackFormRow[] =>
+  (fallbacks || []).map((fallback) => ({
+    key: ++compositeRouteFallbackKey,
+    target_platform: fallback.target_platform || "",
+    upstream_model: fallback.upstream_model,
+  }));
 const createMessagesDispatchDefaults = createDefaultMessagesDispatchFormState();
 const editMessagesDispatchDefaults = createDefaultMessagesDispatchFormState();
 const createModelAllowlistState = reactive(createInitialModelAllowlistState());
@@ -6825,6 +6917,7 @@ const resetCompositeRouteForm = () => {
   compositeRouteForm.body_match_scope = "current_turn";
   compositeRouteForm.body_match_mode = "any";
   compositeRouteForm.body_not_contains = "";
+  compositeRouteForm.fallback_models = [];
   compositeRouteForm.priority = 100;
   compositeRouteForm.enabled = true;
   compositeRouteForm.notes = "";
@@ -6842,6 +6935,13 @@ const toCompositeRouteInput = (): CompositeModelRouteInput => ({
   body_match_scope: compositeRouteForm.body_match_scope,
   body_match_mode: compositeRouteForm.body_match_mode,
   body_not_contains: compositeRouteForm.body_not_contains.trim(),
+  // 始终发送完整列表（含空数组），以便清空备用模型；后端负责去重与校验。
+  fallback_models: compositeRouteForm.fallback_models
+    .map((fallback) => ({
+      target_platform: fallback.target_platform,
+      upstream_model: fallback.upstream_model.trim(),
+    }))
+    .filter((fallback) => fallback.upstream_model !== ""),
   priority: Number(compositeRouteForm.priority) || 100,
   enabled: compositeRouteForm.enabled,
   notes: compositeRouteForm.notes.trim(),
@@ -6909,6 +7009,7 @@ const editCompositeRoute = (route: CompositeModelRoute) => {
   compositeRouteForm.body_match_scope = route.body_match_scope || "full_body";
   compositeRouteForm.body_match_mode = route.body_match_mode || "any";
   compositeRouteForm.body_not_contains = route.body_not_contains || "";
+  compositeRouteForm.fallback_models = toCompositeRouteFallbackRows(route.fallback_models);
   compositeRouteForm.priority = route.priority || 100;
   compositeRouteForm.enabled = route.enabled;
   compositeRouteForm.notes = route.notes || "";

@@ -194,6 +194,9 @@ func (s *adminServiceImpl) UpdateCompositeRoute(ctx context.Context, groupID, ro
 	if !input.BodyNotContainsProvided && input.BodyNotContains == "" {
 		input.BodyNotContains = existing.BodyNotContains
 	}
+	if !input.FallbackModelsProvided && len(input.FallbackModels) == 0 {
+		input.FallbackModels = existing.FallbackModels
+	}
 	route, err := compositeRouteFromInput(groupID, input)
 	if err != nil {
 		return nil, err
@@ -276,7 +279,31 @@ const (
 	maxCompositeRouteUserAgentConditionBytes = 2048
 	maxCompositeRouteBodyConditionBytes      = 8192
 	maxCompositeRouteConditionPatterns       = 128
+	maxCompositeRouteFallbackModels          = 8
+	maxCompositeRouteModelBytes              = 200
 )
+
+func validateCompositeRouteFallbacks(input CompositeRouteInput) ([]CompositeRouteFallback, error) {
+	if len(input.FallbackModels) > maxCompositeRouteFallbackModels {
+		return nil, infraerrors.BadRequest("COMPOSITE_ROUTE_TOO_MANY_FALLBACKS", fmt.Sprintf("fallback_models allows at most %d entries", maxCompositeRouteFallbackModels))
+	}
+	out := make([]CompositeRouteFallback, 0, len(input.FallbackModels))
+	for _, fallback := range input.FallbackModels {
+		if len(fallback.UpstreamModel) > maxCompositeRouteModelBytes {
+			return nil, infraerrors.BadRequest("COMPOSITE_ROUTE_FALLBACK_MODEL_TOO_LONG", fmt.Sprintf("fallback upstream_model is too long (max %d bytes)", maxCompositeRouteModelBytes))
+		}
+		if fallback.TargetPlatform != "" && !isConcreteRequestPlatform(fallback.TargetPlatform) {
+			return nil, infraerrors.BadRequest("INVALID_COMPOSITE_ROUTE_FALLBACK_PLATFORM", "fallback target_platform must be a concrete provider")
+		}
+		// 与主目标完全相同（同平台、同模型）的备用项不会带来新的上游，静默去掉。
+		samePlatform := fallback.TargetPlatform == "" || fallback.TargetPlatform == input.TargetPlatform
+		if samePlatform && input.UpstreamModel != "" && fallback.UpstreamModel == input.UpstreamModel {
+			continue
+		}
+		out = append(out, fallback)
+	}
+	return out, nil
+}
 
 func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*CompositeModelRoute, error) {
 	input = normalizeCompositeRouteInput(input)
@@ -319,10 +346,15 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 			return nil, infraerrors.BadRequest("COMPOSITE_ROUTE_CONDITION_TOO_MANY_PATTERNS", fmt.Sprintf("%s has too many patterns (max %d distinct patterns)", condition.name, maxCompositeRouteConditionPatterns))
 		}
 	}
+	fallbacks, err := validateCompositeRouteFallbacks(input)
+	if err != nil {
+		return nil, err
+	}
 	if input.Priority == 0 {
 		input.Priority = 100
 	}
 	return &CompositeModelRoute{
+		FallbackModels:    fallbacks,
 		GroupID:           groupID,
 		PublicModel:       input.PublicModel,
 		MatchType:         input.MatchType,

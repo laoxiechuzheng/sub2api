@@ -2,6 +2,8 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 
 import UsageFilters from '../UsageFilters.vue'
+import zhAdminResources from '@/i18n/locales/zh/admin/resources'
+import enAdminResources from '@/i18n/locales/en/admin/resources'
 
 // --- i18n messages (only what UsageFilters needs) ---
 const messages: Record<string, string> = {
@@ -303,5 +305,66 @@ describe('UsageFilters — native compaction filter', () => {
 
     expect(filters.native_compaction_v2).toBe(true)
     expect(wrapper.emitted('change')).toBeTruthy()
+  })
+})
+
+describe('UsageFilters — Composite route filter', () => {
+  it('describes NULL attribution as including historical unknown routes in both locales', () => {
+    expect(zhAdminResources.usage.compositeRouteNone).toBe('无路由归因（含历史未知）')
+    expect(enAdminResources.usage.compositeRouteNone).toBe('No route attribution (includes historical unknowns)')
+  })
+  it('offers routed/compaction/fallback/none and writes composite_route', async () => {
+    const SelectStub = {
+      name: 'Select',
+      props: ['modelValue', 'options'],
+      emits: ['update:modelValue', 'change'],
+      template: '<div />',
+    }
+    const filters: Record<string, unknown> = { ...defaultFilters(), composite_route: null }
+    const wrapper = mount(UsageFilters, {
+      props: {
+        modelValue: filters,
+        exporting: false,
+        startDate: '2026-05-01',
+        endDate: '2026-05-28',
+        showActions: false,
+        modelOptions: [],
+      },
+      global: { stubs: { Select: SelectStub, Teleport: true } },
+    })
+
+    const routeSelect = wrapper.get('[data-testid="usage-composite-route-filter"]').findComponent(SelectStub)
+    expect((routeSelect.props('options') as Array<{ value: unknown }>).map((option) => option.value))
+      .toEqual([null, 'routed', 'compaction', 'fallback', 'none'])
+
+    routeSelect.vm.$emit('update:modelValue', 'compaction')
+    routeSelect.vm.$emit('change')
+    await wrapper.vm.$nextTick()
+
+    expect(filters.composite_route).toBe('compaction')
+    expect(wrapper.emitted('change')).toBeTruthy()
+  })
+
+  it('hides filters the cleanup API cannot honour so the delete scope matches what is shown', () => {
+    const mountWith = (cleanup: boolean) => mount(UsageFilters, {
+      props: {
+        modelValue: { ...defaultFilters(), composite_route: 'fallback' },
+        exporting: false,
+        startDate: '2026-05-01',
+        endDate: '2026-05-28',
+        showActions: false,
+        modelOptions: [],
+        cleanup,
+      },
+      global: { stubs: { Select: true, Teleport: true } },
+    })
+
+    const normal = mountWith(false)
+    const cleanupMode = mountWith(true)
+
+    expect(normal.find('[data-testid="usage-composite-route-filter"]').exists()).toBe(true)
+    expect(cleanupMode.find('[data-testid="usage-composite-route-filter"]').exists()).toBe(false)
+    // 压缩 / 计费模式 / 上游模型审计 / Composite 路由 四个筛选在清理模式下全部隐藏
+    expect(normal.findAll('select-stub').length - cleanupMode.findAll('select-stub').length).toBe(4)
   })
 })

@@ -55,6 +55,7 @@ func (r *compositeModelRouteRepository) Create(ctx context.Context, route *servi
 		SetBodyMatchScope(compositeRouteConditionOrDefault(route.BodyMatchScope, service.CompositeRouteBodyScopeFullBody)).
 		SetBodyMatchMode(compositeRouteConditionOrDefault(route.BodyMatchMode, service.CompositeRouteBodyMatchAny)).
 		SetBodyNotContains(route.BodyNotContains).
+		SetFallbackModels(compositeRouteFallbacksOrEmpty(route.FallbackModels)).
 		SetPriority(route.Priority).
 		SetEnabled(route.Enabled).
 		SetNotes(route.Notes).
@@ -82,6 +83,7 @@ func (r *compositeModelRouteRepository) Update(ctx context.Context, route *servi
 		SetBodyMatchScope(compositeRouteConditionOrDefault(route.BodyMatchScope, service.CompositeRouteBodyScopeFullBody)).
 		SetBodyMatchMode(compositeRouteConditionOrDefault(route.BodyMatchMode, service.CompositeRouteBodyMatchAny)).
 		SetBodyNotContains(route.BodyNotContains).
+		SetFallbackModels(compositeRouteFallbacksOrEmpty(route.FallbackModels)).
 		SetPriority(route.Priority).
 		SetEnabled(route.Enabled).
 		SetNotes(route.Notes).
@@ -123,12 +125,21 @@ func compositeModelRouteEntityToService(row *dbent.CompositeModelRoute) *service
 		BodyMatchScope:    compositeRouteConditionOrDefault(row.BodyMatchScope, service.CompositeRouteBodyScopeFullBody),
 		BodyMatchMode:     compositeRouteConditionOrDefault(row.BodyMatchMode, service.CompositeRouteBodyMatchAny),
 		BodyNotContains:   row.BodyNotContains,
+		FallbackModels:    compositeRouteFallbacksOrEmpty(row.FallbackModels),
 		Priority:          row.Priority,
 		Enabled:           row.Enabled,
 		Notes:             derefString(row.Notes),
 		CreatedAt:         row.CreatedAt,
 		UpdatedAt:         row.UpdatedAt,
 	}
+}
+
+// 列为 NOT NULL '[]'；nil 切片会被编码成 JSON null，这里统一成空数组。
+func compositeRouteFallbacksOrEmpty(fallbacks []service.CompositeRouteFallback) []service.CompositeRouteFallback {
+	if fallbacks == nil {
+		return []service.CompositeRouteFallback{}
+	}
+	return fallbacks
 }
 
 func compositeRouteConditionOrDefault(value, fallback string) string {

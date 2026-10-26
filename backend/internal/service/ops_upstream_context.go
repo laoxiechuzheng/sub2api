@@ -178,6 +178,47 @@ func IsOpsRequestScopedError(c *gin.Context) bool {
 	return c != nil && c.GetBool(OpsRequestScopedErrorKey)
 }
 
+// OpsRoutingCapacityLimitedKey 标记账号调度未找到可用账号（空池或可服务该模型的账号全部限流/暂停）。
+// 由 handler 在 ErrNoAvailableAccounts 路径设置。
+const OpsRoutingCapacityLimitedKey = "ops_routing_capacity_limited"
+
+// IsOpsRoutingCapacityLimited 判断本次请求是否因无可用账号而失败。
+func IsOpsRoutingCapacityLimited(c *gin.Context) bool {
+	return c != nil && c.GetBool(OpsRoutingCapacityLimitedKey)
+}
+
+// HasOpsUpstreamFailure 判断本次请求是否登记过上游失败（上游错误状态码或任一上游尝试错误事件），
+// 即失败来自上游/账号侧，而非网关在调度前就地拒绝。
+func HasOpsUpstreamFailure(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if value, ok := c.Get(OpsUpstreamStatusCodeKey); ok {
+		if code, _ := value.(int); code > 0 {
+			return true
+		}
+	}
+	if value, ok := c.Get(OpsUpstreamErrorsKey); ok {
+		if events, _ := value.([]*OpsUpstreamErrorEvent); len(events) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// OpsStreamErrorFromContext 返回本次请求登记的带内错误（未登记时 ok=false）。
+func OpsStreamErrorFromContext(c *gin.Context) (OpsStreamError, bool) {
+	if c == nil {
+		return OpsStreamError{}, false
+	}
+	value, ok := c.Get(OpsStreamErrorKey)
+	if !ok {
+		return OpsStreamError{}, false
+	}
+	streamErr, ok := value.(OpsStreamError)
+	return streamErr, ok
+}
+
 // OpsStreamError 描述承载在 2xx 响应上的带内错误：网关在响应状态已固化为 200 之后
 // 就地以 SSE error 帧返回的错误（并发限流回退、Wait 后二次计费校验失败、流开始后才无
 // 可用账号等），以及上游 2xx 正文或事件里携带的错误结果（NonStream 标记非流式正文）。

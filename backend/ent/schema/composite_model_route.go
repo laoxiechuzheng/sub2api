@@ -88,6 +88,10 @@ func (CompositeModelRoute) Fields() []ent.Field {
 			MaxLen(8192).
 			Default("").
 			Comment("Newline-separated body exclusions; any match rejects the route."),
+		field.JSON("fallback_models", []domain.CompositeRouteFallback{}).
+			Optional().
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("Ordered fallback targets tried when the primary upstream model fails."),
 		field.Int("priority").
 			Default(100).
 			Comment("Lower values win within the same match strength."),

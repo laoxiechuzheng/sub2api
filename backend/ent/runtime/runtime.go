@@ -966,11 +966,11 @@ func init() {
 	// compositemodelroute.BodyNotContainsValidator is a validator for the "body_not_contains" field. It is called by the builders before save.
 	compositemodelroute.BodyNotContainsValidator = compositemodelrouteDescBodyNotContains.Validators[0].(func(string) error)
 	// compositemodelrouteDescPriority is the schema descriptor for priority field.
-	compositemodelrouteDescPriority := compositemodelrouteFields[12].Descriptor()
+	compositemodelrouteDescPriority := compositemodelrouteFields[13].Descriptor()
 	// compositemodelroute.DefaultPriority holds the default value on creation for the priority field.
 	compositemodelroute.DefaultPriority = compositemodelrouteDescPriority.Default.(int)
 	// compositemodelrouteDescEnabled is the schema descriptor for enabled field.
-	compositemodelrouteDescEnabled := compositemodelrouteFields[13].Descriptor()
+	compositemodelrouteDescEnabled := compositemodelrouteFields[14].Descriptor()
 	// compositemodelroute.DefaultEnabled holds the default value on creation for the enabled field.
 	compositemodelroute.DefaultEnabled = compositemodelrouteDescEnabled.Default.(bool)
 	errorpassthroughruleMixin := schema.ErrorPassthroughRule{}.Mixin()

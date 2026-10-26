@@ -1,7 +1,10 @@
 // Package usagestats provides types for usage statistics and reporting.
 package usagestats
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	ModelSourceRequested = "requested"
@@ -180,19 +183,23 @@ type UserBreakdownItem struct {
 
 // UserBreakdownDimension specifies the dimension to filter for user breakdown.
 type UserBreakdownDimension struct {
-	GroupID      int64  // filter by group_id (>0 to enable)
-	Model        string // filter by model name (non-empty to enable)
-	ModelType    string // "requested", "upstream", or "mapping"
-	Endpoint     string // filter by endpoint value (non-empty to enable)
-	EndpointType string // "inbound", "upstream", or "path"
+	GroupID        int64  // filter by group_id (>0 to enable)
+	Model          string // filter by model name (non-empty to enable)
+	ModelType      string // "requested", "upstream", or "mapping"
+	RequestedModel string // independent requested-model filter when drilling into another model dimension
+	Endpoint       string // filter by endpoint value (non-empty to enable)
+	EndpointType   string // "inbound", "upstream", or "path"
 	// Additional filter conditions
-	UserID             int64  // filter by user_id (>0 to enable)
-	APIKeyID           int64  // filter by api_key_id (>0 to enable)
-	AccountID          int64  // filter by account_id (>0 to enable)
-	RequestType        *int16 // filter by request_type (non-nil to enable)
-	Stream             *bool  // filter by stream flag (non-nil to enable)
-	NativeCompactionV2 *bool  // filter by native compaction v2 flag (non-nil to enable)
-	BillingType        *int8  // filter by billing_type (non-nil to enable)
+	UserID                int64  // filter by user_id (>0 to enable)
+	APIKeyID              int64  // filter by api_key_id (>0 to enable)
+	AccountID             int64  // filter by account_id (>0 to enable)
+	RequestType           *int16 // filter by request_type (non-nil to enable)
+	Stream                *bool  // filter by stream flag (non-nil to enable)
+	NativeCompactionV2    *bool  // filter by native compaction v2 flag (non-nil to enable)
+	BillingType           *int8  // filter by billing_type (non-nil to enable)
+	BillingMode           string
+	UpstreamModelMismatch *bool
+	CompositeRoute        string // composite_route filter: routed|compaction|fallback|none (empty to disable)
 	// SortBy 指定排序列(空 = 默认按 actual_cost)。合法值由 repo 层 allowlist 校验。
 	SortBy string
 }
@@ -267,6 +274,23 @@ type PlatformDashboardStats struct {
 	TodayActualCost float64 `json:"today_actual_cost"`
 }
 
+// Composite route usage filters.
+const (
+	CompositeRouteFilterRouted     = "routed"     // served through an explicit composite route
+	CompositeRouteFilterCompaction = "compaction" // routed compaction (context summary) requests
+	CompositeRouteFilterFallback   = "fallback"   // served by a fallback target
+	CompositeRouteFilterNone       = "none"       // no route attribution, including historical unknowns
+)
+
+// ParseCompositeRouteFilter normalizes the composite_route query value.
+func ParseCompositeRouteFilter(value string) (string, bool) {
+	switch value = strings.ToLower(strings.TrimSpace(value)); value {
+	case "", CompositeRouteFilterRouted, CompositeRouteFilterCompaction, CompositeRouteFilterFallback, CompositeRouteFilterNone:
+		return value, true
+	}
+	return "", false
+}
+
 // UsageLogFilters represents filters for usage log queries
 type UsageLogFilters struct {
 	UserID    int64
@@ -283,8 +307,11 @@ type UsageLogFilters struct {
 	BillingType           *int8
 	BillingMode           string
 	UpstreamModelMismatch *bool
-	StartTime             *time.Time
-	EndTime               *time.Time
+	// CompositeRoute filters explicit composite route attribution; see
+	// CompositeRouteFilter* values. Empty disables the filter.
+	CompositeRoute string
+	StartTime      *time.Time
+	EndTime        *time.Time
 	// ExactTotal requests exact COUNT(*) for pagination. Default false for fast large-table paging.
 	ExactTotal bool
 }

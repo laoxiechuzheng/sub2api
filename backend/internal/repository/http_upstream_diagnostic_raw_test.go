@@ -47,13 +47,11 @@ func TestHTTPUpstreamDiagnosticPreserveRawCapturesSSEOutputWithoutPrefetch(t *te
 	require.Equal(t, payload, forwarded.String())
 	require.NoError(t, resp.Body.Close())
 	snapshot := finishUpstreamDiagnosticCapture(t, capture, ready)
-	encoded, err := json.Marshal(snapshot)
-	require.NoError(t, err)
 	require.Equal(t, request, snapshot.Attempts[0].Body.Content)
-	require.Equal(t, payload, gjson.GetBytes(encoded, "attempts.0.response_body.content").String())
-	require.Equal(t, int64(len(payload)), gjson.GetBytes(encoded, "attempts.0.response_body.original_bytes").Int())
-	require.False(t, gjson.GetBytes(encoded, "attempts.0.response_body.redacted").Bool())
-	require.False(t, gjson.GetBytes(encoded, "attempts.0.response_body.truncated").Bool())
+	require.Equal(t, payload, diagnosticResponseText(t, snapshot.Attempts[0].ResponseBody))
+	require.Equal(t, len(payload), snapshot.Attempts[0].ResponseBody.OriginalBytes)
+	require.False(t, snapshot.Attempts[0].ResponseBody.Redacted)
+	require.False(t, snapshot.Attempts[0].ResponseBody.Truncated)
 	require.Equal(t, int64(7984), gjson.Get(snapshot.Attempts[0].ResponseSummary.Content, "usage.output_tokens").Int())
 }
 
@@ -69,9 +67,7 @@ func TestHTTPUpstreamDiagnosticPreserveRawKeepsJSONBeyondSummaryLimit(t *testing
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	snapshot := finishUpstreamDiagnosticCapture(t, capture, ready)
-	encoded, err := json.Marshal(snapshot)
-	require.NoError(t, err)
-	require.Equal(t, payload, gjson.GetBytes(encoded, "attempts.0.response_body.content").String())
+	require.Equal(t, payload, diagnosticResponseText(t, snapshot.Attempts[0].ResponseBody))
 	require.True(t, gjson.Get(snapshot.Attempts[0].ResponseSummary.Content, "over_summary_limit").Bool())
 }
 
@@ -90,14 +86,12 @@ func TestHTTPUpstreamDiagnosticRawResponseIsBoundedAndUTF8Safe(t *testing.T) {
 	require.Equal(t, payload, string(forwarded))
 	require.NoError(t, resp.Body.Close())
 	snapshot := finishUpstreamDiagnosticCapture(t, capture, ready)
-	encoded, err := json.Marshal(snapshot)
-	require.NoError(t, err)
-	content := gjson.GetBytes(encoded, "attempts.0.response_body.content").String()
+	content := diagnosticResponseText(t, snapshot.Attempts[0].ResponseBody)
 	require.NotEmpty(t, content)
-	require.True(t, strings.HasPrefix(payload, content))
+	require.Equal(t, payload, content, "the compressed response fits the storage budget in full")
 	require.True(t, utf8.ValidString(content))
-	require.True(t, gjson.GetBytes(encoded, "attempts.0.response_body.truncated").Bool())
-	require.Equal(t, int64(len(payload)), gjson.GetBytes(encoded, "attempts.0.response_body.original_bytes").Int())
+	require.False(t, snapshot.Attempts[0].ResponseBody.Truncated)
+	require.Equal(t, len(payload), snapshot.Attempts[0].ResponseBody.OriginalBytes)
 	require.LessOrEqual(t, snapshot.StoredBytes, 4096)
 }
 
@@ -119,7 +113,7 @@ func TestHTTPUpstreamDiagnosticRawResponseMarksEarlyCloseIncomplete(t *testing.T
 	require.NoError(t, resp.Body.Close())
 	snapshot := finishUpstreamDiagnosticCapture(t, capture, ready)
 	require.NotNil(t, snapshot.Attempts[0].ResponseBody)
-	require.Equal(t, prefix, snapshot.Attempts[0].ResponseBody.Content)
+	require.Equal(t, prefix, diagnosticResponseText(t, snapshot.Attempts[0].ResponseBody))
 	require.True(t, snapshot.Attempts[0].ResponseBody.Truncated)
 	require.Equal(t, requestdiagnostic.CaptureStatusPartial, snapshot.CaptureStatus)
 }
@@ -135,6 +129,11 @@ func TestHTTPUpstreamDiagnosticRawTerminalFrameCompleteness(t *testing.T) {
 		{"crlf_closes_frame", "data: {\"type\":\"response.completed\"}\r\n\r\n", false},
 		{"response_done", "data: {\"type\":\"response.done\"}\n\n", false},
 		{"large_terminal_frame", "data: {\"type\":\"response.completed\",\"text\":\"" + strings.Repeat("x", 70<<10) + "\"}\n\n", false},
+		{"large_terminal_type_at_end", "data: {\"text\":\"" + strings.Repeat("x", 70<<10) + "\",\"type\":\"response.completed\"}\n\n", false},
+		{"nested_type_is_not_terminal", "data: {\"response\":{\"type\":\"response.completed\"}}\n\n", true},
+		{"quoted_type_is_not_terminal", "data: {\"text\":\"\\\"type\\\":\\\"response.completed\\\"\"}\n\n", true},
+		{"invalid_json_is_not_terminal", "data: {\"type\":\"response.completed\",}\n\n", true},
+		{"invalid_number_is_not_terminal", "data: {\"type\":\"response.completed\",\"n\":01}\n\n", true},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			capture, ready := newRawUpstreamDiagnosticCapture(t, 1<<20)
@@ -151,7 +150,7 @@ func TestHTTPUpstreamDiagnosticRawTerminalFrameCompleteness(t *testing.T) {
 			require.NoError(t, resp.Body.Close())
 			snapshot := finishUpstreamDiagnosticCapture(t, capture, ready)
 			require.NotNil(t, snapshot.Attempts[0].ResponseBody)
-			require.Equal(t, fixture.payload, snapshot.Attempts[0].ResponseBody.Content)
+			require.Equal(t, fixture.payload, diagnosticResponseText(t, snapshot.Attempts[0].ResponseBody))
 			require.Equal(t, fixture.incomplete, snapshot.Attempts[0].ResponseBody.Truncated)
 		})
 	}
@@ -173,7 +172,7 @@ func TestHTTPUpstreamDiagnosticRawInterruptedUTF8KeepsValidPrefix(t *testing.T) 
 	require.NoError(t, resp.Body.Close())
 	snapshot := finishUpstreamDiagnosticCapture(t, capture, ready)
 	require.NotNil(t, snapshot.Attempts[0].ResponseBody)
-	require.Equal(t, prefix, snapshot.Attempts[0].ResponseBody.Content)
+	require.Equal(t, prefix, diagnosticResponseText(t, snapshot.Attempts[0].ResponseBody))
 	require.True(t, snapshot.Attempts[0].ResponseBody.Truncated)
 	require.Equal(t, len(payload), snapshot.Attempts[0].ResponseBody.OriginalBytes)
 }
@@ -192,8 +191,9 @@ func TestHTTPUpstreamDiagnosticRawBuffersReleasedAfterFinish(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 	observed, ok := resp.Body.(*diagnosticResponseBody)
 	require.True(t, ok, "expected diagnostic response body")
-	require.Nil(t, observed.responseBuffer)
+	require.Nil(t, observed.responseCompressor)
 	require.Nil(t, observed.result.ResponseBody)
+	require.Nil(t, observed.result.ResponseBodyGzip)
 	require.Nil(t, observed.result.ResponseSummary)
 	capture.Discard()
 }
@@ -214,7 +214,7 @@ func TestHTTPUpstreamDiagnosticDropStopsRawBuffering(t *testing.T) {
 	require.NoError(t, err)
 	observed, ok := resp.Body.(*diagnosticResponseBody)
 	require.True(t, ok, "expected diagnostic response body")
-	require.Nil(t, observed.responseBuffer)
+	require.Nil(t, observed.responseCompressor)
 	require.NoError(t, resp.Body.Close())
 	capture.Discard()
 }

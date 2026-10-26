@@ -256,3 +256,10 @@ func TestServerTimingResponseHeaderForWebSocket(t *testing.T) {
 		t.Fatalf("non-admin WebSocket received timing header: %#v", got)
 	}
 }
+
+func TestServerTimingHeaderValueUnauthenticatedWithoutWriter(t *testing.T) {
+	c := &gin.Context{Request: httptest.NewRequest(http.MethodGet, "/api/v1/usage", nil)}
+	if value := ServerTimingHeaderValue(c); value != "" {
+		t.Fatalf("unauthenticated request received timing: %q", value)
+	}
+}

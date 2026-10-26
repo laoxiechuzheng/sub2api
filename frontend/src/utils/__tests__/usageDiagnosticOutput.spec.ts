@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { extractUsageDiagnosticOutput } from '@/utils/usageDiagnosticOutput'
 
@@ -5,7 +7,91 @@ function sse(...events: unknown[]): string {
   return events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('')
 }
 
+const largeProtocols = ['Responses JSON', 'Responses SSE', 'Chat JSON', 'Chat SSE', 'Anthropic JSON', 'Anthropic SSE', 'Gemini JSON', 'Gemini SSE'] as const
+type LargeProtocol = typeof largeProtocols[number]
+
+function largeFixture(protocol: LargeProtocol) {
+  const row = 'UTF8 \u6a21\u578b\u8f93\u51fa \u03bb \uD83D\uDE80 <literal> ' + '0123456789abcdef'.repeat(12) + '\n'
+  const tail = `UNIQUE_DIAGNOSTIC_TAIL_${protocol.replace(/ /g, '_')}_20261027_\u7ec8\u70b9`
+  const text = ' \r\n' + row.repeat(Math.ceil((3.6 * 1024 * 1024 + 4096) / Buffer.byteLength(row, 'utf8'))) + tail + '\r\n  '
+  const chunks: string[] = []
+  for (let offset = 0; offset < text.length; offset += 65521) chunks.push(text.slice(offset, offset + 65521))
+  const message = { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }
+  let content: string
+  switch (protocol) {
+    case 'Responses JSON':
+      content = JSON.stringify({ output: [{ type: 'reasoning', summary: [{ text: 'hidden reasoning' }] }, message] })
+      break
+    case 'Responses SSE':
+      content = sse(...chunks.map(delta => ({ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta })),
+        { type: 'response.output_text.done', output_index: 0, content_index: 0, text },
+        { type: 'response.completed', response: { output: [message] } })
+      break
+    case 'Chat JSON':
+      content = JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: text, reasoning_content: 'hidden reasoning' } }] })
+      break
+    case 'Chat SSE':
+      content = sse(...chunks.map(content => ({ choices: [{ index: 0, delta: { content } }] })), { choices: [], usage: { completion_tokens: 10 } }) + 'data: [DONE]\n\n'
+      break
+    case 'Anthropic JSON':
+      content = JSON.stringify({ type: 'message', role: 'assistant', content: [{ type: 'thinking', thinking: 'hidden reasoning' }, { type: 'text', text }] })
+      break
+    case 'Anthropic SSE':
+      content = sse({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        ...chunks.map(text => ({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })),
+        { type: 'content_block_stop', index: 0 }, { type: 'message_stop' })
+      break
+    case 'Gemini JSON':
+      content = JSON.stringify({ candidates: [{ index: 0, content: { role: 'model', parts: [{ thought: true, text: 'hidden reasoning' }, { text }] } }] })
+      break
+    case 'Gemini SSE':
+      content = sse(...chunks.map(text => ({ candidates: [{ index: 0, content: { role: 'model', parts: [{ thought: true, text: 'hidden reasoning' }, { text }] } }] })))
+      break
+  }
+  return { content, text, tail, contentType: protocol.endsWith('SSE') ? 'text/event-stream; charset=utf-8' : 'application/json' }
+}
+
+function sha256(text: string) {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
 describe('usage diagnostic model output extraction', () => {
+  it.each(largeProtocols)('preserves more than 3.6 MiB of UTF8 output and its unique tail from %s', (protocol) => {
+    const fixture = largeFixture(protocol)
+    expect(Buffer.byteLength(fixture.text, 'utf8')).toBeGreaterThan(3.6 * 1024 * 1024)
+    expect(Buffer.byteLength(fixture.content, 'utf8')).toBeGreaterThan(3.6 * 1024 * 1024)
+    const actual = extractUsageDiagnosticOutput(fixture.content, fixture.contentType)
+
+    expect(actual?.length).toBe(fixture.text.length)
+    expect(Buffer.byteLength(actual!, 'utf8')).toBe(Buffer.byteLength(fixture.text, 'utf8'))
+    expect(sha256(actual!)).toBe(sha256(fixture.text))
+    expect(actual!.endsWith(fixture.tail + '\r\n  ')).toBe(true)
+    expect(actual!.split(fixture.tail)).toHaveLength(2)
+    expect(actual === fixture.text).toBe(true)
+  })
+
+  it('deduplicates repeated large Responses done frames without a completed snapshot', () => {
+    const fixture = largeFixture('Responses JSON')
+    const done = { type: 'response.output_text.done', output_index: 0, content_index: 0, text: fixture.text }
+    const content = sse({ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: 'stale delta' }, done, done)
+    const actual = extractUsageDiagnosticOutput(content, 'text/event-stream')
+
+    expect(actual?.length).toBe(fixture.text.length)
+    expect(sha256(actual!)).toBe(sha256(fixture.text))
+    expect(actual === fixture.text).toBe(true)
+  })
+
+  it('exposes the missing tail after the old 1 MiB capture cap instead of inventing the rest', () => {
+    const fixture = largeFixture('Responses SSE')
+    const capped = Buffer.from(fixture.content, 'utf8').subarray(0, 1024 * 1024).toString('utf8')
+    const actual = extractUsageDiagnosticOutput(capped, fixture.contentType)
+
+    expect(actual).not.toBeNull()
+    expect(actual!.length).toBeLessThan(fixture.text.length)
+    expect(sha256(actual!)).not.toBe(sha256(fixture.text))
+    expect(actual!.includes(fixture.tail)).toBe(false)
+  })
+
   it('extracts only Responses message output_text and preserves text verbatim', () => {
     const content = JSON.stringify({ output: [
       { type: 'reasoning', summary: [{ type: 'summary_text', text: 'reasoning only' }] },

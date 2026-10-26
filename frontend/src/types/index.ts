@@ -703,6 +703,12 @@ export type CompositeRouteEndpoint =
 
 export type CompositeRouteSource = 'route' | 'detector' | string
 
+/** One ordered fallback target; an empty platform reuses the route's target platform. */
+export interface CompositeRouteFallback {
+  target_platform?: Exclude<GroupPlatform, 'composite'> | ''
+  upstream_model: string
+}
+
 export interface CompositeModelRoute {
   id: number
   group_id: number
@@ -717,6 +723,7 @@ export interface CompositeModelRoute {
   body_match_scope?: CompositeRouteBodyMatchScope | '' | null
   body_match_mode?: CompositeRouteBodyMatchMode | '' | null
   body_not_contains?: string | null
+  fallback_models?: CompositeRouteFallback[] | null
   priority: number
   enabled: boolean
   notes: string
@@ -736,6 +743,7 @@ export interface CompositeModelRouteInput {
   body_match_scope?: CompositeRouteBodyMatchScope
   body_match_mode?: CompositeRouteBodyMatchMode
   body_not_contains?: string
+  fallback_models?: CompositeRouteFallback[]
   priority?: number
   enabled?: boolean
   notes?: string
@@ -779,6 +787,7 @@ export interface CompositeRouteDecision {
   upstream_model: string
   endpoint: CompositeRouteEndpoint
   route?: CompositeModelRoute
+  request_kind?: string
   reason?: string
   request_classification?: RequestClassification
   condition_evaluations?: CompositeRouteConditionEvaluation[]
@@ -1898,6 +1907,11 @@ export interface AdminUsageLog extends UsageLog {
   channel_id?: number | null
   billing_tier?: string | null
 
+  // Composite 显式路由归属（仅管理员可见）：路由 ID、请求分类、备用切换链
+  composite_route_id?: number | null
+  composite_route_kind?: 'compaction' | 'conversation' | 'unknown' | string | null
+  composite_fallback_chain?: string | null
+
   // 最小账号信息（仅管理员接口返回）
   account?: UsageLogAccountSummary
 }
@@ -2277,6 +2291,7 @@ export interface UsageQueryParams {
   request_type?: UsageRequestType
   stream?: boolean
   native_compaction_v2?: boolean | null
+  composite_route?: CompositeRouteUsageFilter | null
   billing_type?: number | null
   billing_mode?: string | null
   start_date?: string
@@ -2285,6 +2300,9 @@ export interface UsageQueryParams {
   sort_by?: string
   sort_order?: 'asc' | 'desc'
 }
+
+/** Admin usage filter on explicit composite route attribution. */
+export type CompositeRouteUsageFilter = 'routed' | 'compaction' | 'fallback' | 'none'
 
 // ==================== Account Usage Statistics ====================
 

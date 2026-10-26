@@ -29,7 +29,7 @@ const (
 	opsModelKey                  = "ops_model"
 	opsStreamKey                 = "ops_stream"
 	opsAccountIDKey              = "ops_account_id"
-	opsRoutingCapacityLimitedKey = "ops_routing_capacity_limited"
+	opsRoutingCapacityLimitedKey = service.OpsRoutingCapacityLimitedKey
 	opsDedicatedErrorRecordedKey = "ops_dedicated_error_recorded"
 
 	opsUpstreamModelKey = service.OpsUpstreamModelKey

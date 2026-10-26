@@ -111,6 +111,7 @@
                 </div>
                 <p v-if="block.payload?.omitted_reason" class="break-all text-xs text-amber-700 dark:text-amber-300">{{ text.omittedReason }}: {{ block.payload.omitted_reason }}</p>
                 <p v-if="block.summary" class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ text.limitedSummary }}</p>
+                <p v-if="block.partialOutput" class="text-xs leading-relaxed text-amber-700 dark:text-amber-300" :data-testid="`diagnostic-partial-${block.key}`">{{ text.partialOutput }}</p>
                 <p v-if="block.payload === null" class="text-xs text-gray-500 dark:text-gray-400">{{ text.noResponseBody }}</p>
                 <p v-if="block.output !== undefined && !block.output && !expandedPayloads.has(block.key)" class="text-xs text-gray-500 dark:text-gray-400">{{ text.noModelOutput }}</p>
                 <div v-if="expandedPayloads.has(block.key)" :id="`diagnostic-content-${block.key}`">
@@ -248,7 +249,8 @@ const messages = {
     emptyPayload: 'No saved content.',
     noAttempts: 'No upstream attempts were captured.',
     noResponseBody: 'No upstream response body was captured.',
-    noModelOutput: 'No model text could be extracted from the saved response.'
+    noModelOutput: 'No model text could be extracted from the saved response.',
+    partialOutput: 'The saved upstream response is truncated, so this model output may be incomplete.'
   },
   zh: {
     title: '用量请求诊断',
@@ -341,7 +343,8 @@ const messages = {
     emptyPayload: '没有已保存的内容。',
     noAttempts: '没有捕获到上游尝试。',
     noResponseBody: '未捕获上游响应原文。',
-    noModelOutput: '无法从已保存的响应中提取模型正文。'
+    noModelOutput: '无法从已保存的响应中提取模型正文。',
+    partialOutput: '上游响应原文已截断，这里的模型输出可能不完整。'
   }
 }
 const text = computed(() => messages[String(locale?.value ?? 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en'])
@@ -432,7 +435,7 @@ const snapshotFields = computed<Field[]>(() => {
   ]
 })
 
-type PayloadBlock = { key: string; title: string; payload?: UsageDiagnosticPayload | null; output?: string | null; summary?: boolean }
+type PayloadBlock = { key: string; title: string; payload?: UsageDiagnosticPayload | null; output?: string | null; summary?: boolean; partialOutput?: boolean }
 type CaptureSection = { key: string; title: string; fields: Field[]; payloads: PayloadBlock[] }
 const captureSections = computed<CaptureSection[]>(() => {
   const payload = snapshot.value
@@ -480,7 +483,8 @@ const captureSections = computed<CaptureSection[]>(() => {
             key: `attempt-${attempt.id}-output`,
             title: m.modelOutput,
             output: response?.content ? extractUsageDiagnosticOutput(response.content, attempt.response_content_type) : null,
-            summary: legacySummary
+            summary: legacySummary,
+            partialOutput: !legacySummary && !!response?.truncated
           },
           { key: `attempt-${attempt.id}-response`, title: legacySummary ? m.responseSummary : m.responseBody, payload: response ?? null, summary: legacySummary }
         ]

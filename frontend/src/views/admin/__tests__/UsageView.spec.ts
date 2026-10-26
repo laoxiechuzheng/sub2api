@@ -294,6 +294,33 @@ describe('admin UsageView native compaction filter', () => {
     vi.useRealTimers()
   })
 
+  it('keeps selected model and billing mode aligned across usage charts and drill-down', async () => {
+    const wrapper = mountRouteFilteredUsageView()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+
+    for (const model of ['public-a', 'public-b']) {
+      for (const billing_mode of ['token', 'image']) {
+        list.mockClear()
+        getStats.mockClear()
+        getModelStats.mockClear()
+        getSnapshotV2.mockClear()
+        Object.assign((wrapper.vm as any).filters, { model, billing_mode, composite_route: 'fallback', upstream_model_mismatch: false })
+        ;(wrapper.vm as any).applyFilters()
+        await flushPromises()
+
+        const selected = { model, billing_mode, composite_route: 'fallback', upstream_model_mismatch: false }
+        expect(list).toHaveBeenCalledWith(expect.objectContaining(selected), expect.anything())
+        expect(getStats).toHaveBeenCalledWith(expect.objectContaining(selected))
+        expect(getModelStats).toHaveBeenCalledWith(expect.objectContaining(selected))
+        expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining(selected))
+        expect((wrapper.vm as any).chartBreakdownFilters).toEqual(expect.objectContaining(selected))
+        expect((wrapper.vm as any).chartBreakdownFilters.requested_model).toBe(model)
+      }
+    }
+    wrapper.unmount()
+  })
+
   it('propagates the filter to list/stats/model/snapshot requests and clears it on reset', async () => {
     const wrapper = mountRouteFilteredUsageView()
     vi.advanceTimersByTime(120)
@@ -334,6 +361,24 @@ describe('admin UsageView native compaction filter', () => {
     expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }))
     expect(getModelStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }))
     expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }))
+  })
+
+  it('keeps chart drill-down breakdown aligned with the Composite route filter but not the ranking tab', async () => {
+    const wrapper = mountRouteFilteredUsageView()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+
+    ;(wrapper.vm as any).filters.composite_route = 'fallback'
+    ;(wrapper.vm as any).applyFilters()
+    await flushPromises()
+
+    expect((wrapper.vm as any).chartBreakdownFilters.composite_route).toBe('fallback')
+    expect((wrapper.vm as any).breakdownFilters).not.toHaveProperty('composite_route')
+
+    ;(wrapper.vm as any).resetFilters()
+    await flushPromises()
+
+    expect((wrapper.vm as any).chartBreakdownFilters).not.toHaveProperty('composite_route')
   })
 })
 

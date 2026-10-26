@@ -10,10 +10,12 @@ import (
 
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
+	"entgo.io/ent/dialect/sql/sqljson"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // CompositeModelRouteUpdate is the builder for updating CompositeModelRoute entities.
@@ -220,6 +222,24 @@ func (_u *CompositeModelRouteUpdate) SetNillableBodyNotContains(v *string) *Comp
 	if v != nil {
 		_u.SetBodyNotContains(*v)
 	}
+	return _u
+}
+
+// SetFallbackModels sets the "fallback_models" field.
+func (_u *CompositeModelRouteUpdate) SetFallbackModels(v []domain.CompositeRouteFallback) *CompositeModelRouteUpdate {
+	_u.mutation.SetFallbackModels(v)
+	return _u
+}
+
+// AppendFallbackModels appends value to the "fallback_models" field.
+func (_u *CompositeModelRouteUpdate) AppendFallbackModels(v []domain.CompositeRouteFallback) *CompositeModelRouteUpdate {
+	_u.mutation.AppendFallbackModels(v)
+	return _u
+}
+
+// ClearFallbackModels clears the value of the "fallback_models" field.
+func (_u *CompositeModelRouteUpdate) ClearFallbackModels() *CompositeModelRouteUpdate {
+	_u.mutation.ClearFallbackModels()
 	return _u
 }
 
@@ -442,6 +462,17 @@ func (_u *CompositeModelRouteUpdate) sqlSave(ctx context.Context) (_node int, er
 	}
 	if value, ok := _u.mutation.BodyNotContains(); ok {
 		_spec.SetField(compositemodelroute.FieldBodyNotContains, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.FallbackModels(); ok {
+		_spec.SetField(compositemodelroute.FieldFallbackModels, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedFallbackModels(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, compositemodelroute.FieldFallbackModels, value)
+		})
+	}
+	if _u.mutation.FallbackModelsCleared() {
+		_spec.ClearField(compositemodelroute.FieldFallbackModels, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.Priority(); ok {
 		_spec.SetField(compositemodelroute.FieldPriority, field.TypeInt, value)
@@ -701,6 +732,24 @@ func (_u *CompositeModelRouteUpdateOne) SetNillableBodyNotContains(v *string) *C
 	return _u
 }
 
+// SetFallbackModels sets the "fallback_models" field.
+func (_u *CompositeModelRouteUpdateOne) SetFallbackModels(v []domain.CompositeRouteFallback) *CompositeModelRouteUpdateOne {
+	_u.mutation.SetFallbackModels(v)
+	return _u
+}
+
+// AppendFallbackModels appends value to the "fallback_models" field.
+func (_u *CompositeModelRouteUpdateOne) AppendFallbackModels(v []domain.CompositeRouteFallback) *CompositeModelRouteUpdateOne {
+	_u.mutation.AppendFallbackModels(v)
+	return _u
+}
+
+// ClearFallbackModels clears the value of the "fallback_models" field.
+func (_u *CompositeModelRouteUpdateOne) ClearFallbackModels() *CompositeModelRouteUpdateOne {
+	_u.mutation.ClearFallbackModels()
+	return _u
+}
+
 // SetPriority sets the "priority" field.
 func (_u *CompositeModelRouteUpdateOne) SetPriority(v int) *CompositeModelRouteUpdateOne {
 	_u.mutation.ResetPriority()
@@ -950,6 +999,17 @@ func (_u *CompositeModelRouteUpdateOne) sqlSave(ctx context.Context) (_node *Com
 	}
 	if value, ok := _u.mutation.BodyNotContains(); ok {
 		_spec.SetField(compositemodelroute.FieldBodyNotContains, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.FallbackModels(); ok {
+		_spec.SetField(compositemodelroute.FieldFallbackModels, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedFallbackModels(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, compositemodelroute.FieldFallbackModels, value)
+		})
+	}
+	if _u.mutation.FallbackModelsCleared() {
+		_spec.ClearField(compositemodelroute.FieldFallbackModels, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.Priority(); ok {
 		_spec.SetField(compositemodelroute.FieldPriority, field.TypeInt, value)

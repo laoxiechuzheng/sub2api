@@ -201,7 +201,7 @@ func (h *DashboardHandler) GetRealtimeMetrics(c *gin.Context) {
 
 // GetUsageTrend handles getting usage trend data
 // GET /api/v1/admin/dashboard/trend
-// Query params: start_date, end_date (YYYY-MM-DD), granularity (day/hour), user_id, api_key_id, model, account_id, group_id, request_type, stream, billing_type
+// Query params: start_date, end_date (YYYY-MM-DD), granularity (day/hour), user_id, api_key_id, model, account_id, group_id, request_type, stream, billing_type, composite_route
 func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 	startTime, endTime := parseTimeRange(c)
 	granularity := c.DefaultQuery("granularity", "day")
@@ -273,7 +273,13 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 		return
 	}
 
-	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, nativeCompactionV2, billingType, upstreamModelMismatch)
+	compositeRoute, ok := usagestats.ParseCompositeRouteFilter(c.Query("composite_route"))
+	if !ok {
+		response.BadRequest(c, "Invalid composite_route value, use routed, compaction, fallback or none")
+		return
+	}
+
+	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, nativeCompactionV2, billingType, upstreamModelMismatch, compositeRoute, strings.TrimSpace(c.Query("billing_mode")))
 	if err != nil {
 		response.Error(c, 500, "Failed to get usage trend")
 		return
@@ -290,7 +296,7 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 
 // GetModelStats handles getting model usage statistics
 // GET /api/v1/admin/dashboard/models
-// Query params: start_date, end_date (YYYY-MM-DD), user_id, api_key_id, account_id, group_id, request_type, stream, billing_type
+// Query params: start_date, end_date (YYYY-MM-DD), user_id, api_key_id, account_id, group_id, request_type, stream, billing_type, composite_route
 func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 	startTime, endTime := parseTimeRange(c)
 
@@ -365,7 +371,13 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 		return
 	}
 
-	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, modelSource, requestType, stream, nativeCompactionV2, billingType, upstreamModelMismatch)
+	compositeRoute, ok := usagestats.ParseCompositeRouteFilter(c.Query("composite_route"))
+	if !ok {
+		response.BadRequest(c, "Invalid composite_route value, use routed, compaction, fallback or none")
+		return
+	}
+
+	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, modelSource, requestType, stream, nativeCompactionV2, billingType, upstreamModelMismatch, compositeRoute, strings.TrimSpace(c.Query("model")), strings.TrimSpace(c.Query("billing_mode")))
 	if err != nil {
 		response.Error(c, 500, "Failed to get model statistics")
 		return
@@ -381,7 +393,7 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 
 // GetGroupStats handles getting group usage statistics
 // GET /api/v1/admin/dashboard/groups
-// Query params: start_date, end_date (YYYY-MM-DD), user_id, api_key_id, account_id, group_id, request_type, stream, billing_type
+// Query params: start_date, end_date (YYYY-MM-DD), user_id, api_key_id, account_id, group_id, request_type, stream, billing_type, composite_route
 func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
 	startTime, endTime := parseTimeRange(c)
 
@@ -447,7 +459,13 @@ func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
 		return
 	}
 
-	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, nativeCompactionV2, billingType, upstreamModelMismatch)
+	compositeRoute, ok := usagestats.ParseCompositeRouteFilter(c.Query("composite_route"))
+	if !ok {
+		response.BadRequest(c, "Invalid composite_route value, use routed, compaction, fallback or none")
+		return
+	}
+
+	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, nativeCompactionV2, billingType, upstreamModelMismatch, compositeRoute, strings.TrimSpace(c.Query("model")), strings.TrimSpace(c.Query("billing_mode")))
 	if err != nil {
 		response.Error(c, 500, "Failed to get group statistics")
 		return
@@ -687,6 +705,14 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 		return
 	}
 	dim.ModelType = rawModelSource
+	dim.RequestedModel = strings.TrimSpace(c.Query("requested_model"))
+	dim.BillingMode = strings.TrimSpace(c.Query("billing_mode"))
+	upstreamModelMismatch, err := parseOptionalBoolDashboardFilter(c, "upstream_model_mismatch")
+	if err != nil {
+		response.BadRequest(c, "Invalid upstream_model_mismatch value, use true or false")
+		return
+	}
+	dim.UpstreamModelMismatch = upstreamModelMismatch
 	dim.Endpoint = c.Query("endpoint")
 	dim.EndpointType = c.DefaultQuery("endpoint_type", "inbound")
 
@@ -734,6 +760,13 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 			dim.BillingType = &btVal
 		}
 	}
+
+	compositeRoute, ok := usagestats.ParseCompositeRouteFilter(c.Query("composite_route"))
+	if !ok {
+		response.BadRequest(c, "Invalid composite_route value, use routed, compaction, fallback or none")
+		return
+	}
+	dim.CompositeRoute = compositeRoute
 
 	// sort_by 由 repo 层 allowlist 校验;非法值静默回退默认排序(actual_cost)。
 	dim.SortBy = strings.TrimSpace(c.Query("sort_by"))

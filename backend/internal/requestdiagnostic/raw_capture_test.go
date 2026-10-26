@@ -93,6 +93,34 @@ func TestCaptureRawResponseKeepsCompleteTextWhenBudgetFits(t *testing.T) {
 	require.Equal(t, 605, snapshot.StoredBytes)
 }
 
+// 复现 #146873：416 KB 入站 + 438 KB 上游请求 + 3.5 MB SSE 输出，旧 1 MiB 上限会截断模型输出。
+func TestCaptureRawResponseKeepsMultiMegabyteOutputWhenEntryBudgetFits(t *testing.T) {
+	var snapshot *requestdiagnostic.Snapshot
+	capture := requestdiagnostic.NewCapture(rawCaptureOptions(t, 48<<20), requestdiagnostic.Inbound{}, func(s *requestdiagnostic.Snapshot) { snapshot = s })
+	inbound := []byte(`{"input":"` + strings.Repeat("i", 416<<10) + `"}`)
+	upstream := []byte(`{"input":"` + strings.Repeat("u", 438<<10) + `"}`)
+	capture.SetInbound(inbound)
+	id := capture.BeginAttempt(requestdiagnostic.Attempt{}, upstream)
+	var sse strings.Builder
+	for sse.Len() < 3500<<10 {
+		sse.WriteString("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"摘要片段\"}\n\n")
+	}
+	sse.WriteString("data: {\"type\":\"response.completed\"}\n\n")
+	response := sse.String()
+	capture.EndAttempt(id, requestdiagnostic.AttemptResult{Status: 200, ResponseBody: []byte(response), ResponseBytes: len(response), ResponseContentType: "text/event-stream"})
+	require.True(t, capture.BindUsage(1, "client:large-output", time.Now()))
+	capture.Finish(200)
+	require.NotNil(t, snapshot)
+	require.Equal(t, requestdiagnostic.CaptureStatusCaptured, snapshot.CaptureStatus)
+	got := snapshot.Attempts[0].ResponseBody
+	require.NotNil(t, got)
+	require.False(t, got.Truncated)
+	require.Empty(t, got.OmittedReason)
+	require.Equal(t, response, got.Content)
+	require.Equal(t, string(inbound), snapshot.Meta.Body.Content)
+	require.Equal(t, string(upstream), snapshot.Attempts[0].Body.Content)
+}
+
 func TestCaptureRawIncompleteResponseRejectsInvalidUTF8Suffix(t *testing.T) {
 	for _, fixture := range []struct {
 		name   string

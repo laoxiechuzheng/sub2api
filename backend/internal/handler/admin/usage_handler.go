@@ -138,6 +138,11 @@ func (h *UsageHandler) List(c *gin.Context) {
 		response.BadRequest(c, "Invalid native_compaction_v2 value, use true or false")
 		return
 	}
+	compositeRoute, ok := usagestats.ParseCompositeRouteFilter(c.Query("composite_route"))
+	if !ok {
+		response.BadRequest(c, "Invalid composite_route value, use routed, compaction, fallback or none")
+		return
+	}
 
 	var billingType *int8
 	if billingTypeStr := c.Query("billing_type"); billingTypeStr != "" {
@@ -203,6 +208,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		BillingType:           billingType,
 		BillingMode:           billingMode,
 		UpstreamModelMismatch: upstreamModelMismatch,
+		CompositeRoute:        compositeRoute,
 		StartTime:             startTime,
 		EndTime:               endTime,
 		ExactTotal:            exactTotal,
@@ -289,6 +295,11 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		response.BadRequest(c, "Invalid native_compaction_v2 value, use true or false")
 		return
 	}
+	compositeRoute, ok := usagestats.ParseCompositeRouteFilter(c.Query("composite_route"))
+	if !ok {
+		response.BadRequest(c, "Invalid composite_route value, use routed, compaction, fallback or none")
+		return
+	}
 
 	var billingType *int8
 	if billingTypeStr := c.Query("billing_type"); billingTypeStr != "" {
@@ -362,6 +373,7 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		BillingType:           billingType,
 		BillingMode:           billingMode,
 		UpstreamModelMismatch: upstreamModelMismatch,
+		CompositeRoute:        compositeRoute,
 		StartTime:             &startTime,
 		EndTime:               &endTime,
 	}

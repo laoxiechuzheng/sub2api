@@ -37,6 +37,7 @@ type dashboardSnapshotV2Response struct {
 }
 
 type dashboardSnapshotV2Filters struct {
+	BillingMode           string
 	UserID                int64
 	APIKeyID              int64
 	AccountID             int64
@@ -47,9 +48,11 @@ type dashboardSnapshotV2Filters struct {
 	NativeCompactionV2    *bool
 	BillingType           *int8
 	UpstreamModelMismatch *bool
+	CompositeRoute        string
 }
 
 type dashboardSnapshotV2CacheKey struct {
+	BillingMode           string `json:"billing_mode"`
 	StartTime             string `json:"start_time"`
 	EndTime               string `json:"end_time"`
 	Granularity           string `json:"granularity"`
@@ -63,6 +66,7 @@ type dashboardSnapshotV2CacheKey struct {
 	NativeCompactionV2    *bool  `json:"native_compaction_v2"`
 	BillingType           *int8  `json:"billing_type"`
 	UpstreamModelMismatch *bool  `json:"upstream_model_mismatch"`
+	CompositeRoute        string `json:"composite_route,omitempty"`
 	IncludeStats          bool   `json:"include_stats"`
 	IncludeTrend          bool   `json:"include_trend"`
 	IncludeModels         bool   `json:"include_models"`
@@ -105,11 +109,13 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		AccountID:             filters.AccountID,
 		GroupID:               filters.GroupID,
 		Model:                 filters.Model,
+		BillingMode:           filters.BillingMode,
 		RequestType:           filters.RequestType,
 		Stream:                filters.Stream,
 		NativeCompactionV2:    filters.NativeCompactionV2,
 		BillingType:           filters.BillingType,
 		UpstreamModelMismatch: filters.UpstreamModelMismatch,
+		CompositeRoute:        filters.CompositeRoute,
 		IncludeStats:          includeStats,
 		IncludeTrend:          includeTrend,
 		IncludeModels:         includeModels,
@@ -192,6 +198,8 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.NativeCompactionV2,
 			filters.BillingType,
 			filters.UpstreamModelMismatch,
+			filters.CompositeRoute,
+			filters.BillingMode,
 		)
 		if err != nil {
 			return nil, errors.New("failed to get usage trend")
@@ -214,6 +222,9 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.NativeCompactionV2,
 			filters.BillingType,
 			filters.UpstreamModelMismatch,
+			filters.CompositeRoute,
+			filters.Model,
+			filters.BillingMode,
 		)
 		if err != nil {
 			return nil, errors.New("failed to get model statistics")
@@ -235,6 +246,9 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.NativeCompactionV2,
 			filters.BillingType,
 			filters.UpstreamModelMismatch,
+			filters.CompositeRoute,
+			filters.Model,
+			filters.BillingMode,
 		)
 		if err != nil {
 			return nil, errors.New("failed to get group statistics")
@@ -255,7 +269,8 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 
 func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filters, error) {
 	filters := &dashboardSnapshotV2Filters{
-		Model: strings.TrimSpace(c.Query("model")),
+		Model:       strings.TrimSpace(c.Query("model")),
+		BillingMode: strings.TrimSpace(c.Query("billing_mode")),
 	}
 
 	if userIDStr := strings.TrimSpace(c.Query("user_id")); userIDStr != "" {
@@ -326,6 +341,12 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 		}
 		filters.UpstreamModelMismatch = &value
 	}
+
+	compositeRoute, ok := usagestats.ParseCompositeRouteFilter(c.Query("composite_route"))
+	if !ok {
+		return nil, errors.New("invalid composite_route value, use routed, compaction, fallback or none")
+	}
+	filters.CompositeRoute = compositeRoute
 
 	return filters, nil
 }

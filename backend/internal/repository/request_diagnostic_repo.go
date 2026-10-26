@@ -24,13 +24,18 @@ func (r *requestDiagnosticRepository) Save(ctx context.Context, record *service.
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// 跨副本容量检查串行化；忙时丢诊断，不阻塞请求或计费。
-	var locked bool
-	if err = tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(242, 1)`).Scan(&locked); err != nil {
-		return err
+	if maxStorageBytes < 0 {
+		return errors.New("invalid request diagnostic storage budget")
 	}
-	if !locked {
-		return errors.New("request diagnostic storage busy")
+	// 跨副本容量检查串行化；忙时丢诊断，不阻塞请求或计费。
+	if maxStorageBytes > 0 {
+		var locked bool
+		if err = tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(242, 1)`).Scan(&locked); err != nil {
+			return err
+		}
+		if !locked {
+			return errors.New("request diagnostic storage busy")
+		}
 	}
 
 	// 固定参数类型，避免 INSERT SELECT 与 WHERE 比较对同一参数推断不一致。
@@ -51,7 +56,8 @@ func (r *requestDiagnosticRepository) Save(ctx context.Context, record *service.
 	}
 
 	// 按实际压缩字节封顶；被挤出的行保留空的元数据，详情不伪称完整。
-	_, err = tx.ExecContext(ctx, `
+	if maxStorageBytes > 0 {
+		_, err = tx.ExecContext(ctx, `
 		WITH budget AS (
 			SELECT api_key_id, usage_request_id,
 				sum(octet_length(payload_gzip)) OVER (ORDER BY captured_at DESC, api_key_id, usage_request_id) AS total
@@ -59,8 +65,9 @@ func (r *requestDiagnosticRepository) Save(ctx context.Context, record *service.
 		)
 		UPDATE usage_request_diagnostics d SET payload_gzip = ''::bytea, payload_bytes = 0
 		FROM budget b WHERE d.api_key_id = b.api_key_id AND d.usage_request_id = b.usage_request_id AND b.total > $1`, maxStorageBytes)
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

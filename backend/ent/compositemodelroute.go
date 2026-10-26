@@ -3,6 +3,7 @@
 package ent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // CompositeModelRoute is the model entity for the CompositeModelRoute schema.
@@ -48,6 +50,8 @@ type CompositeModelRoute struct {
 	BodyMatchMode string `json:"body_match_mode,omitempty"`
 	// Newline-separated body exclusions; any match rejects the route.
 	BodyNotContains string `json:"body_not_contains,omitempty"`
+	// Ordered fallback targets tried when the primary upstream model fails.
+	FallbackModels []domain.CompositeRouteFallback `json:"fallback_models,omitempty"`
 	// Lower values win within the same match strength.
 	Priority int `json:"priority,omitempty"`
 	// Enabled holds the value of the "enabled" field.
@@ -85,6 +89,8 @@ func (*CompositeModelRoute) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
+		case compositemodelroute.FieldFallbackModels:
+			values[i] = new([]byte)
 		case compositemodelroute.FieldEnabled:
 			values[i] = new(sql.NullBool)
 		case compositemodelroute.FieldID, compositemodelroute.FieldGroupID, compositemodelroute.FieldPriority:
@@ -205,6 +211,14 @@ func (_m *CompositeModelRoute) assignValues(columns []string, values []any) erro
 			} else if value.Valid {
 				_m.BodyNotContains = value.String
 			}
+		case compositemodelroute.FieldFallbackModels:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field fallback_models", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.FallbackModels); err != nil {
+					return fmt.Errorf("unmarshal field fallback_models: %w", err)
+				}
+			}
 		case compositemodelroute.FieldPriority:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
 				return fmt.Errorf("unexpected type %T for field priority", values[i])
@@ -311,6 +325,9 @@ func (_m *CompositeModelRoute) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("body_not_contains=")
 	builder.WriteString(_m.BodyNotContains)
+	builder.WriteString(", ")
+	builder.WriteString("fallback_models=")
+	builder.WriteString(fmt.Sprintf("%v", _m.FallbackModels))
 	builder.WriteString(", ")
 	builder.WriteString("priority=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Priority))

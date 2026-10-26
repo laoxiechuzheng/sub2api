@@ -87,6 +87,36 @@
                 {{ isLikelyModelVariant(row) ? t('usage.modelVariant') : t('usage.modelMismatch') }}
               </span>
             </div>
+            <div
+              v-if="isCompositeRouted(row)"
+              data-testid="composite-route-badges"
+              class="flex flex-wrap items-center gap-1 pt-0.5"
+              :title="compositeRouteTitle(row, t)"
+            >
+              <span
+                data-testid="composite-route-badge"
+                class="inline-flex items-center rounded px-1.5 py-px text-[10px] font-medium ring-1 ring-inset"
+                :class="row.composite_route_kind === 'compaction'
+                  ? 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200 dark:bg-fuchsia-500/10 dark:text-fuchsia-300 dark:ring-fuchsia-500/30'
+                  : 'bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-500/30'"
+              >
+                {{ compositeRouteBadgeLabel(row, t) }} #{{ row.composite_route_id }}
+              </span>
+              <span
+                v-if="row.composite_fallback_chain"
+                data-testid="composite-fallback-badge"
+                class="inline-flex items-center rounded bg-amber-50 px-1.5 py-px text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30"
+              >
+                {{ t('usage.compositeFallbackUsed') }}
+              </span>
+            </div>
+            <div
+              v-if="row.composite_fallback_chain"
+              data-testid="composite-fallback-chain"
+              class="break-all pl-3 text-[11px] text-amber-600 dark:text-amber-400"
+            >
+              <span class="mr-0.5">↳</span>{{ row.composite_fallback_chain }}
+            </div>
           </div>
         </template>
 
@@ -557,6 +587,7 @@ import { formatCacheTokens, formatMultiplier } from '@/utils/formatters'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { getUsageServiceTierLabel } from '@/utils/usageServiceTier'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
+import { compositeRouteBadgeLabel, compositeRouteTitle, isCompositeRouted } from '@/utils/compositeRouteUsage'
 import {
   LATENCY_BAR_CLASSES,
   LATENCY_BAR_FROM_CLASSES,

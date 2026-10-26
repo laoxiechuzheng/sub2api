@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
@@ -63,25 +64,31 @@ var (
 // CompositeModelRoute maps one public model identifier in a composite group to
 // the concrete provider/model that should handle the request.
 type CompositeModelRoute struct {
-	ID                int64     `json:"id"`
-	GroupID           int64     `json:"group_id"`
-	PublicModel       string    `json:"public_model"`
-	MatchType         string    `json:"match_type"`
-	TargetPlatform    string    `json:"target_platform"`
-	UpstreamModel     string    `json:"upstream_model"`
-	Endpoint          string    `json:"endpoint"`
-	UserAgentContains string    `json:"user_agent_contains"`
-	BodyContains      string    `json:"body_contains"`
-	RequestKind       string    `json:"request_kind"`
-	BodyMatchScope    string    `json:"body_match_scope"`
-	BodyMatchMode     string    `json:"body_match_mode"`
-	BodyNotContains   string    `json:"body_not_contains"`
-	Priority          int       `json:"priority"`
-	Enabled           bool      `json:"enabled"`
-	Notes             string    `json:"notes"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                int64  `json:"id"`
+	GroupID           int64  `json:"group_id"`
+	PublicModel       string `json:"public_model"`
+	MatchType         string `json:"match_type"`
+	TargetPlatform    string `json:"target_platform"`
+	UpstreamModel     string `json:"upstream_model"`
+	Endpoint          string `json:"endpoint"`
+	UserAgentContains string `json:"user_agent_contains"`
+	BodyContains      string `json:"body_contains"`
+	RequestKind       string `json:"request_kind"`
+	BodyMatchScope    string `json:"body_match_scope"`
+	BodyMatchMode     string `json:"body_match_mode"`
+	BodyNotContains   string `json:"body_not_contains"`
+	// FallbackModels 按顺序在主上游模型失败且尚未向客户端输出可见内容时接管。
+	FallbackModels []CompositeRouteFallback `json:"fallback_models"`
+	Priority       int                      `json:"priority"`
+	Enabled        bool                     `json:"enabled"`
+	Notes          string                   `json:"notes"`
+	CreatedAt      time.Time                `json:"created_at"`
+	UpdatedAt      time.Time                `json:"updated_at"`
 }
+
+// CompositeRouteFallback is one ordered fallback target; an empty platform
+// reuses the route's target platform.
+type CompositeRouteFallback = domain.CompositeRouteFallback
 
 type CompositeRoutePreviewRequest struct {
 	Model                string `json:"model"`
@@ -108,14 +115,16 @@ type CompositeRouteRequestMatch struct {
 }
 
 type CompositeRouteDecision struct {
-	Matched               bool                                `json:"matched"`
-	Source                string                              `json:"source"`
-	GroupID               int64                               `json:"group_id"`
-	PublicModel           string                              `json:"public_model"`
-	TargetPlatform        string                              `json:"target_platform"`
-	UpstreamModel         string                              `json:"upstream_model"`
-	Endpoint              string                              `json:"endpoint"`
-	Route                 *CompositeModelRoute                `json:"route,omitempty"`
+	Matched        bool                 `json:"matched"`
+	Source         string               `json:"source"`
+	GroupID        int64                `json:"group_id"`
+	PublicModel    string               `json:"public_model"`
+	TargetPlatform string               `json:"target_platform"`
+	UpstreamModel  string               `json:"upstream_model"`
+	Endpoint       string               `json:"endpoint"`
+	Route          *CompositeModelRoute `json:"route,omitempty"`
+	// RequestKind is set for live explicit matches: compaction, conversation or unknown.
+	RequestKind           string                              `json:"request_kind,omitempty"`
 	Reason                string                              `json:"reason,omitempty"`
 	RequestClassification *CompositeRequestClassification     `json:"request_classification,omitempty"`
 	ConditionEvaluations  []CompositeRouteConditionEvaluation `json:"condition_evaluations,omitempty"`
@@ -133,6 +142,7 @@ type CompositeRouteInput struct {
 	BodyMatchScope    string `json:"body_match_scope"`
 	BodyMatchMode     string `json:"body_match_mode"`
 	BodyNotContains   string `json:"body_not_contains"`
+	FallbackModels    []CompositeRouteFallback
 	Priority          int
 	Enabled           bool
 	Notes             string
@@ -141,6 +151,7 @@ type CompositeRouteInput struct {
 	BodyMatchScopeProvided  bool `json:"-"`
 	BodyMatchModeProvided   bool `json:"-"`
 	BodyNotContainsProvided bool `json:"-"`
+	FallbackModelsProvided  bool `json:"-"`
 }
 
 type CompositeModelRouteRepository interface {
@@ -204,7 +215,38 @@ func normalizeCompositeRouteInput(input CompositeRouteInput) CompositeRouteInput
 		input.UpstreamModel = input.PublicModel
 	}
 	input.Notes = strings.TrimSpace(input.Notes)
+	input.FallbackModels = normalizeCompositeRouteFallbacks(input.FallbackModels, input.TargetPlatform)
 	return input
+}
+
+// normalizeCompositeRouteFallbacks trims entries, folds a platform equal to the
+// route's own into the empty "same platform" form, and drops blank and
+// duplicate targets in first-seen order.
+func normalizeCompositeRouteFallbacks(fallbacks []CompositeRouteFallback, routePlatform string) []CompositeRouteFallback {
+	// An explicit platform is kept even when it equals the route platform, so
+	// changing the primary platform later never silently moves this fallback;
+	// only an empty platform follows the route. Duplicates are detected on the
+	// effective platform.
+	out := make([]CompositeRouteFallback, 0, len(fallbacks))
+	routePlatform = strings.TrimSpace(routePlatform)
+	seen := make(map[CompositeRouteFallback]struct{}, len(fallbacks))
+	for _, fallback := range fallbacks {
+		fallback.TargetPlatform = strings.TrimSpace(fallback.TargetPlatform)
+		fallback.UpstreamModel = strings.TrimSpace(fallback.UpstreamModel)
+		if fallback.UpstreamModel == "" {
+			continue
+		}
+		effective := fallback
+		if effective.TargetPlatform == "" {
+			effective.TargetPlatform = routePlatform
+		}
+		if _, ok := seen[effective]; ok {
+			continue
+		}
+		seen[effective] = struct{}{}
+		out = append(out, fallback)
+	}
+	return out
 }
 
 // Keep unknown values so admin validation can reject them without widening a rule.
