@@ -42,7 +42,7 @@ jobs:
           ./internal/requestdiagnostic ./internal/service ./internal/repository
           ./internal/handler ./internal/handler/admin ./internal/server/middleware ./internal/server/routes
           ./internal/config ./internal/pkg/httputil
-          -run 'Composite|NativeCompaction|DeepSeek|OpenRouter|CacheTTL|CacheControl|UpstreamProtocol|ResponsesChatFallback|ResponsesNativeGuard|Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|AnthropicCompat|ForwardAsCompat|GatewayForwardStreamDrain|CommentOnlySSEOverload|V0218|Gzip|Compressed|PartialUsage|ServerTiming'
+          -run 'Composite|NativeCompaction|DeepSeek|OpenRouter|CacheTTL|CacheControl|UpstreamProtocol|ResponsesChatFallback|ResponsesNativeGuard|Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|AnthropicCompat|ForwardAsCompat|GatewayForwardStreamDrain|CommentOnlySSEOverload|V0218|Gzip|Compressed|PartialUsage|ServerTiming|OpenAIUsage|OpenAICyber|RecordCyberPolicy'
           -count=1 -timeout=10m
       - name: PostgreSQL diagnostic and precise routing integration tests
         working-directory: backend

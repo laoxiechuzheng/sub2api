@@ -48,9 +48,10 @@ type OpenAIRecordUsageInput struct {
 }
 
 // CyberPolicyUsageInput 是 cyber 拒绝、未走正常 RecordUsage 的请求记录用量的入参。
-// 用量按上游真实 token 计费，与 WS cyber 及正常请求口径一致（InputTokens/OutputTokens
-// 取自上游 response.failed 报告的 usage，即 mark.UpstreamInTok/OutTok）。
+// Full partial results are authoritative; scalar tokens support legacy refusals.
 type CyberPolicyUsageInput struct {
+	// Result is the complete observed partial; nil retains the legacy scalar fallback.
+	Result       *OpenAIForwardResult
 	APIKey       *APIKey
 	Account      *Account
 	Subscription *UserSubscription
@@ -82,7 +83,7 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 	if s == nil || in.APIKey == nil || in.APIKey.User == nil || in.Account == nil || strings.TrimSpace(in.Model) == "" {
 		return
 	}
-	result := &OpenAIForwardResult{
+	result := OpenAIForwardResult{
 		RequestID: in.RequestID,
 		Model:     in.Model,
 		Stream:    in.Stream,
@@ -91,8 +92,17 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 			OutputTokens: in.OutputTokens,
 		},
 	}
+	if in.Result != nil {
+		result = *in.Result
+		if strings.TrimSpace(result.RequestID) == "" {
+			result.RequestID = in.RequestID
+		}
+		if strings.TrimSpace(result.Model) == "" {
+			result.Model = in.Model
+		}
+	}
 	if err := s.RecordUsage(ctx, &OpenAIRecordUsageInput{
-		Result:             result,
+		Result:             &result,
 		APIKey:             in.APIKey,
 		User:               in.APIKey.User,
 		Account:            in.Account,

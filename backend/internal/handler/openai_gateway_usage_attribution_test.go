@@ -86,10 +86,10 @@ func newUsageAttributionHandler(t *testing.T, upstream *usageAttributionUpstream
 	repo := &usageAttributionRepo{created: make(chan usageAttributionReceipt, 4), diagnostics: make(chan *requestdiagnostic.Snapshot, 1)}
 	repo.billing = &usageAttributionBillingRepo{balance: 100}
 	upstream.account = &account
-	inputPrice, outputPrice := 2e-6, 8e-6
+	inputPrice, outputPrice, cachePrice := 2e-6, 8e-6, 0.5e-6
 	channelSvc := service.NewChannelService(&openAIWSUsageHandlerChannelRepoStub{
 		channels: []service.Channel{{ID: 7103, Name: "attribution", Status: service.StatusActive, GroupIDs: []int64{groupID}, BillingModelSource: service.BillingModelSourceRequested,
-			ModelPricing: []service.ChannelModelPricing{{Platform: service.PlatformOpenAI, Models: []string{"gpt-4.1"}, BillingMode: service.BillingModeToken, InputPrice: &inputPrice, OutputPrice: &outputPrice}}}},
+			ModelPricing: []service.ChannelModelPricing{{Platform: service.PlatformOpenAI, Models: []string{"gpt-4.1"}, BillingMode: service.BillingModeToken, InputPrice: &inputPrice, OutputPrice: &outputPrice, CacheReadPrice: &cachePrice}}}},
 		groupPlatforms: map[int64]string{groupID: service.PlatformOpenAI},
 	}, nil, nil, nil, nil)
 	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
@@ -381,6 +381,95 @@ func TestOpenAICyberPartialResultBilledOnce(t *testing.T) {
 			require.Len(t, commands, 1, "the handler must not rely on duplicate request-ID suppression")
 			require.Equal(t, 11, commands[0].InputTokens)
 			require.Equal(t, 3, commands[0].OutputTokens)
+			require.InDelta(t, expected, commands[0].BalanceCost, 1e-12)
+			require.InDelta(t, 100-expected, balance, 1e-12)
+		})
+	}
+}
+
+func TestOpenAICyberPartialCachedUsageBilledOnce(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		t.Run(fmt.Sprintf("passthrough=%t", passthrough), func(t *testing.T) {
+			body := `data: {"type":"response.failed","response":{"id":"resp_cached_cyber","status":"failed","model":"gpt-5.1","service_tier":"default","error":{"code":"cyber_policy","message":"fixture refusal"},"usage":{"input_tokens":11,"input_tokens_details":{"cached_tokens":7},"output_tokens":3}}}` + "\n\n"
+			upstream := &usageAttributionUpstream{body: body}
+			h, c, rec, repo, trace := newUsageAttributionHandler(t, upstream, nil, "responses", passthrough)
+			upstream.account.Credentials["model_mapping"] = map[string]any{"gpt-4o": "gpt-5.1"}
+			upstream.account.Extra[service.AccountExtraUpstreamRequestIDHeader] = "X-Request-Id"
+			h.cfg.RunMode = config.RunModeStandard
+			billing := service.NewBillingCacheService(newHandlerInflightCache(100), nil, nil, nil, nil, nil, h.cfg, nil)
+			t.Cleanup(billing.Stop)
+			h.billingCacheService = billing
+			requestModel := "gpt-4o"
+			if passthrough {
+				requestModel = "gpt-5.1"
+			}
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":%q,"stream":true,"input":"hello","service_tier":"default","reasoning":{"effort":"high"}}`, requestModel))).WithContext(c.Request.Context())
+			c.Request.Header.Set("Content-Type", "application/json")
+			moderation := &usageAttributionBlockingModeration{entered: make(chan struct{}), release: make(chan struct{})}
+			settings := &contentModerationHandlerSettingRepo{values: map[string]string{service.SettingKeyRiskControlEnabled: "true"}}
+			h.contentModerationService = service.NewContentModerationService(settings, moderation, nil, nil, nil, nil, nil, nil)
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(moderation.release) }) }
+			t.Cleanup(unblock)
+			forward := h.forwardResponses
+			var partial *service.OpenAIForwardResult
+			h.forwardResponses = func(ctx context.Context, c *gin.Context, account *service.Account, body []byte) (*service.OpenAIForwardResult, error) {
+				result, err := forward(ctx, c, account, body)
+				partial = result
+				return result, err
+			}
+			h.Responses(c)
+			select {
+			case <-moderation.entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("cyber billing did not reach the blocked moderation step")
+			}
+			require.NotNil(t, partial, "the real Forward/parser must return the cached partial")
+			require.Equal(t, 7, partial.Usage.CacheReadInputTokens)
+			if passthrough {
+				require.Empty(t, partial.UpstreamModel)
+			} else {
+				require.Equal(t, "gpt-5.1", partial.UpstreamModel)
+			}
+			require.NotNil(t, partial.ServiceTier)
+			require.NotNil(t, partial.ReasoningEffort)
+			require.EqualValues(t, 1, upstream.calls.Load(), rec.Body.String())
+			require.True(t, trace.UsageCommitted())
+			require.Zero(t, repo.calls.Load(), "the ordinary task must not bill while the cyber task is blocked")
+			// Reuse the original result and Gin request after the synchronous handoff.
+			partial.Usage = service.OpenAIUsage{InputTokens: 999}
+			partial.UpstreamModel, partial.BillingModel = "changed", "changed"
+			partial.UpstreamHeaders.Set("X-Request-Id", "changed")
+			*partial.ServiceTier, *partial.ReasoningEffort = "priority", "low"
+			c.Request = httptest.NewRequest(http.MethodPost, "/reused", nil)
+			unblock()
+			got := waitUsageAttribution(t, repo)
+			require.Equal(t, 4, got.log.InputTokens)
+			require.Equal(t, 7, got.log.CacheReadTokens)
+			require.Equal(t, 3, got.log.OutputTokens)
+			require.Equal(t, "gpt-4.1", got.log.RequestedModel)
+			require.Equal(t, requestModel, got.log.Model)
+			if passthrough {
+				require.Nil(t, got.log.UpstreamModel, "passthrough keeps the sent model in Model")
+			} else {
+				require.Equal(t, "gpt-5.1", *got.log.UpstreamModel)
+			}
+			require.Equal(t, "gpt-5.1", *got.log.UpstreamResponseModel)
+			require.Equal(t, "upstream-attribution", *got.log.UpstreamRequestID)
+			require.Equal(t, "default", *got.log.ServiceTier)
+			require.Equal(t, "high", *got.log.ReasoningEffort)
+			require.Equal(t, service.RequestTypeCyberBlocked, got.log.RequestType)
+			require.Equal(t, &trace.RouteID, got.log.CompositeRouteID)
+			const expected = 4*2e-6 + 7*0.5e-6 + 3*8e-6
+			require.InDelta(t, expected, got.log.ActualCost, 1e-12)
+			repo.billing.mu.Lock()
+			commands := append([]service.UsageBillingCommand(nil), repo.billing.commands...)
+			balance := repo.billing.balance
+			repo.billing.mu.Unlock()
+			require.EqualValues(t, 1, repo.calls.Load())
+			require.Len(t, commands, 1)
+			require.Equal(t, 4, commands[0].InputTokens)
+			require.Equal(t, 7, commands[0].CacheReadTokens)
 			require.InDelta(t, expected, commands[0].BalanceCost, 1e-12)
 			require.InDelta(t, 100-expected, balance, 1e-12)
 		})

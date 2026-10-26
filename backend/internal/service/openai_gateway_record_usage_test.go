@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,107 @@ func TestRecordCyberPolicyUsageLog_NonStreamZeroTokensZeroCost(t *testing.T) {
 	require.Equal(t, 0, usageRepo.lastLog.OutputTokens)
 	require.Zero(t, usageRepo.lastLog.TotalCost)
 	require.Equal(t, RequestTypeCyberBlocked, usageRepo.lastLog.RequestType)
+}
+
+func TestRecordCyberPolicyUsageLog_PreservesPartialUsageAndBillingMetadata(t *testing.T) {
+	for _, tt := range []struct {
+		source string
+		cost   float64
+	}{
+		{BillingModelSourceRequested, 4*2e-6 + 7*0.5e-6 + 3*8e-6},
+		{BillingModelSourceUpstream, 4*3e-6 + 7*0.25e-6 + 3*9e-6},
+	} {
+		t.Run(tt.source, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			billingRepo := &openAIRecordUsageBillingRepoStub{}
+			svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+			svc.resolver = NewModelPricingResolver(nil, svc.billingService)
+			inputPrice, outputPrice, cachePrice := 2e-6, 8e-6, 0.5e-6
+			billingInput, billingOutput, billingCache := 3e-6, 9e-6, 0.25e-6
+			apiKey := &APIKey{ID: 2, User: &User{ID: 1}, GroupID: i64p(70), Group: &Group{ID: 70, Platform: PlatformOpenAI, RateMultiplier: 1,
+				ModelPricing: []ChannelModelPricing{
+					{Models: []string{"public-cyber"}, BillingMode: BillingModeToken, InputPrice: &inputPrice, OutputPrice: &outputPrice, CacheReadPrice: &cachePrice},
+					{Models: []string{"billing-cyber"}, BillingMode: BillingModeToken, InputPrice: &billingInput, OutputPrice: &billingOutput, CacheReadPrice: &billingCache},
+				},
+			}}
+			tier, effort, requestedEffort, firstToken := "default", "high", "medium", 7
+			partial := &OpenAIForwardResult{
+				RequestID: "partial-request", ResponseID: "partial-response", Model: "routed-cyber", BillingModel: "billing-cyber", UpstreamModel: "gpt-5.1",
+				UpstreamResponseModel: "gpt-5.1", UpstreamResponseServiceTier: "default", UpstreamHeaders: http.Header{"X-Request-Id": {"partial-upstream"}},
+				Usage: OpenAIUsage{InputTokens: 11, CacheReadInputTokens: 7, OutputTokens: 3}, Stream: true,
+				ServiceTier: &tier, ReasoningEffort: &effort, RequestedReasoningEffort: &requestedEffort, Duration: 2 * time.Second, FirstTokenMs: &firstToken,
+			}
+			before := *partial
+			svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+				Result: partial, APIKey: apiKey, Account: &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{AccountExtraUpstreamRequestIDHeader: "X-Request-Id"}},
+				RequestID: "scalar-request", Model: "public-cyber", InputTokens: 999, OutputTokens: 999,
+				ChannelUsageFields: ChannelUsageFields{OriginalModel: "public-cyber", BillingModelSource: tt.source},
+			})
+			require.Equal(t, 1, usageRepo.calls)
+			require.Equal(t, 4, usageRepo.lastLog.InputTokens)
+			require.Equal(t, 7, usageRepo.lastLog.CacheReadTokens)
+			require.Equal(t, 3, usageRepo.lastLog.OutputTokens)
+			require.Equal(t, "public-cyber", usageRepo.lastLog.RequestedModel)
+			require.Equal(t, "routed-cyber", usageRepo.lastLog.Model)
+			require.Equal(t, "gpt-5.1", *usageRepo.lastLog.UpstreamModel)
+			require.Equal(t, "gpt-5.1", *usageRepo.lastLog.UpstreamResponseModel)
+			require.Equal(t, "partial-upstream", *usageRepo.lastLog.UpstreamRequestID)
+			require.Equal(t, "default", *usageRepo.lastLog.ServiceTier)
+			require.Equal(t, "high", *usageRepo.lastLog.ReasoningEffort)
+			require.Equal(t, "medium", *usageRepo.lastLog.RequestedReasoningEffort)
+			require.Equal(t, 2000, *usageRepo.lastLog.DurationMs)
+			require.Equal(t, 7, *usageRepo.lastLog.FirstTokenMs)
+			require.True(t, usageRepo.lastLog.Stream)
+			require.Equal(t, RequestTypeCyberBlocked, usageRepo.lastLog.RequestType)
+			require.InDelta(t, tt.cost, usageRepo.lastLog.ActualCost, 1e-12)
+			require.Equal(t, 1, billingRepo.calls)
+			require.Equal(t, 4, billingRepo.lastCmd.InputTokens)
+			require.Equal(t, 7, billingRepo.lastCmd.CacheReadTokens)
+			require.InDelta(t, tt.cost, billingRepo.lastCmd.BalanceCost, 1e-12)
+			require.Equal(t, before, *partial, "billing must not mutate the caller's partial")
+		})
+	}
+}
+
+func TestRecordCyberPolicyUsageLog_PartialImageMetadataSurvives(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+	imagePrice := 0.44
+	partial := &OpenAIForwardResult{RequestID: "partial-image", Model: "image-alias", BillingModel: "gpt-image-2", UpstreamModel: "gpt-image-2", Stream: true,
+		Usage:      OpenAIUsage{InputTokens: 11, CacheReadInputTokens: 7, ImageCacheReadTokens: 5, OutputTokens: 3},
+		ImageCount: 1, ImageInputSize: "1024x1024", ImageOutputSizes: []string{"3840x2160"},
+	}
+	before := *partial
+	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+		Result: partial, Model: "image-alias", Account: &Account{ID: 3},
+		APIKey: &APIKey{ID: 2, User: &User{ID: 1}, GroupID: i64p(70), Group: &Group{ID: 70, RateMultiplier: 1, ImagePrice4K: &imagePrice}},
+	})
+	require.Equal(t, 1, usageRepo.calls)
+	require.Equal(t, 1, usageRepo.lastLog.ImageCount)
+	require.Equal(t, ImageBillingSize4K, *usageRepo.lastLog.ImageSize)
+	require.Equal(t, "1024x1024", *usageRepo.lastLog.ImageInputSize)
+	require.Equal(t, "3840x2160", *usageRepo.lastLog.ImageOutputSize)
+	require.Equal(t, 5, usageRepo.lastLog.ImageSizeBreakdown["image_cache_read_tokens"])
+	require.Equal(t, 4, usageRepo.lastLog.InputTokens)
+	require.Equal(t, 7, usageRepo.lastLog.CacheReadTokens)
+	require.InDelta(t, 0.44, usageRepo.lastLog.ActualCost, 1e-12)
+	require.Equal(t, 1, billingRepo.calls)
+	require.InDelta(t, 0.44, billingRepo.lastCmd.BalanceCost, 1e-12)
+	require.Equal(t, before, *partial, "image normalization must not mutate the original partial")
+}
+
+func TestRecordCyberPolicyUsageLog_EmptyPartialDoesNotInventScalarUsage(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+		Result: &OpenAIForwardResult{Model: "gpt-5.1"}, Model: "gpt-5.1", InputTokens: 999, OutputTokens: 999,
+		APIKey: &APIKey{ID: 2, User: &User{ID: 1}}, Account: &Account{ID: 3},
+	})
+	require.Equal(t, 1, usageRepo.calls)
+	require.Zero(t, usageRepo.lastLog.InputTokens)
+	require.Zero(t, usageRepo.lastLog.OutputTokens)
+	require.Zero(t, usageRepo.lastLog.ActualCost)
 }
 
 func TestRecordCyberPolicyUsageLog_SkipsWhenIncomplete(t *testing.T) {

@@ -133,7 +133,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js'
 import { Doughnut } from 'vue-chartjs'
@@ -186,12 +186,27 @@ const emit = defineEmits<{
 const expandedKey = ref<string | null>(null)
 const breakdownItems = ref<UserBreakdownItem[]>([])
 const breakdownLoading = ref(false)
+let breakdownRequestId = 0
+
+const resetBreakdown = () => {
+  breakdownRequestId++
+  expandedKey.value = null
+  breakdownItems.value = []
+  breakdownLoading.value = false
+}
+
+watch(
+  () => [props.filters, props.startDate, props.endDate, props.source, props.enableBreakdown],
+  resetBreakdown,
+  { deep: true, flush: 'sync' },
+)
 
 const toggleBreakdown = async (endpoint: string) => {
   if (expandedKey.value === endpoint) {
-    expandedKey.value = null
+    resetBreakdown()
     return
   }
+  const requestId = ++breakdownRequestId
   expandedKey.value = endpoint
   breakdownLoading.value = true
   breakdownItems.value = []
@@ -203,11 +218,13 @@ const toggleBreakdown = async (endpoint: string) => {
       endpoint,
       endpoint_type: props.source,
     })
+    if (requestId !== breakdownRequestId) return
     breakdownItems.value = res.users || []
   } catch {
+    if (requestId !== breakdownRequestId) return
     breakdownItems.value = []
   } finally {
-    breakdownLoading.value = false
+    if (requestId === breakdownRequestId) breakdownLoading.value = false
   }
 }
 

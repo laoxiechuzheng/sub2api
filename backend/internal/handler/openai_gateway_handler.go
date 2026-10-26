@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -853,7 +854,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockBodyHTTP = sessionHashBody
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
+		cyberUpstreamModel := ""
+		if result != nil {
+			cyberUpstreamModel = result.UpstreamModel
+		}
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, cyberUpstreamModel), service.HashUsageRequestPayload(body), result)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -1464,7 +1469,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockBodyMsg = body
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body))
+		cyberUpstreamModel := ""
+		if result != nil {
+			cyberUpstreamModel = result.UpstreamModel
+		}
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, cyberUpstreamModel), service.HashUsageRequestPayload(body), result)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -3209,7 +3218,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				turnUsageFields := turnMapping.ToUsageFields(turnRequestedModel, turnUpstreamModel)
 				cyberMarked := service.GetOpsCyberPolicy(c) != nil
-				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, requestPayloadHash)
+				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, requestPayloadHash, result)
 				cyberBlockedThisConn, cyberBlockPendingAfterFailover = advanceOpenAIWSCyberBlockState(
 					cyberBlockedThisConn,
 					cyberBlockPendingAfterFailover,
@@ -4427,7 +4436,7 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 // 并在 forward 返回错误时按上游真实 usage 写用量行。标记由 gateway 服务层在透传 cyber 后设置；
 // 当前请求已发给用户，本方法只做事后记录，不影响响应。forwardErrored 为 true 时才写用量行，
 // 避免与正常 RecordUsage(forward 成功路径)重复。每请求至多记录一次。
-func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockBody []byte, channelFields service.ChannelUsageFields, requestPayloadHash string) {
+func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockBody []byte, channelFields service.ChannelUsageFields, requestPayloadHash string, partials ...*service.OpenAIForwardResult) {
 	mark := service.GetOpsCyberPolicy(c)
 	if mark == nil {
 		return
@@ -4437,6 +4446,13 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 	}
 	c.Set(cyberPolicyRecordedKey, true)
 	model = clientRequestedModel(c, model)
+	var usageResult *service.OpenAIForwardResult
+	if forwardErrored && len(partials) > 0 {
+		usageResult = snapshotOpenAICyberUsageResult(partials[0])
+		if usageResult != nil {
+			stampOpenAIRequestedReasoningEffort(usageResult, c)
+		}
+	}
 
 	requestID := c.Writer.Header().Get("X-Request-Id")
 	var userID, apiKeyID int64
@@ -4459,7 +4475,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 	var accountID int64
 	if account != nil {
 		accountID = account.ID
-		upstreamEndpoint = resolveOpenAIUpstreamEndpoint(c, account, nil)
+		upstreamEndpoint = resolveOpenAIUpstreamEndpoint(c, account, usageResult)
 	}
 	stream := false
 	if v, ok := c.Get(opsStreamKey); ok {
@@ -4541,6 +4557,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		}
 		if forwardErrored && gwSvc != nil {
 			gwSvc.RecordCyberPolicyUsageLog(ctx, service.CyberPolicyUsageInput{
+				Result:             usageResult,
 				APIKey:             apiKey,
 				Account:            account,
 				Subscription:       subscription,
@@ -4573,6 +4590,39 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		defer cancel()
 		recordTask(ctx)
 	}()
+}
+
+// Snapshot mutable billing metadata before handing the result to the cyber task.
+func snapshotOpenAICyberUsageResult(result *service.OpenAIForwardResult) *service.OpenAIForwardResult {
+	if result == nil {
+		return nil
+	}
+	snapshot := *result
+	snapshot.UpstreamHeaders = result.UpstreamHeaders.Clone()
+	snapshot.ResponseHeaders = result.ResponseHeaders.Clone()
+	snapshot.ImageOutputSizes = append([]string(nil), result.ImageOutputSizes...)
+	snapshot.ImageSizeBreakdown = maps.Clone(result.ImageSizeBreakdown)
+	if result.ServiceTier != nil {
+		value := *result.ServiceTier
+		snapshot.ServiceTier = &value
+	}
+	if result.ReasoningEffort != nil {
+		value := *result.ReasoningEffort
+		snapshot.ReasoningEffort = &value
+	}
+	if result.RequestedReasoningEffort != nil {
+		value := *result.RequestedReasoningEffort
+		snapshot.RequestedReasoningEffort = &value
+	}
+	if result.FirstTokenMs != nil {
+		value := *result.FirstTokenMs
+		snapshot.FirstTokenMs = &value
+	}
+	if result.AudioUsage != nil {
+		value := *result.AudioUsage
+		snapshot.AudioUsage = &value
+	}
+	return &snapshot
 }
 
 // clearCyberPolicyTurnState resets the cyber mark and recorded guard after a
