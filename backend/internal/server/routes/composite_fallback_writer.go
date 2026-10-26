@@ -451,8 +451,9 @@ func (w *compositeFallbackWriter) startKeepaliveLocked() {
 	if w.lastClientAt.IsZero() {
 		w.lastClientAt = time.Now()
 	}
+	interval := compositeFallbackKeepaliveInterval
 	go func() {
-		ticker := time.NewTicker(compositeFallbackKeepaliveInterval / 3)
+		ticker := time.NewTicker(interval / 3)
 		defer ticker.Stop()
 		for {
 			select {
@@ -465,7 +466,7 @@ func (w *compositeFallbackWriter) startKeepaliveLocked() {
 				w.mu.Unlock()
 				return
 			}
-			if time.Since(w.lastClientAt) >= compositeFallbackKeepaliveInterval && !w.failed && w.sseAttemptLocked() {
+			if time.Since(w.lastClientAt) >= interval && !w.failed && w.sseAttemptLocked() {
 				w.commitLocked(http.StatusOK)
 				w.committedSSE = true
 				if _, err := w.writeBaseLocked(compositeFallbackKeepaliveFrame); err != nil {
