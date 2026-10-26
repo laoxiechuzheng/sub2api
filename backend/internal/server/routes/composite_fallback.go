@@ -175,8 +175,7 @@ func runCompositeRouteWithFallback(c *gin.Context, base *http.Request, routePath
 		attempt.UpstreamModel = target.model
 		ctx := service.WithCompositeRouteDecision(base.Context(), attempt)
 		ctx = service.WithCompositeRouteTrace(ctx, trace)
-		req := base.WithContext(ctx)
-		req.Header = base.Header.Clone()
+		req := base.Clone(ctx)
 		requestmodel.ResetRequestBody(req, compositeRewriteModel(routePath, originalBody, publicModel, target.model))
 		c.Request = req
 		return trace

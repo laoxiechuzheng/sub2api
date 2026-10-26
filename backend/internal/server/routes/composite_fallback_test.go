@@ -295,6 +295,44 @@ func TestCompositeFallbackIsolatesRequestHeadersPerAttempt(t *testing.T) {
 	require.Equal(t, []string{"context-1m-2025-08-07", "context-1m-2025-08-07"}, seen)
 }
 
+func TestCompositeFallbackIsolatesRequestURLAfterNativeCompactionPromotion(t *testing.T) {
+	route := compositeFallbackRoute(service.CompositeRouteFallback{UpstreamModel: "backup"})
+	body := "{\"model\":\"gpt-6.1-sol\",\"stream\":false,\"input\":[{\"type\":\"compaction_trigger\"},{\"type\":\"message\",\"role\":\"user\",\"content\":\"compact this conversation\"}]}"
+	const rawQuery = "client=codex%2Fstable&flag=a+b&flag=second"
+	const beta = "remote_compaction_v2"
+	type requestView struct{ path, rawQuery, beta string }
+	seen := []requestView{}
+	router, calls := newCompositeFallbackRouter(t, route, func(c *gin.Context, attempt int) {
+		require.Equal(t, service.PlatformOpenAI, getGroupPlatform(c))
+		seen = append(seen, requestView{c.Request.URL.Path, c.Request.URL.RawQuery, c.GetHeader("X-Codex-Beta-Features")})
+		if attempt == 0 {
+			// Match the handler's non-streaming native compaction promotion.
+			c.Request.URL.Path += "/compact"
+			c.Request.URL.RawQuery = "attempt=primary"
+			c.Request.Header.Set("X-Codex-Beta-Features", "attempt-only")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"message": "primary down"}})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses?"+rawQuery, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Codex-Beta-Features", beta)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Len(t, *calls, 2)
+	require.Equal(t, []requestView{{"/v1/responses", rawQuery, beta}, {"/v1/responses", rawQuery, beta}}, seen)
+	require.Equal(t, "/v1/responses", request.URL.Path)
+	require.Equal(t, rawQuery, request.URL.RawQuery)
+	require.Equal(t, beta, request.Header.Get("X-Codex-Beta-Features"))
+	for _, call := range *calls {
+		require.Equal(t, service.CompositeRouteRequestKindCompaction, call.trace.RequestKind)
+		require.JSONEq(t, gjson.Get(body, "input").Raw, gjson.Get(call.body, "input").Raw)
+	}
+}
+
 // A final attempt that only sets a status keeps it, as without the wrapper.
 func TestCompositeFallbackKeepsHeaderOnlyFinalStatus(t *testing.T) {
 	route := compositeFallbackRoute(service.CompositeRouteFallback{UpstreamModel: "backup"})
