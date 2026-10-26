@@ -374,7 +374,7 @@ func (w *compositeFallbackWriter) Write(data []byte) (int, error) {
 				w.failStatus = http.StatusBadGateway
 			}
 		}
-		w.held.Write(data)
+		_, _ = w.held.Write(data)
 		if w.held.Len() > compositeFallbackMaxHeldBytes {
 			if err := w.goVisibleLocked(); err != nil {
 				return 0, err
@@ -418,21 +418,21 @@ func (w *compositeFallbackWriter) consumeSSEEventLocked(event []byte) error {
 		}
 		w.base.Flush()
 	case compositeSSEPreamble:
-		w.held.Write(event)
+		_, _ = w.held.Write(event)
 		w.startKeepaliveLocked()
 	case compositeSSEError:
 		if !w.failed {
 			w.failed = true
 			w.failStatus = status
 		}
-		w.held.Write(event)
+		_, _ = w.held.Write(event)
 		w.heldErrors = append(w.heldErrors, event...)
 	default:
 		if w.failed {
-			w.held.Write(event)
+			_, _ = w.held.Write(event)
 			return nil
 		}
-		w.held.Write(event)
+		_, _ = w.held.Write(event)
 		if err := w.goVisibleLocked(); err != nil {
 			return err
 		}

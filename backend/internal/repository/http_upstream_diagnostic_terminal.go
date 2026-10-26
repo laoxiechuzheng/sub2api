@@ -99,7 +99,7 @@ func (s *diagnosticTerminalLine) observeJSON(c byte) {
 			}
 		}
 		if s.unicode > 0 {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 				s.bad = true
 			}
 			s.unicode--

@@ -33,7 +33,7 @@ func diagnosticResponseText(t *testing.T, payload *requestdiagnostic.Payload) st
 	require.Equal(t, len(stored.ContentGzip), payload.StoredBytes)
 	reader, err := gzip.NewReader(bytes.NewReader(stored.ContentGzip))
 	require.NoError(t, err)
-	defer reader.Close()
+	defer func() { require.NoError(t, reader.Close()) }()
 	body, err := io.ReadAll(reader)
 	require.NoError(t, err)
 	return string(body)
@@ -177,7 +177,7 @@ func TestHTTPUpstreamDiagnosticCompressedCloseAndCancelReleaseBuffers(t *testing
 			prefix := "data: {\"delta\":\"fixture-before-cancel\"}\n\n"
 			blocked := &upstreamDiagnosticBlockingBody{started: make(chan struct{}), closed: make(chan struct{})}
 			body := &diagnosticPrefixBlockingBody{prefix: strings.NewReader(prefix), blocked: blocked}
-			defer body.Close()
+			defer func() { require.NoError(t, body.Close()) }()
 			stopCancel := context.AfterFunc(ctx, func() { _ = body.Close() })
 			defer stopCancel()
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://fixture.invalid/v1/responses", nil)
@@ -208,7 +208,8 @@ func TestHTTPUpstreamDiagnosticCompressedCloseAndCancelReleaseBuffers(t *testing
 				t.Fatal("Close/cancel blocked behind diagnostic compression")
 			}
 			require.NoError(t, resp.Body.Close())
-			observed := resp.Body.(*diagnosticResponseBody)
+			observed, ok := resp.Body.(*diagnosticResponseBody)
+			require.True(t, ok)
 			require.Nil(t, observed.responseCompressor)
 			require.Nil(t, observed.result.ResponseBodyGzip)
 			snapshot := finishUpstreamDiagnosticCapture(t, capture, ready)

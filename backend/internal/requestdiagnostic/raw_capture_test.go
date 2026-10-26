@@ -103,9 +103,9 @@ func TestCaptureRawResponseKeepsMultiMegabyteOutputWhenEntryBudgetFits(t *testin
 	id := capture.BeginAttempt(requestdiagnostic.Attempt{}, upstream)
 	var sse strings.Builder
 	for sse.Len() < 3500<<10 {
-		sse.WriteString("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"摘要片段\"}\n\n")
+		_, _ = sse.WriteString("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"摘要片段\"}\n\n")
 	}
-	sse.WriteString("data: {\"type\":\"response.completed\"}\n\n")
+	_, _ = sse.WriteString("data: {\"type\":\"response.completed\"}\n\n")
 	response := sse.String()
 	capture.EndAttempt(id, requestdiagnostic.AttemptResult{Status: 200, ResponseBody: []byte(response), ResponseBytes: len(response), ResponseContentType: "text/event-stream"})
 	require.True(t, capture.BindUsage(1, "client:large-output", time.Now()))
