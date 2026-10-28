@@ -120,11 +120,19 @@ async function openRoutes(locale = 'en') {
 }
 
 async function choose(selector: string, label: string) {
-  await wrapper.get(selector).trigger('click')
+  const trigger = wrapper.get<HTMLButtonElement>(selector)
+  await vi.waitFor(() => expect(trigger.element.disabled).toBe(false))
+  await trigger.trigger('click')
   await flushPromises()
-  const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'))
-    .find((item) => item.textContent?.trim() === label)
-  expect(option, `Missing option ${label}`).toBeTruthy()
+  let option: HTMLElement | undefined
+  await vi.waitFor(() => {
+    expect(trigger.element.getAttribute('aria-expanded')).toBe('true')
+    const dropdown = document.activeElement?.closest('[role="listbox"]')
+    expect(dropdown, `Missing focused dropdown for ${selector}`).toBeTruthy()
+    option = Array.from(dropdown!.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((item) => item.textContent?.trim() === label)
+    expect(option, `Missing option ${label}`).toBeTruthy()
+  })
   await new DOMWrapper(option!).trigger('click')
   await flushPromises()
 }
@@ -171,6 +179,7 @@ describe('GroupsView precise Composite routes', () => {
 
   afterEach(() => {
     wrapper?.unmount()
+    document.body.innerHTML = ''
     vi.restoreAllMocks()
   })
 
