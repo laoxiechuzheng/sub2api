@@ -354,7 +354,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 }
 
 // TestAccountConnection tests an account's connection by sending a test request
-// All account types use full Claude Code client characteristics, only auth header differs
+// Accounts are routed to their platform-specific probes.
 // modelID is optional - if empty, defaults to claude.DefaultTestModel
 // mode is optional - "compact" routes OpenAI accounts to the /responses/compact probe path
 // opts is optional media (image/audio data URLs for real generation / STT).
@@ -523,6 +523,10 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		return s.testClaudeVertexServiceAccountConnection(c, ctx, account, testModelID)
 	}
 
+	// API-key probes use ordinary Messages requests, independently of the
+	// passthrough setting. OAuth/setup-token probes keep Claude Code semantics.
+	nativeAPIKey := account.IsAnthropic() && account.Type == AccountTypeAPIKey
+
 	// Determine authentication method and API URL
 	var authToken string
 	var apiURL string
@@ -547,7 +551,10 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
-		apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/v1/messages?beta=true"
+		apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/v1/messages"
+		if !nativeAPIKey {
+			apiURL += "?beta=true"
+		}
 	} else {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported account type: %s", account.Type))
 	}
@@ -559,10 +566,22 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	// Create Claude Code style payload (same for all account types)
-	payload, err := createTestPayload(testModelID)
-	if err != nil {
-		return s.sendErrorAndEnd(c, "Failed to create test payload")
+	var payload map[string]any
+	if nativeAPIKey {
+		payload = map[string]any{
+			"model":      testModelID,
+			"max_tokens": 16,
+			"stream":     true,
+			"messages": []map[string]string{
+				{"role": "user", "content": "hi"},
+			},
+		}
+	} else {
+		var err error
+		payload, err = createTestPayload(testModelID)
+		if err != nil {
+			return s.sendErrorAndEnd(c, "Failed to create test payload")
+		}
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -578,9 +597,10 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	// Apply Claude Code client headers
-	for key, value := range claude.DefaultHeaders() {
-		req.Header.Set(key, value)
+	if !nativeAPIKey {
+		for key, value := range claude.DefaultHeaders() {
+			req.Header.Set(key, value)
+		}
 	}
 
 	// Set authentication header
@@ -588,7 +608,9 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		req.Header.Set("anthropic-beta", claude.DefaultBetaHeader)
 		req.Header.Set("Authorization", "Bearer "+authToken)
 	} else {
-		req.Header.Set("anthropic-beta", claude.APIKeyBetaHeader)
+		if !nativeAPIKey {
+			req.Header.Set("anthropic-beta", claude.APIKeyBetaHeader)
+		}
 		// Ollama Cloud Anthropic 兼容端点按实际 base_url 强制 Bearer，
 		// 其余保持 extra/default 行为。
 		setAnthropicAPIKeyAuthHeader(req.Header, account, authToken, account.GetBaseURL())

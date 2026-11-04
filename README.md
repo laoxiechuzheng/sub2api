@@ -1,3 +1,5 @@
+> Local maintenance requirements: [REQUIREMENTS.md](REQUIREMENTS.md) (local-only ledger).
+
 <div align="center">
 
 <img src="assets/logo.svg" alt="Sub2API Logo" width="128" />
