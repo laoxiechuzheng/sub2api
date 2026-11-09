@@ -210,14 +210,17 @@ func (st *anthropicCompatStream) observe(event *apicompat.AnthropicStreamEvent, 
 	}
 }
 
-// failure 返回客户端在线、上游未发出成功结束事件即中断时的失败原因。显式
-// error 事件即使晚于成功 terminal 也必须保留：终端之后用普通 error 阻止外层
-// 把已提交/已终态请求转成可重放的 UpstreamFailoverError。客户端在 terminal
-// 之前断开时沿用 upstream 语义，只返回已观测 usage、不返回错误。
+// failure 返回客户端在线、上游未发出成功结束事件即中断时的失败原因。
+// status-only 入口沿用官方终态优先语义。full reader 保留终态后的显式 error，
+// 用普通 error 阻止外层把已提交/已终态请求转成可重放的 UpstreamFailoverError。
+// 客户端在 terminal 之前断开时沿用 upstream 语义，只返回已观测 usage。
 func (st *anthropicCompatStream) failure() *anthropicCompatStreamFailure {
 	st.disconnected()
 	if st.upstreamErrType != "" {
 		if st.sawTerminal {
+			if st.drain == nil {
+				return nil
+			}
 			return &anthropicCompatStreamFailure{
 				err:     fmt.Errorf("upstream stream error event after terminal: %s: %s", st.upstreamErrType, st.upstreamErrMessage),
 				errType: st.upstreamErrType,

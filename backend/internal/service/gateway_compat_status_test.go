@@ -52,16 +52,20 @@ func TestAnthropicCompatStatusOnlyEntryPoints(t *testing.T) {
 		},
 	}
 	complete := miniAnthropicSSEStream()
-	unfinished := strings.ReplaceAll(complete, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", "")
-	unfinished = strings.ReplaceAll(unfinished, `"stop_reason":"end_turn"`, `"stop_reason":null`)
+	stoppedWithoutMessageStop := strings.ReplaceAll(complete, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", "")
+	unfinished := strings.ReplaceAll(stoppedWithoutMessageStop, `"stop_reason":"end_turn"`, `"stop_reason":null`)
+	const errorEvent = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"fixture\"}}\n\n"
 	for name, handle := range handlers {
-		for _, ending := range []string{"stop", "error", "missing_terminal"} {
+		for _, ending := range []string{"stop", "error", "missing_terminal", "stop_reason_then_error"} {
 			t.Run(name+"/"+ending, func(t *testing.T) {
 				payload := unfinished
-				if ending == "stop" {
+				switch ending {
+				case "stop":
 					payload = complete
-				} else if ending == "error" {
-					payload += "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"fixture\"}}\n\n"
+				case "error":
+					payload += errorEvent
+				case "stop_reason_then_error":
+					payload = stoppedWithoutMessageStop + errorEvent
 				}
 				recorder := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(recorder)
@@ -71,8 +75,12 @@ func TestAnthropicCompatStatusOnlyEntryPoints(t *testing.T) {
 				var usage OpenAIUsage
 				var err error
 				require.NotPanics(t, func() { usage, err = handle(resp, c) })
-				if ending == "stop" {
+				if ending == "stop" || ending == "stop_reason_then_error" {
 					require.NoError(t, err)
+					require.Equal(t, http.StatusOK, recorder.Code)
+					require.Contains(t, recorder.Body.String(), "Hello")
+					require.NotContains(t, recorder.Body.String(), "overloaded_error")
+					require.NotContains(t, recorder.Body.String(), "server_error")
 				} else {
 					require.Error(t, err)
 					require.NotContains(t, recorder.Body.String(), `"type":"response.completed"`)
