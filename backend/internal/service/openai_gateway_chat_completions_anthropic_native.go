@@ -176,7 +176,7 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 	// 读间隔上限：上游挂住 SSE 时中止组装（缓冲路径尚未提交响应头，可回 502）。
 	streamInterval := anthropicNativeStreamInterval(s.cfg)
 	pump := newAnthropicNativeLinePump(scanner, streamInterval, s.cfg)
-	streamStatus := &anthropicCompatStream{body: resp.Body}
+	streamStatus := newAnthropicCompatStreamStatus(resp.Body, pump)
 	defer pump.stop()
 
 	logReadErr := func(err error) {
@@ -385,7 +385,7 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	// scanner.Scan() 永久阻塞（见 anthropic native pump 文件注释）。
 	streamInterval := anthropicNativeStreamInterval(s.cfg)
 	pump := newAnthropicNativeLinePump(scanner, streamInterval, s.cfg)
-	streamStatus := &anthropicCompatStream{body: resp.Body}
+	streamStatus := newAnthropicCompatStreamStatus(resp.Body, pump)
 	defer pump.stop()
 
 	logReadErr := func(err error) {

@@ -148,3 +148,37 @@ func TestAdminFullAccessKeepsIdentityAndJWTBoundary(t *testing.T) {
 		require.Equal(t, tc.status, w.Code, w.Body.String())
 	}
 }
+
+func TestScopedAdminKeyDiagnosticDeniedWithAllPermissions(t *testing.T) {
+	policy := adminaccess.Policy{FullAccess: false}
+	var scoped []string
+	for _, permission := range adminaccess.PermissionCatalog() {
+		if permission.Scope == "global" {
+			policy.GlobalPermissions = append(policy.GlobalPermissions, permission.ID)
+		} else {
+			scoped = append(scoped, permission.ID)
+		}
+	}
+	policy.Rules = []adminaccess.Rule{{Permissions: scoped, AllGroups: true, IncludeUngrouped: true, AccountTypes: []string{"apikey", "oauth", "setup-token"}}}
+	repo := &adminAuthKeyRepo{}
+	settings := service.NewSettingService(nil, nil)
+	settings.SetScopedAdminKeyRepository(repo)
+	key, _, err := settings.CreateScopedAdminKey(context.Background(), service.ScopedAdminKeyInput{Name: "all-restricted", Enabled: true, Policy: policy}, 9)
+	require.NoError(t, err)
+	users := service.NewUserService(&stubUserRepo{getByID: func(context.Context, int64) (*service.User, error) {
+		return &service.User{ID: 9, Role: service.RoleAdmin, Status: service.StatusActive}, nil
+	}}, nil, nil, nil)
+	r := gin.New()
+	r.Use(gin.HandlerFunc(NewAdminAuthMiddleware(nil, users, settings, nil)))
+	called := false
+	r.GET("/api/v1/admin/usage/:id/diagnostic", func(c *gin.Context) {
+		called = true
+		c.Status(204)
+	})
+	req := httptest.NewRequest("GET", "/api/v1/admin/usage/17/diagnostic", nil)
+	req.Header.Set("x-api-key", key)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, 403, w.Code)
+	require.False(t, called, "diagnostic storage handler must never be reached")
+}

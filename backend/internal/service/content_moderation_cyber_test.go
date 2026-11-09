@@ -260,14 +260,16 @@ func TestRecordCyberPolicyEvent_RuntimeSnapshotRefreshFailureKeepsStaleScope(t *
 		SettingKeyRiskControlEnabled:      "true",
 		SettingKeyContentModerationConfig: `{"all_groups":true,"model_filter":{"type":"include","models":["gpt-5"]}}`,
 	}}
-	svc := NewContentModerationService(settingRepo, repo, nil, nil, nil, nil, nil, nil)
+	// Exercise stale-cache behavior without constructor-owned background workers.
+	svc := runtimeCacheTestService(settingRepo, time.Hour)
+	svc.repo = repo
 
 	_, err := svc.loadRuntimeSnapshot(context.Background())
 	require.NoError(t, err)
 	current := svc.runtimeSnapshot.Load()
 	require.NotNil(t, current)
 	expired := *current
-	expired.loadedAt = time.Now().Add(-2 * time.Minute)
+	expired.loadedAt = time.Now().Add(-2 * time.Hour)
 	svc.runtimeSnapshot.Store(&expired)
 	settingRepo.failMultiple(errors.New("database unavailable"))
 

@@ -23,6 +23,26 @@ import (
 
 type gatewayForwardDrainHandler func(*GatewayService, *http.Response, *gin.Context, time.Time) (*ForwardResult, error)
 
+func TestGatewayForwardStreamDrain_ReleasesBoundedSSEQueue(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.SSEQueueMaxBytes = 7
+	cfg.Gateway.StreamDataIntervalTimeout = 1
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader("data: 1\ndata: 2\ndata: 3\n"))}
+	stream := newAnthropicCompatStream(cfg, c, resp, "test", "test")
+	defer stream.stop()
+
+	require.Equal(t, int64(7), stream.pump.queueBudget.limit)
+	for _, want := range []string{"data: 1", "data: 2", "data: 3"} {
+		line, err := stream.drain.nextOrClientGone(nil)
+		require.NoError(t, err)
+		require.Equal(t, want, line)
+	}
+	_, err := stream.drain.nextOrClientGone(nil)
+	require.ErrorIs(t, err, io.EOF)
+}
+
 func gatewayForwardDrainHandlers() map[string]gatewayForwardDrainHandler {
 	return map[string]gatewayForwardDrainHandler{
 		"responses": func(s *GatewayService, resp *http.Response, c *gin.Context, start time.Time) (*ForwardResult, error) {
@@ -558,4 +578,52 @@ func TestGatewayForwardStreamDrain_ErrorEventStopsDrain(t *testing.T) {
 			requireGatewayForwardDrainBodyStopped(t, body)
 		})
 	}
+}
+
+func TestGatewayForwardStreamDrain_ReleasesSSEQueueBudget(t *testing.T) {
+	const budget = 64
+	text := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n"
+	payload := gatewayForwardDrainStart + strings.Repeat(text, 64) + gatewayForwardDrainStop + gatewayForwardDrainDelta
+	require.Greater(t, len(payload), 20*budget)
+	for name, handle := range gatewayForwardDrainHandlers() {
+		for _, cancelClient := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cancel=%t", name, cancelClient), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if cancelClient {
+					cancel()
+				}
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/fixture", nil).WithContext(ctx)
+				cfg := &config.Config{Gateway: config.GatewayConfig{SSEQueueMaxBytes: budget, StreamDataIntervalTimeout: 1}}
+				resp := &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(payload))}
+				result, err := runGatewayForwardDrainHandler(t, handle, &GatewayService{cfg: cfg}, resp, c)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.Equal(t, 12, result.Usage.InputTokens)
+				require.Equal(t, 27, result.Usage.OutputTokens)
+				require.Equal(t, 15, result.Usage.CacheReadInputTokens)
+				require.Equal(t, 6, result.Usage.CacheCreationInputTokens)
+				require.Equal(t, cancelClient, result.ClientDisconnect)
+			})
+		}
+	}
+}
+
+func TestGatewayForwardStreamDrain_SlowConsumerReleasesSSEQueueBudget(t *testing.T) {
+	cfg := &config.Config{Gateway: config.GatewayConfig{SSEQueueMaxBytes: 7, StreamDataIntervalTimeout: 1}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/fixture", nil)
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Repeat("data: x\n", 64)))}
+	stream := newAnthropicCompatStream(cfg, c, resp, "test", "test")
+	defer stream.stop()
+	for i := 0; i < 64; i++ {
+		time.Sleep(time.Millisecond)
+		line, err := stream.drain.nextOrClientGone(nil)
+		require.NoError(t, err)
+		require.Equal(t, "data: x", line)
+	}
+	_, err := stream.drain.nextOrClientGone(nil)
+	require.ErrorIs(t, err, io.EOF)
+	require.Zero(t, stream.pump.queueBudget.used.Load(), "every queued byte must be released exactly once")
 }

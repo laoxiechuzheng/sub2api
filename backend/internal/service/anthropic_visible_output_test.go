@@ -377,3 +377,31 @@ func TestAnthropicVisibleOutput_SSEErrorsKeepTypedUpstreamClassification(t *test
 		})
 	}
 }
+
+func TestAnthropicVisibleOutput_UnterminatedLineFailsBeforeEOF(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	resp := &http.Response{Header: http.Header{}, Body: reader}
+	go func() {
+		_, _ = io.WriteString(writer, ": "+strings.Repeat("x", anthropicFirstVisibleOutputMaxBytes+64*1024))
+		// Keep the stream open to prove rejection happens during scanning.
+	}()
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		var failover *UpstreamFailoverError
+		require.ErrorAs(t, err, &failover)
+		require.Contains(t, string(failover.ResponseBody), "first_visible_output_buffer_overflow")
+		require.False(t, c.Writer.Written())
+	case <-time.After(3 * time.Second):
+		t.Fatal("first-visible-output guard waited for an upstream newline or EOF")
+	}
+}

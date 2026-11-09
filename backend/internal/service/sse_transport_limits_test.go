@@ -119,7 +119,7 @@ func TestGatewayStreamingUndelimitedEventFailsWithoutSuccessfulTerminal(t *testi
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	wire := "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n" + strings.Repeat(": malformed event\n", 5) + "\ndata: {\"type\":\"message_stop\"}\n\n"
+	wire := "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n" + "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"visible\"}}\n\n" + strings.Repeat(": malformed event\n", 5) + "\ndata: {\"type\":\"message_stop\"}\n\n"
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(wire))}
 	defer func() { _ = resp.Body.Close() }()
 	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
@@ -310,4 +310,21 @@ func TestImageStreamLimitDoesNotFinalizePendingTerminal(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestGatewayStreamingUndelimitedEventBeforeVisibleOutputFailsOver(t *testing.T) {
+	svc := newStreamingResponseTestGatewayService()
+	svc.cfg.Gateway.SSEEventMaxLines = 4
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	wire := "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n" + strings.Repeat(": malformed event\n", 5) + "\n"
+	resp := &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(wire))}
+	defer resp.Body.Close()
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	var failover *UpstreamFailoverError
+	require.ErrorAs(t, err, &failover)
+	require.Nil(t, result, "uncommitted attempts must not become a second bill after retry")
+	require.True(t, failover.SafeToFailoverAfterWrite)
+	require.Empty(t, rec.Body.String())
 }

@@ -121,7 +121,7 @@ func readRequestBodyWithBudget(req *http.Request) (requestBodyBuffer, error) {
 
 	enc := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding")))
 	if enc == "" || enc == "identity" {
-		captureJSONInbound(req, raw)
+		captureJSONInbound(req, raw.data)
 		return raw, nil
 	}
 
@@ -135,7 +135,7 @@ func readRequestBodyWithBudget(req *http.Request) (requestBodyBuffer, error) {
 	req.Header.Del("Content-Length")
 	req.ContentLength = int64(len(decoded.data))
 
-	captureJSONInbound(req, decoded)
+	captureJSONInbound(req, decoded.data)
 	return decoded, nil
 }
 

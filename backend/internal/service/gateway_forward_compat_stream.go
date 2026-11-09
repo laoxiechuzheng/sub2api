@@ -59,6 +59,12 @@ type anthropicCompatStreamFailure struct {
 	message string
 }
 
+// newAnthropicCompatStreamStatus observes protocol state. The caller owns its
+// scanner or pump lifecycle; only a full compat reader attaches a drain.
+func newAnthropicCompatStreamStatus(body io.Closer, pump *anthropicNativeLinePump) *anthropicCompatStream {
+	return &anthropicCompatStream{body: body, pump: pump}
+}
+
 // newAnthropicCompatStream 启动上游行泵；调用方 defer stop()。
 func newAnthropicCompatStream(cfg *config.Config, c *gin.Context, resp *http.Response, logPrefix, requestID string) *anthropicCompatStream {
 	scanner := bufio.NewScanner(resp.Body)
@@ -73,15 +79,12 @@ func newAnthropicCompatStream(cfg *config.Config, c *gin.Context, resp *http.Res
 		// 显式配置 0/负数继续保持禁用语义；nil 配置使用转发路径默认值。
 		interval = anthropicNativeStreamInterval(cfg)
 	}
-	drain := newGatewayForwardStreamDrain(scanner, resp.Body, interval)
-	stream := &anthropicCompatStream{
-		drain:       drain,
-		pump:        drain.pump,
-		body:        resp.Body,
-		maxLineSize: maxLineSize,
-		logPrefix:   logPrefix,
-		requestID:   requestID,
-	}
+	drain := newGatewayForwardStreamDrain(scanner, resp.Body, interval, cfg)
+	stream := newAnthropicCompatStreamStatus(resp.Body, drain.pump)
+	stream.drain = drain
+	stream.maxLineSize = maxLineSize
+	stream.logPrefix = logPrefix
+	stream.requestID = requestID
 	if c.Request != nil {
 		stream.clientGone = c.Request.Context().Done()
 	}
@@ -184,7 +187,9 @@ func (st *anthropicCompatStream) observe(event *apicompat.AnthropicStreamEvent, 
 		st.sawTerminal = true
 		// message_stop 是固定 usage 尾窗口的唯一协议事件起点；stop_reason
 		// 仅标记成功终态，不启动尾窗口。
-		st.drain.startTerminalTail()
+		if st.drain != nil {
+			st.drain.startTerminalTail()
+		}
 	case "message_delta":
 		if event.Delta != nil && event.Delta.StopReason != "" {
 			st.sawTerminal = true
@@ -193,7 +198,9 @@ func (st *anthropicCompatStream) observe(event *apicompat.AnthropicStreamEvent, 
 		st.upstreamErrPayload = payload
 		st.upstreamErrType = firstNonEmpty(gjson.Get(payload, "error.type").String(), "upstream_error")
 		st.upstreamErrMessage = firstNonEmpty(sanitizeUpstreamErrorMessage(gjson.Get(payload, "error.message").String()), "upstream stream error")
-		_ = st.drain.body.Close()
+		if st.body != nil {
+			_ = st.body.Close()
+		}
 		logger.L().Warn(st.logPrefix+" stream: upstream error event",
 			zap.String("request_id", st.requestID),
 			zap.String("error_type", st.upstreamErrType),

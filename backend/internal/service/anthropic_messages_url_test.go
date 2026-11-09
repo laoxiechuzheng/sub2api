@@ -49,10 +49,10 @@ func TestAnthropicMessagesURL_EntryPoints(t *testing.T) {
 			if tt.query != "" {
 				wantURL += "?" + tt.query
 			}
-			checkRequest := func(t *testing.T, req *http.Request) {
+			checkRequest := func(t *testing.T, req *http.Request, expectedURL string) {
 				t.Helper()
 				require.NotNil(t, req)
-				require.Equal(t, wantURL, req.URL.String())
+				require.Equal(t, expectedURL, req.URL.String())
 				require.Equal(t, http.MethodPost, req.Method)
 				require.Equal(t, "Bearer upstream-anthropic-key", getHeaderRaw(req.Header, "authorization"))
 				require.Empty(t, getHeaderRaw(req.Header, "x-api-key"))
@@ -63,13 +63,13 @@ func TestAnthropicMessagesURL_EntryPoints(t *testing.T) {
 			t.Run("forward", func(t *testing.T) {
 				req, wireBody, err := svc.buildUpstreamRequest(context.Background(), gatewayAnthropicBaseURLContext(t), account, body, "upstream-anthropic-key", "apikey", "claude-haiku-4-5", false, false)
 				require.NoError(t, err)
-				checkRequest(t, req)
+				checkRequest(t, req, wantURL)
 				require.JSONEq(t, string(body), string(wireBody))
 			})
 			t.Run("passthrough", func(t *testing.T) {
 				req, wireBody, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), gatewayAnthropicBaseURLContext(t), account, body, "upstream-anthropic-key")
 				require.NoError(t, err)
-				checkRequest(t, req)
+				checkRequest(t, req, wantURL)
 				require.JSONEq(t, string(body), string(wireBody))
 			})
 			t.Run("account test", func(t *testing.T) {
@@ -77,7 +77,8 @@ func TestAnthropicMessagesURL_EntryPoints(t *testing.T) {
 				testSvc := &AccountTestService{cfg: &config.Config{}, httpUpstream: upstream}
 				c, rec := newTestContext()
 				require.NoError(t, testSvc.testClaudeAccountConnection(c, account, "claude-haiku-4-5"))
-				checkRequest(t, upstream.lastReq)
+				// API-key connection tests deliberately use native Messages without beta.
+				checkRequest(t, upstream.lastReq, baseURL+"/v1/messages")
 				require.Equal(t, "claude-haiku-4-5", gjson.GetBytes(upstream.lastBody, "model").String())
 				require.Contains(t, rec.Body.String(), `"success":true`)
 			})

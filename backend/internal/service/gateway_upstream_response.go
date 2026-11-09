@@ -773,7 +773,6 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	var firstVisibleOutputScanGuard atomic.Bool
 	firstVisibleOutputScanGuard.Store(true)
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Split(anthropicFirstVisibleOutputScanLines(&firstVisibleOutputScanGuard))
 	// 设置更大的buffer以处理长行
 	maxLineSize := defaultMaxLineSize
 	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
@@ -781,7 +780,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	}
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
-	scanner.Split(newBoundedSSESplit(s.cfg, maxLineSize, nil))
+	scanner.Split(newBoundedSSESplit(s.cfg, maxLineSize, anthropicFirstVisibleOutputScanLines(&firstVisibleOutputScanGuard)))
 
 	type scanEvent struct {
 		line      string

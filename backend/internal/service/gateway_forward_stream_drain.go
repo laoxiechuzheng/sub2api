@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"io"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 // Anthropic 通常在 message_stop 前通过 message_delta 报告 usage，但兼容上游
@@ -21,9 +23,9 @@ type gatewayForwardStreamDrain struct {
 	tailTimer    *time.Timer
 }
 
-func newGatewayForwardStreamDrain(scanner *bufio.Scanner, body io.ReadCloser, interval time.Duration) *gatewayForwardStreamDrain {
+func newGatewayForwardStreamDrain(scanner *bufio.Scanner, body io.ReadCloser, interval time.Duration, cfg *config.Config) *gatewayForwardStreamDrain {
 	return &gatewayForwardStreamDrain{
-		pump: newAnthropicNativeLinePump(scanner, interval),
+		pump: newAnthropicNativeLinePump(scanner, interval, cfg),
 		body: body,
 	}
 }
@@ -64,11 +66,11 @@ func (d *gatewayForwardStreamDrain) nextOrClientGone(clientGone <-chan struct{})
 		if !ok {
 			return "", io.EOF
 		}
+		line, err := d.pump.deliver(ev, ok)
 		if d.tailTimer != nil && !time.Now().Before(d.tailDeadline) {
 			return "", io.EOF
 		}
-		d.pump.resetTimer()
-		return ev.line, ev.err
+		return line, err
 	default:
 	}
 
@@ -78,11 +80,11 @@ func (d *gatewayForwardStreamDrain) nextOrClientGone(clientGone <-chan struct{})
 			return "", io.EOF
 		}
 		// 如果事件与 terminal 定时器同时就绪，固定期限仍然优先。
+		line, err := d.pump.deliver(ev, ok)
 		if d.tailTimer != nil && !time.Now().Before(d.tailDeadline) {
 			return "", io.EOF
 		}
-		d.pump.resetTimer()
-		return ev.line, ev.err
+		return line, err
 	case <-tailCh:
 		return "", io.EOF
 	case <-idleCh:
@@ -92,8 +94,7 @@ func (d *gatewayForwardStreamDrain) nextOrClientGone(clientGone <-chan struct{})
 			if !ok {
 				return "", io.EOF
 			}
-			d.pump.resetTimer()
-			return ev.line, ev.err
+			return d.pump.deliver(ev, ok)
 		default:
 			return "", errAnthropicNativeStreamIdle
 		}
@@ -110,6 +111,9 @@ func (d *gatewayForwardStreamDrain) stop() {
 	if d.body != nil {
 		_ = d.body.Close() // 先解除正在进行的 Scan 阻塞，再等行泵退出。
 	}
-	for range d.pump.events {
+	for ev := range d.pump.events {
+		if d.pump.queueBudget != nil {
+			d.pump.queueBudget.release(len(ev.line))
+		}
 	}
 }

@@ -16,6 +16,9 @@ func TestToolCatalogRouteAndSchemaBoundaries(t *testing.T) {
 				t.Fatalf("duplicate or invalid tool name: %q", spec.Name)
 			}
 			names[spec.Name] = true
+			if strings.Contains(spec.Path, "diagnostic") || strings.Contains(spec.Path, "composite-routes") {
+				t.Fatalf("sensitive custom route exposed in MCP catalog: %q", spec.Path)
+			}
 			if spec.Description == "" || !slices.Contains([]string{"GET", "POST", "PUT", "DELETE"}, spec.Method) {
 				t.Fatal("tool must have a description and supported method")
 			}

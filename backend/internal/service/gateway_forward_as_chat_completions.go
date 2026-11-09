@@ -250,7 +250,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 
 	var finalResp *apicompat.AnthropicResponse
 	var usage ClaudeUsage
-	streamStatus := &anthropicCompatStream{body: resp.Body}
+	streamStatus := newAnthropicCompatStreamStatus(resp.Body, nil)
 
 	for scanner.Scan() {
 		line := scanner.Text()
