@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -626,4 +627,43 @@ func TestGatewayForwardStreamDrain_SlowConsumerReleasesSSEQueueBudget(t *testing
 	_, err := stream.drain.nextOrClientGone(nil)
 	require.ErrorIs(t, err, io.EOF)
 	require.Zero(t, stream.pump.queueBudget.used.Load(), "every queued byte must be released exactly once")
+}
+
+func TestGatewayForwardStreamDrain_IdleBoundaryReleasesQueuedEvent(t *testing.T) {
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	for i := 0; i < 16; i++ {
+		idle := make(chan time.Time)
+		timer := time.NewTimer(time.Hour)
+		timer.C = idle
+		pump := &anthropicNativeLinePump{
+			events: make(chan anthropicNativeLineEvent, 1), done: make(chan struct{}),
+			timer: timer, interval: time.Hour, queueBudget: newSSEQueueBudget(nil),
+		}
+		drain := &gatewayForwardStreamDrain{pump: pump}
+		ready := make(chan struct{})
+		done := make(chan anthropicNativeLineEvent, 1)
+		go func() {
+			close(ready)
+			line, err := drain.nextOrClientGone(nil)
+			done <- anthropicNativeLineEvent{line: line, err: err}
+		}()
+		<-ready
+		runtime.Gosched()
+		// Wake the idle arm, then queue data before the reader is scheduled.
+		// With one P the receiver's initial nonblocking read has already run.
+		idle <- time.Now()
+		require.True(t, pump.queueBudget.acquire(7, pump.done))
+		pump.events <- anthropicNativeLineEvent{line: "data: x"}
+		event := <-done
+		if errors.Is(event.err, errAnthropicNativeStreamIdle) {
+			// A preemption before enqueue is a real idle timeout. The same
+			// queued event must remain readable and release its budget once.
+			event.line, event.err = drain.nextOrClientGone(nil)
+		}
+		require.NoError(t, event.err)
+		require.Equal(t, "data: x", event.line)
+		require.Zero(t, pump.queueBudget.used.Load())
+		timer.Stop()
+	}
 }
