@@ -31,6 +31,7 @@ var anthropicCompatDisconnectDrainInterval = 180 * time.Second
 type anthropicCompatStream struct {
 	drain       *gatewayForwardStreamDrain
 	pump        *anthropicNativeLinePump
+	body        io.Closer
 	maxLineSize int
 	logPrefix   string
 	requestID   string
@@ -66,6 +67,7 @@ func newAnthropicCompatStream(cfg *config.Config, c *gin.Context, resp *http.Res
 		maxLineSize = cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	scanner.Split(newBoundedSSESplit(cfg, maxLineSize, nil))
 	interval := 180 * time.Second
 	if cfg != nil {
 		// 显式配置 0/负数继续保持禁用语义；nil 配置使用转发路径默认值。
@@ -75,6 +77,7 @@ func newAnthropicCompatStream(cfg *config.Config, c *gin.Context, resp *http.Res
 	stream := &anthropicCompatStream{
 		drain:       drain,
 		pump:        drain.pump,
+		body:        resp.Body,
 		maxLineSize: maxLineSize,
 		logPrefix:   logPrefix,
 		requestID:   requestID,

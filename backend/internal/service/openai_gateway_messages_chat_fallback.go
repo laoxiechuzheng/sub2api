@@ -74,7 +74,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		return nil, fmt.Errorf("convert anthropic to chat completions: %w", err)
 	}
 
-	if err := validateGPT61SolCompatRequest(body, upstreamModel); err != nil {
+	if err := validateGPT61CompatRequest(body, upstreamModel); err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
