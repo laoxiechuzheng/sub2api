@@ -320,7 +320,7 @@ func TestGatewayStreamingUndelimitedEventBeforeVisibleOutputFailsOver(t *testing
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	wire := "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n" + strings.Repeat(": malformed event\n", 5) + "\n"
 	resp := &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(wire))}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
 	var failover *UpstreamFailoverError
 	require.ErrorAs(t, err, &failover)

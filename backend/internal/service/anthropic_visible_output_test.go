@@ -380,8 +380,8 @@ func TestAnthropicVisibleOutput_SSEErrorsKeepTypedUpstreamClassification(t *test
 
 func TestAnthropicVisibleOutput_UnterminatedLineFailsBeforeEOF(t *testing.T) {
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
