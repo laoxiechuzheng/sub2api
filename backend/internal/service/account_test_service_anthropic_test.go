@@ -71,7 +71,7 @@ func TestAccountTestService_AnthropicAPIKeyUsesNativeRequest(t *testing.T) {
 		{"passthrough enabled", true, "", "claude-haiku-5-5", nil, "https://api.anthropic.com/v1/messages", "claude-haiku-5-5"},
 		{"passthrough disabled", false, "", "claude-haiku-5-5", nil, "https://api.anthropic.com/v1/messages", "claude-haiku-5-5"},
 		{"custom base and wildcard mapping", false, "https://relay.example/anthropic/", "client-haiku", map[string]any{"client-*": "claude-haiku-5-5"}, "https://relay.example/anthropic/v1/messages", "claude-haiku-5-5"},
-		{"default model", true, "", "", nil, "https://api.anthropic.com/v1/messages", "claude-sonnet-4-5-20250929"},
+		{"default model", true, "", "", nil, "https://api.anthropic.com/v1/messages", claude.DefaultTestModel},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -166,7 +166,9 @@ func TestAccountTestService_AnthropicAPIKeyPreservesUpstreamFailures(t *testing.
 // change to the existing OAuth/SetupToken request observable byte for byte.
 func TestAccountTestService_AnthropicOAuthRequestRemainsByteIdentical(t *testing.T) {
 	originalReader := rand.Reader
-	claude.SetCLIVersionResolver(func() string { return "2.1.258" })
+	// The runtime resolver rejects values below the upstream built-in minimum.
+	const frozenCLIVersion = claude.CLICurrentVersion
+	claude.SetCLIVersionResolver(func() string { return frozenCLIVersion })
 	t.Cleanup(func() {
 		rand.Reader = originalReader
 		uuid.SetRand(nil)
@@ -192,7 +194,7 @@ func TestAccountTestService_AnthropicOAuthRequestRemainsByteIdentical(t *testing
 				"Content-Type": {"application/json"}, "Anthropic-Version": {"2023-06-01"},
 				"Authorization":  {"Bearer test-oauth-token"},
 				"Anthropic-Beta": {"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"},
-				"User-Agent":     {"claude-cli/2.1.258 (external, cli)"}, "X-App": {"cli"},
+				"User-Agent":     {"claude-cli/" + frozenCLIVersion + " (external, cli)"}, "X-App": {"cli"},
 				"X-Stainless-Lang": {"js"}, "X-Stainless-Package-Version": {"0.94.0"},
 				"X-Stainless-Os": {"Linux"}, "X-Stainless-Arch": {"arm64"}, "X-Stainless-Runtime": {"node"},
 				"X-Stainless-Runtime-Version": {"v24.3.0"}, "X-Stainless-Retry-Count": {"0"}, "X-Stainless-Timeout": {"600"},

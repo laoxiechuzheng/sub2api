@@ -129,8 +129,8 @@ func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
 	})
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 
-	// upstream_request_id, session_id, native_compaction_v2, the three composite route columns, created_at.
-	idx := len(prepared.args) - 7
+	// upstream_request_id, session_id, native_compaction_v2, the three composite route columns, the two OpenAI cache TTL columns, created_at.
+	idx := len(prepared.args) - 9
 	arg, ok := prepared.args[idx].(sql.NullString)
 	require.True(t, ok, "upstream_request_id arg should be sql.NullString, got %T", prepared.args[idx])
 	require.True(t, arg.Valid)

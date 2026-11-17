@@ -21,19 +21,24 @@ func TestPrepareUsageLogInsertPersistsCompositeRouteAttribution(t *testing.T) {
 	prepared := prepareUsageLogInsert(&service.UsageLog{
 		RequestID: "client:route", Model: "gpt-6.1-sol", CreatedAt: time.Now(),
 		CompositeRouteID: &routeID, CompositeRouteKind: &kind, CompositeFallbackChain: &chain,
+		CacheCreation30mTokens: 9, CacheCreation12hTokens: 2390,
 	})
 
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 	n := len(prepared.args)
-	require.Equal(t, []string{"bigint", "text", "text", "timestamptz"}, usageLogInsertArgTypes[n-4:])
-	require.Equal(t, sql.NullInt64{Int64: 42, Valid: true}, prepared.args[n-4])
-	require.Equal(t, sql.NullString{String: kind, Valid: true}, prepared.args[n-3])
-	require.Equal(t, sql.NullString{String: chain, Valid: true}, prepared.args[n-2])
+	require.Equal(t, []string{"bigint", "text", "text", "integer", "integer", "timestamptz"}, usageLogInsertArgTypes[n-6:])
+	require.Equal(t, sql.NullInt64{Int64: 42, Valid: true}, prepared.args[n-6])
+	require.Equal(t, sql.NullString{String: kind, Valid: true}, prepared.args[n-5])
+	require.Equal(t, sql.NullString{String: chain, Valid: true}, prepared.args[n-4])
+	require.Equal(t, 9, prepared.args[n-3])
+	require.Equal(t, 2390, prepared.args[n-2])
 
 	plain := prepareUsageLogInsert(&service.UsageLog{RequestID: "client:plain", Model: "gpt-5", CreatedAt: time.Now()})
-	require.Equal(t, sql.NullInt64{}, plain.args[n-4])
-	require.Equal(t, sql.NullString{}, plain.args[n-3])
-	require.Equal(t, sql.NullString{}, plain.args[n-2])
+	require.Equal(t, sql.NullInt64{}, plain.args[n-6])
+	require.Equal(t, sql.NullString{}, plain.args[n-5])
+	require.Equal(t, sql.NullString{}, plain.args[n-4])
+	require.Equal(t, 0, plain.args[n-3])
+	require.Equal(t, 0, plain.args[n-2])
 }
 
 func TestUsageLogInsertStatementsListCompositeRouteColumns(t *testing.T) {

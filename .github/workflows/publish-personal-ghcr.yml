@@ -6,7 +6,7 @@ on:
       release_version:
         description: Image tag to publish
         required: true
-        default: 0.2.20-custom-20261109
+        default: 0.2.22-custom-20261117
         type: string
   push:
     branches:
