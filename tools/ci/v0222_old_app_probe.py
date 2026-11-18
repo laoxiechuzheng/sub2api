@@ -256,11 +256,21 @@ class Probe:
     def query(self, statement, database=None):
         return json.loads(self.sql(statement, database))
 
-    def identity(self, name):
+    def identity(self, name, *, a_diagnostic=None):
         fields = self.docker('inspect', '--format',
             '{{.Id}}|{{.State.StartedAt}}|{{.RestartCount}}|{{.State.Status}}|{{.State.Pid}}', name).split('|')
-        require(len(fields) == 5 and fields[3] == 'running' and fields[2] == '0' and
-                fields[4].isdigit() and int(fields[4]) > 0, 'service stopped/restarted')
+        reason = None
+        if len(fields) != 5:
+            reason = 'identity_shape_invalid'
+        elif fields[3] != 'running':
+            reason = 'identity_not_running'
+        elif fields[2] != '0':
+            reason = 'identity_restart_count'
+        elif not (fields[4].isdigit() and int(fields[4]) > 0):
+            reason = 'identity_pid_invalid'
+        if a_diagnostic is not None and reason is not None:
+            a_diagnostic['reason'] = reason
+        require(reason is None, 'service stopped/restarted')
         return fields
 
     def assert_app_identity(self, name, image):
@@ -298,14 +308,22 @@ class Probe:
             time.sleep(0.25)
         raise ValueError('condition deadline at ' + self.stage)
 
-    def endpoint(self, name, timeout=15):
+    def endpoint(self, name, timeout=15, *, a_setup_diagnostic=None):
         require(name in self.containers and re.fullmatch(r'[0-9a-f]{64}', self.network_id or ''),
                 'unregistered container or network')
         require(timeout > 0, 'endpoint deadline exceeded')
         started = time.monotonic()
         containers = json.loads(self.docker('inspect', name, timeout=timeout))
-        remaining = timeout - (time.monotonic() - started)
+        elapsed = time.monotonic() - started
+        remaining = timeout - elapsed
+        if a_setup_diagnostic is not None:
+            a_setup_diagnostic['checkpoint'] = 'setup_container_inspect'
+            if remaining <= 0:
+                a_setup_diagnostic.update(reason='endpoint_budget_before_network_inspect',
+                                          endpoint_elapsed_ms=int(min(60, max(0, elapsed)) * 1000))
         require(remaining > 0, 'endpoint deadline exceeded')
+        if a_setup_diagnostic is not None:
+            a_setup_diagnostic['checkpoint'] = 'setup_network_inspect'
         networks = json.loads(self.docker('network', 'inspect', self.network_id, timeout=remaining))
         require(len(containers) == len(networks) == 1, 'ambiguous container/network inspect')
         container, network = containers[0], networks[0]
@@ -345,8 +363,10 @@ class Probe:
         return {'container_name': name, 'container_id': cid, 'network_id': self.network_id,
                 'endpoint_id': endpoint['EndpointID'], 'ipv4': str(address)}
 
-    def http(self, app, path, *, token=None, body=None, method=None):
-        address = self.endpoint(app)['ipv4']
+    def http(self, app, path, *, token=None, body=None, method=None, a_setup_diagnostic=None):
+        address = self.endpoint(app, a_setup_diagnostic=a_setup_diagnostic)['ipv4']
+        if a_setup_diagnostic is not None:
+            a_setup_diagnostic['checkpoint'] = 'setup_http'
         headers = {'User-Agent': 'v0222-isolated-ci'}
         if token:
             headers['Authorization'] = 'Bearer ' + token
@@ -362,13 +382,31 @@ class Probe:
             return error.code, b'', ''
 
     def normal(self, app, version):
+        diagnostic = None
+        if self.stage == 'A-new-normal-bootstrap':
+            # 只记录固定枚举与有界计数；绝不复制异常、inspect 或 HTTP 原文。
+            diagnostic = {'checkpoint': 'normal_wait', 'first_health': 'not_observed',
+                          'sample_attempts': 0, 'reason': 'unexpected'}
+
         def sample():
-            self.identity(app)
+            first_sample = diagnostic is not None and diagnostic['sample_attempts'] == 0
+            if diagnostic is not None:
+                diagnostic['sample_attempts'] = min(255, diagnostic['sample_attempts'] + 1)
+                diagnostic['checkpoint'] = 'identity_inspect'
+            self.identity(app, a_diagnostic=diagnostic)
             try:
+                if diagnostic is not None:
+                    diagnostic['checkpoint'] = 'health'
                 status, health, _ = self.http(app, '/health')
+                if diagnostic is not None and first_sample:
+                    diagnostic['first_health'] = 'http_200' if status == 200 else 'http_non_200'
                 if status != 200:
                     return None
-                setup_status, setup, _ = self.http(app, '/setup/status')
+                if diagnostic is not None:
+                    diagnostic['checkpoint'] = 'setup_endpoint'
+                setup_status, setup, _ = self.http(app, '/setup/status', a_setup_diagnostic=diagnostic)
+                if diagnostic is not None:
+                    diagnostic['checkpoint'] = 'remaining_normal_checks'
                 public_status, public, _ = self.http(app, '/api/v1/settings/public')
                 profile_status, _, _ = self.http(app, '/api/v1/user/profile')
                 index_status, index, _ = self.http(app, '/')
@@ -385,8 +423,15 @@ class Probe:
                 check_normal(value, version)
                 return value
             except (urllib.error.URLError, TimeoutError, ConnectionError):
+                if diagnostic is not None and first_sample and diagnostic['first_health'] == 'not_observed':
+                    diagnostic['first_health'] = 'transport_error'
                 return None
-        return self.wait(sample)
+        try:
+            return self.wait(sample)
+        except Exception:
+            if diagnostic is not None:
+                self.receipt['a_normal_diagnostic'] = diagnostic
+            raise
 
     def token(self):
         # 精确匹配旧/新 resolvedTokenVersion；仅合成 secret，token 从不写制品/argv/log。

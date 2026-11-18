@@ -1241,6 +1241,108 @@ class OwnedNetworkProbeTests(unittest.TestCase):
             return json.dumps([self.network])
         raise AssertionError(arguments)
 
+    def a_normal_failure(self, health_result, next_identity, error, *, setup_inspect_delay=0, error_type=ValueError):
+        # 只替换 Docker CLI、HTTP 和时钟，A 内走真实 app/normal/identity/endpoint/http。
+        app = self.probe.prefix + '-new'
+        self.container['Name'] = '/' + app
+        self.container['UnrelatedFixtureField'] = 'SYNTHETIC_INSPECT_PRIVATE'
+        self.network['Containers'][self.cid]['Name'] = app
+        self.probe.data_proofs[str(self.probe.data)] = 'd' * 64
+        self.probe.stage = 'A-new-normal-bootstrap'
+        self.probe.receipt['stages']['A']['executed'] = True
+        initial_count = self.probe.command_counts.get(self.probe.stage, 0)
+        initial_receipts = len(self.probe.receipt['commands'])
+        clock, commands, requests = [0.0], [], []
+        identities = iter((f'{self.cid}|SYNTHETIC_STARTED_AT|0|running|14729', next_identity))
+
+        def docker(argv, **kwargs):
+            if argv[:3] == ['docker', 'run', '-d'] and argv[argv.index('--name') + 1] == app:
+                commands.append('run')
+                text = self.cid
+            elif argv[:3] == ['docker', 'inspect', '--format'] and argv[-1] == app:
+                commands.append('identity')
+                text = next(identities)
+            elif argv == ['docker', 'inspect', app]:
+                if 'container_inspect' in commands:
+                    clock[0] += setup_inspect_delay
+                commands.append('container_inspect')
+                text = json.dumps([self.container])
+            elif argv == ['docker', 'network', 'inspect', self.probe.network_id]:
+                commands.append('network_inspect')
+                text = json.dumps([self.network])
+            else:
+                self.fail('unexpected subprocess in A fixture')
+            return subprocess.CompletedProcess(argv, 0, text.encode(), b'')
+
+        opener, response = MagicMock(), MagicMock()
+        response.status = health_result
+        response.read.return_value = b'SYNTHETIC_HTTP_PRIVATE'
+        response.headers = {'Content-Type': 'SYNTHETIC_HEADER_PRIVATE'}
+        opener.open.return_value.__enter__.return_value = response
+
+        def open_http(request, **kwargs):
+            requests.append(request.selector)
+            if isinstance(health_result, Exception):
+                raise health_result
+            return opener.open.return_value
+
+        opener.open.side_effect = open_http
+        with patch.object(oldboot.subprocess, 'run', side_effect=docker), \
+                patch.object(oldboot.urllib.request, 'build_opener', return_value=opener), \
+                patch.object(oldboot.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(oldboot.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+                self.assertRaisesRegex(error_type, error) as failure:
+            self.probe.app('fixture:image', app)
+            self.probe.normal(app, 'fixture-version')
+        self.assertIs(type(failure.exception), error_type)
+        self.probe.persist()
+        raw = (self.probe.artifacts / 'old-app-probe.json').read_text(encoding='utf-8')
+        receipt = json.loads(raw)
+        self.assertEqual({'executed': True, 'verified': False}, receipt['stages']['A'])
+        self.assertFalse(receipt['verified'])
+        self.assertNotIn('native_failure', receipt)
+        self.assertEqual(len(commands), self.probe.command_counts[self.probe.stage] - initial_count)
+        self.assertEqual([(['docker', 'run'], 0), (['docker', 'network', 'inspect'], 0)],
+                         [(item['command'][:3 if item['command'][1] == 'network' else 2], item['exit_code'])
+                          for item in receipt['commands'][initial_receipts:]])
+        for private in ('SYNTHETIC_', '14729', self.container['NetworkSettings']['Networks'][self.probe.network]['IPAddress']):
+            self.assertNotIn(private, raw)
+        return receipt.get('a_normal_diagnostic'), commands, requests
+
+    def test_a_diagnostics_distinguish_health_not_ready_then_app_stopped(self):
+        for health_result, first_health, identity_tail, reason in (
+                (503, 'http_non_200', '0|SYNTHETIC_UNKNOWN_STATUS|0', 'identity_not_running'),
+                (TimeoutError('SYNTHETIC_TRANSPORT_PRIVATE'), 'transport_error', '0', 'identity_shape_invalid'),
+                (503, 'http_non_200', '1|running|14729', 'identity_restart_count'),
+                (503, 'http_non_200', '0|running|0', 'identity_pid_invalid')):
+            with self.subTest(reason=reason):
+                diagnostic, commands, requests = self.a_normal_failure(
+                    health_result, f'{self.cid}|SYNTHETIC_STARTED_AT|{identity_tail}',
+                    '^service stopped/restarted$')
+                self.assertEqual(['run', 'identity', 'container_inspect', 'network_inspect', 'identity'], commands)
+                self.assertEqual(['/health'], requests)
+                self.assertEqual({'checkpoint': 'identity_inspect', 'first_health': first_health,
+                                  'sample_attempts': 2, 'reason': reason}, diagnostic)
+
+    def test_a_diagnostics_distinguish_setup_inspect_budget(self):
+        for delay, bounded_ms in ((15, 15000), (120, 60000)):
+            with self.subTest(delay=delay):
+                diagnostic, commands, requests = self.a_normal_failure(
+                    200, None, '^endpoint deadline exceeded$', setup_inspect_delay=delay)
+                self.assertEqual(['run', 'identity', 'container_inspect', 'network_inspect', 'container_inspect'], commands)
+                self.assertEqual(['/health'], requests)
+                self.assertEqual({'checkpoint': 'setup_container_inspect', 'first_health': 'http_200',
+                                  'sample_attempts': 1, 'reason': 'endpoint_budget_before_network_inspect',
+                                  'endpoint_elapsed_ms': bounded_ms}, diagnostic)
+
+    def test_a_diagnostics_unknown_error_stays_fail_closed(self):
+        diagnostic, commands, requests = self.a_normal_failure(
+            RuntimeError('SYNTHETIC_EXCEPTION_PRIVATE'), None, '^SYNTHETIC_EXCEPTION_PRIVATE$', error_type=RuntimeError)
+        self.assertEqual(['run', 'identity', 'container_inspect', 'network_inspect'], commands)
+        self.assertEqual(['/health'], requests)
+        self.assertEqual({'checkpoint': 'health', 'first_health': 'not_observed',
+                          'sample_attempts': 1, 'reason': 'unexpected'}, diagnostic)
+
     def test_owned_endpoint_accepts_no_published_ports_and_exact_private_ip(self):
         with patch.object(self.probe, 'docker', side_effect=self.docker_inspect):
             endpoint = self.probe.endpoint(self.probe.redis)
