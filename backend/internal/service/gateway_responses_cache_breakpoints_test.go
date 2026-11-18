@@ -17,7 +17,7 @@ import (
 func responsesBodyToAnthropicForCacheTest(t *testing.T, raw string) []byte {
 	t.Helper()
 
-	adapted, _, err := adaptResponsesClientToolsForAnthropic([]byte(raw))
+	adapted, _, err := adaptResponsesClientToolsForAnthropic([]byte(raw), false)
 	require.NoError(t, err)
 
 	var req apicompat.ResponsesRequest

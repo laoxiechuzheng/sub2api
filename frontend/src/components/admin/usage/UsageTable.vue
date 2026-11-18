@@ -581,6 +581,16 @@
                 }).toFixed(8) }}
               </span>
             </div>
+            <!-- 本次消耗的上游积分（Kiro）及按账号单价估算的成本 -->
+            <div v-if="(tooltipData?.upstream_credits ?? 0) > 0" class="flex items-center justify-between gap-6" data-testid="usage-upstream-credits">
+              <span class="text-gray-400">{{ t('usage.upstreamCredits') }}</span>
+              <span class="font-semibold text-amber-300">
+                {{ formatUpstreamCredits(tooltipData?.upstream_credits) }}
+                <span v-if="(tooltipData?.upstream_credit_cost ?? 0) > 0" class="font-medium text-gray-300">
+                  ({{ t('usage.upstreamCreditCostApprox', { amount: '$' + (tooltipData?.upstream_credit_cost ?? 0).toFixed(6) }) }})
+                </span>
+              </span>
+            </div>
           </template>
         </div>
         <div class="absolute right-full top-1/2 h-0 w-0 -translate-y-1/2 border-b-[6px] border-r-[6px] border-t-[6px] border-b-transparent border-r-gray-900 border-t-transparent dark:border-r-gray-800"></div>
@@ -686,6 +696,10 @@ const tableColumns = computed<Column[]>(() => {
 const appStore = useAppStore()
 const copiedRequestId = ref<string | null>(null)
 const showAccountBilling = props.showAccountBilling
+
+// 上游积分最多保留 2 位小数（Kiro credits 有小数）。
+const formatUpstreamCredits = (value: number | null | undefined): string =>
+  Number(value ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })
 const showUpstreamEndpoint = props.showUpstreamEndpoint
 const ipGeoBatchLoading = ref(false)
 

@@ -156,7 +156,7 @@ func TestOpenCodeGoUsageStateEmbeddedInListAndDetail(t *testing.T) {
 	adminService.getAccountResult = account
 	usageService := service.NewOpenCodeGoUsageService(repo, nil, nil)
 	t.Cleanup(usageService.Stop)
-	handler := NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	handler.SetOpenCodeGoUsageService(usageService)
 	router := gin.New()
 	router.GET("/accounts", handler.List)

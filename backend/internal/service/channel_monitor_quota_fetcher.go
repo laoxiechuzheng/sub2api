@@ -264,11 +264,23 @@ func (f *ChannelMonitorQuotaFetcher) fetchUsage(ctx context.Context, account *Ac
 		PlanLevel: usage.SubscriptionTier,
 		Tiers:     usageQuotaTiers(usage),
 		FetchedAt: now,
+		// Kiro 超刷开启的账号额度池打满后仍可继续请求，监控不能凭 tier 判耗尽。
+		OverageEnabled: usage.KiroOveragesEnabled,
+		QuotaExhausted: kiroRateLimitedUntilMonthlyReset(account, now),
 	}
 	if snapshot.PlanLevel == "" {
 		snapshot.PlanLevel = usage.SubscriptionTierRaw
 	}
 	return snapshot
+}
+
+// kiroRateLimitedUntilMonthlyReset 判断 Kiro 账号是否因额度用尽被限流到月度重置
+// （markKiroQuotaExhaustedRateLimited 打的标记）。429 退避只有几分钟，不会命中。
+func kiroRateLimitedUntilMonthlyReset(account *Account, now time.Time) bool {
+	if account == nil || account.Platform != domain.PlatformKiro || account.RateLimitResetAt == nil {
+		return false
+	}
+	return !account.RateLimitResetAt.Before(nextKiroMonthlyResetUTC(now))
 }
 
 // usageQuotaTiers 把 UsageInfo 的各平台窗口归一为 tier 列表（无数据的窗口跳过）。
@@ -289,6 +301,17 @@ func usageQuotaTiers(usage *UsageInfo) []domain.MonitorQuotaTier {
 	// Grok requests/tokens 两个日窗口 + 月度计费窗口。
 	appendQuotaWindowTier(&tiers, "daily", "requests", usage.GrokRequestQuota)
 	appendQuotaWindowTier(&tiers, "daily", "tokens", usage.GrokTokenQuota)
+	// Kiro credits 主额度 + Bonus（免费试用）额度，二者共用 KiroResetAt。
+	appendKiroCreditTier(&tiers, "credits", usage.KiroCredit, usage.KiroResetAt)
+	appendKiroCreditTier(&tiers, "bonus", usage.KiroBonus, usage.KiroResetAt)
+	// Kiro bonuses[]（兑换/活动赠送）与 Welcome bonus 同 Label "bonus"，
+	// 同 Window "total"，参与"全部打满才算耗尽"的组级判定。
+	for _, bonus := range usage.KiroBonuses {
+		if bonus == nil {
+			continue
+		}
+		appendKiroPoolTier(&tiers, "bonus", bonus.CurrentUsage, bonus.UsageLimit, bonus.PercentageUsed, bonus.ExpiryDate, usage.KiroResetAt)
+	}
 	// Antigravity per-model 总量额度，Label = 模型名（按名排序保证输出稳定）。
 	for _, model := range sortedQuotaModelNames(usage.AntigravityQuota) {
 		q := usage.AntigravityQuota[model]
@@ -323,6 +346,49 @@ func appendProgressTier(tiers *[]domain.MonitorQuotaTier, window, label string, 
 	if p.LimitRequests > 0 {
 		tier.Used = float64(p.UsedRequests)
 		tier.Limit = float64(p.LimitRequests)
+	}
+	*tiers = append(*tiers, tier)
+}
+
+// appendKiroCreditTier 把 Kiro 的 credits / bonus 进度归一为 tier。
+// UsageLimit <= 0 表示上游没给额度上限（字段缺失或不限量），使用率无从计算，跳过；
+// PercentageUsed 上游已按 0-100 给出（percentageOrZero），与其余 tier 同量纲。
+func appendKiroCreditTier(tiers *[]domain.MonitorQuotaTier, label string, p *KiroCreditProgress, resetAt *time.Time) {
+	if p == nil || p.UsageLimit <= 0 {
+		return
+	}
+	tier := domain.MonitorQuotaTier{
+		Window:      "total",
+		Label:       label,
+		UsedPercent: p.PercentageUsed,
+		Used:        p.CurrentUsage,
+		Limit:       p.UsageLimit,
+	}
+	if resetAt != nil {
+		tier.ResetAt = resetAt.UTC().Format(time.RFC3339)
+	}
+	*tiers = append(*tiers, tier)
+}
+
+// appendKiroPoolTier 把 Kiro bonuses[]（兑换/活动赠送）这类额度池归一为 tier；
+// ResetAt 优先用该池自身的到期时间，缺失时回退 KiroResetAt。limit <= 0 跳过。
+func appendKiroPoolTier(tiers *[]domain.MonitorQuotaTier, label string, used, limit, percent float64, expiry, fallbackResetAt *time.Time) {
+	if limit <= 0 {
+		return
+	}
+	resetAt := expiry
+	if resetAt == nil {
+		resetAt = fallbackResetAt
+	}
+	tier := domain.MonitorQuotaTier{
+		Window:      "total",
+		Label:       label,
+		UsedPercent: percent,
+		Used:        used,
+		Limit:       limit,
+	}
+	if resetAt != nil {
+		tier.ResetAt = resetAt.UTC().Format(time.RFC3339)
 	}
 	*tiers = append(*tiers, tier)
 }

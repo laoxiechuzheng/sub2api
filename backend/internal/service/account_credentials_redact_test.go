@@ -88,3 +88,18 @@ func TestIsSensitiveCredentialKey(t *testing.T) {
 	require.False(t, IsSensitiveCredentialKey(""))
 	require.False(t, IsSensitiveCredentialKey("model_mapping"))
 }
+
+func TestMergePreservingSensitiveCreds_PreservesKiroSecrets(t *testing.T) {
+	keys := []string{"client_secret", "clientSecret", "kiro_api_key", "kiroApiKey", "accessToken", "refreshToken"}
+	existing := map[string]any{"region": "us-east-1"}
+	for _, k := range keys {
+		require.True(t, IsSensitiveCredentialKey(k), k)
+		existing[k] = k + "-old"
+	}
+	out := MergePreservingSensitiveCreds(existing, map[string]any{"region": "eu-west-1", "client_secret": "cs-new"})
+	require.Equal(t, "eu-west-1", out["region"])
+	require.Equal(t, "cs-new", out["client_secret"], "incoming 显式提供应覆盖")
+	for _, k := range keys[1:] {
+		require.Equal(t, k+"-old", out[k], k)
+	}
+}

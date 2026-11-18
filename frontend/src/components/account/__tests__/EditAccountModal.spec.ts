@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import {
   BUILTIN_PLATFORM_CATALOG,
   resetPlatformCatalog,
@@ -222,6 +222,45 @@ function buildVertexAccount() {
   } as any
 }
 
+function buildKiroOAuthAccount() {
+  return {
+    id: 3,
+    name: 'Kiro OAuth',
+    notes: '',
+    platform: 'kiro',
+    type: 'oauth',
+    credentials: {
+      model_mapping: {
+        'kiro-model': 'kiro-model'
+      }
+    },
+    extra: {
+      kiro_credit_unit_price_usd: 0.071
+    },
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
+function buildKiroAPIKeyAccount(baseUrl?: string) {
+  return {
+    ...buildAccount(),
+    id: baseUrl ? 8 : 7,
+    name: baseUrl ? 'Kiro Relay API Key' : 'Kiro Direct API Key',
+    platform: 'kiro',
+    credentials: {
+      api_key: baseUrl ? 'sk-relay' : 'ksk_direct',
+      ...(baseUrl ? { base_url: baseUrl } : {})
+    }
+  } as any
+}
+
 function buildAntigravityAccount(projectId = 'configured-project') {
   return {
     id: 3,
@@ -335,6 +374,74 @@ describe('EditAccountModal', () => {
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('uses the Kiro direct API-key placeholder when base_url is absent', () => {
+    const wrapper = mountModal(buildKiroAPIKeyAccount())
+
+    expect(wrapper.find('input[type="password"][placeholder="ksk_..."]').exists()).toBe(true)
+    expect(wrapper.find('input[placeholder="https://your-relay.example.com"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="edit-kiro-api-region-select"]').exists()).toBe(true)
+  })
+
+  it('keeps the relay API-key placeholder when a Kiro base_url is present', () => {
+    const wrapper = mountModal(buildKiroAPIKeyAccount('https://relay.example/v1'))
+
+    expect(wrapper.find('input[type="password"][placeholder="sk-..."]').exists()).toBe(true)
+    expect(wrapper.find('input[placeholder="https://your-relay.example.com"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="edit-kiro-api-region-select"]').exists()).toBe(false)
+  })
+
+  it('loads and submits Kiro direct API-key API region', async () => {
+    const account = buildKiroAPIKeyAccount()
+    account.credentials.api_region = 'eu-central-1'
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const regionSelect = wrapper.get<HTMLSelectElement>('[data-testid="edit-kiro-api-region-select"]')
+    expect(regionSelect.element.value).toBe('eu-central-1')
+    expect(regionSelect.find('option[value="eu-central-1"]').exists()).toBe(true)
+    expect(regionSelect.find('option[value="eu-central-1"]').text()).toBe('eu-central-1')
+
+    await regionSelect.setValue('eu-west-1')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials?.api_region).toBe('eu-west-1')
+  })
+
+  it('ignores SSO region when rehydrating the Kiro direct API-key API region', () => {
+    const account = buildKiroAPIKeyAccount()
+    account.credentials.region = 'eu-central-1'
+
+    const wrapper = mountModal(account)
+
+    // region 是 Identity Center 区域,不得作为推理区域回退。
+    expect((wrapper.get('[data-testid="edit-kiro-api-region-select"]').element as HTMLSelectElement).value)
+      .toBe('us-east-1')
+  })
+
+  it('hides the API region field for Kiro OAuth accounts and never promotes their SSO region', async () => {
+    const account = buildKiroOAuthAccount()
+    account.credentials.region = 'eu-central-1'
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="edit-kiro-api-region-select"]').exists()).toBe(false)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials).not.toHaveProperty('api_region')
+    expect(credentials?.region).toBe('eu-central-1')
+  })
 
   it.each(['apikey', 'oauth'])('can opt a passthrough %s account into model filtering without changing groups', async (type) => {
     const account = buildAccount()
@@ -1717,6 +1824,25 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_oauth_responses_websockets_v2_enabled).toBe(true)
   })
 
+  it('hydrates and submits Kiro OAuth credit unit price in extra', async () => {
+    const account = buildKiroOAuthAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const input = wrapper.get<HTMLInputElement>('[data-testid="kiro-credit-unit-price-usd"]')
+
+    expect(input.element.value).toBe('0.071')
+
+    await input.setValue('0.08')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.kiro_credit_unit_price_usd).toBe(0.08)
+  })
+
   it('allows saving apikey account when backend redacted api_key but credentials_status reports it exists', async () => {
     // 新前端 + 新后端：响应已脱敏，credentials 里没有 api_key，credentials_status.has_api_key=true
     const account = buildAccount()
@@ -2007,6 +2133,89 @@ describe('EditAccountModal OpenAI 自动使用重置卡', () => {
     await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('0')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     expect(updateAccountMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+describe('EditAccountModal Kiro model restriction', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+  })
+
+  afterEach(() => vi.clearAllMocks())
+
+  it('shows a derived Kiro pair as a whitelist entry and keeps a custom row', async () => {
+    const account = buildKiroOAuthAccount()
+    account.credentials.model_mapping = {
+      'claude-opus-4-8': 'claude-opus-4.8',
+      'codex-auto-review': 'gpt-5.6-luna'
+    }
+    const wrapper = mountModal(account)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="model-whitelist-value"]').text()).toBe('claude-opus-4-8')
+    expect(wrapper.findAll('[data-testid="oauth-model-mapping-from"]')).toHaveLength(0)
+
+    const mappingToggle = wrapper.findAll('button').find((button) => button.text() === 'admin.accounts.modelMapping')
+    expect(mappingToggle).toBeTruthy()
+    await mappingToggle!.trigger('click')
+
+    const froms = wrapper.findAll<HTMLInputElement>('[data-testid="oauth-model-mapping-from"]')
+    expect(froms).toHaveLength(1)
+    expect(froms[0].element.value).toBe('codex-auto-review')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="oauth-model-mapping-to"]').element.value).toBe('gpt-5.6-luna')
+    wrapper.unmount()
+  })
+
+  it('leaves an empty Kiro mapping on the default-list hint', async () => {
+    const account = buildKiroOAuthAccount()
+    delete account.credentials.model_mapping
+    const wrapper = mountModal(account)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="model-whitelist-value"]').text()).toBe('')
+    expect(wrapper.find('[data-testid="kiro-default-mapping-hint"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid="oauth-model-mapping-from"]')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('round-trips a direct Kiro account without rewriting custom targets', async () => {
+    const account = buildKiroOAuthAccount()
+    account.credentials.model_mapping = {
+      'claude-opus-4-8': 'claude-opus-4.8',
+      'codex-auto-review': 'gpt-5.6-luna'
+    }
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    await flushPromises()
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    // 直连 Kiro 白名单的标准存法是恒等（转发时 MapModel 仍折成 claude-opus-4.8），
+    // 老的点号行保存后改写成恒等；自定义映射原样保留。
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
+      'claude-opus-4-8': 'claude-opus-4-8',
+      'codex-auto-review': 'gpt-5.6-luna'
+    })
+    wrapper.unmount()
+  })
+
+  it('keeps a relay identity mapping instead of rewriting it to a dotted Kiro id', async () => {
+    const account = buildKiroAPIKeyAccount('https://relay.example/v1')
+    account.credentials.model_mapping = { 'claude-opus-4-8': 'claude-opus-4-8' }
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    await flushPromises()
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
+      'claude-opus-4-8': 'claude-opus-4-8'
+    })
     wrapper.unmount()
   })
 })

@@ -24,6 +24,60 @@ func requireObjectInputSchema(t *testing.T, schema json.RawMessage) map[string]j
 	return parsed
 }
 
+func TestResponsesToAnthropic_CustomToolCallContinuation(t *testing.T) {
+	req := &ResponsesRequest{
+		KiroCompat: true,
+		Model:      "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"custom_tool_call","call_id":"toolu_exec","name":"exec","input":"python --version"},
+			{"type":"custom_tool_call_output","call_id":"toolu_exec","output":"Python 3.12.0"}
+		]`),
+	}
+
+	out, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+	require.Len(t, out.Messages, 2)
+
+	require.Equal(t, "assistant", out.Messages[0].Role)
+	var toolUse []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(out.Messages[0].Content, &toolUse))
+	require.Len(t, toolUse, 1)
+	assert.Equal(t, "tool_use", toolUse[0].Type)
+	assert.Equal(t, "toolu_exec", toolUse[0].ID)
+	assert.Equal(t, "exec", toolUse[0].Name)
+	assert.JSONEq(t, `{"input":"python --version"}`, string(toolUse[0].Input))
+
+	require.Equal(t, "user", out.Messages[1].Role)
+	var toolResult []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(out.Messages[1].Content, &toolResult))
+	require.Len(t, toolResult, 1)
+	assert.Equal(t, "tool_result", toolResult[0].Type)
+	assert.Equal(t, "toolu_exec", toolResult[0].ToolUseID)
+	assert.JSONEq(t, `"Python 3.12.0"`, string(toolResult[0].Content))
+}
+
+func TestResponsesToAnthropic_CustomToolCallOutputAllowsArrayOutput(t *testing.T) {
+	req := &ResponsesRequest{
+		KiroCompat: true,
+		Model:      "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"custom_tool_call","call_id":"call_exec","name":"exec","input":"pwd"},
+			{"type":"custom_tool_call_output","call_id":"call_exec","output":[{"type":"text","text":"/tmp"}]}
+		]`),
+	}
+
+	out, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+	require.Len(t, out.Messages, 2)
+
+	var toolResult []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(out.Messages[1].Content, &toolResult))
+	require.Len(t, toolResult, 1)
+	assert.Equal(t, "tool_result", toolResult[0].Type)
+	assert.Equal(t, "call_exec", toolResult[0].ToolUseID)
+	assert.JSONEq(t, `[{"type":"text","text":"/tmp"}]`, string(toolResult[0].Content))
+}
+
 func TestResponsesToAnthropic_CustomGrammarToolUsesObjectSchema(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-5.2",
@@ -53,6 +107,12 @@ func TestResponsesToAnthropic_CustomGrammarToolUsesObjectSchema(t *testing.T) {
 	assert.Equal(t, "Apply a patch to the working tree", tool.Description)
 	requireObjectInputSchema(t, tool.InputSchema)
 	assert.JSONEq(t, `{"type":"object","properties":{}}`, string(tool.InputSchema))
+
+	// Kiro 兼容模式才使用自由文本 custom 工具的默认 schema。
+	req.KiroCompat = true
+	kiroReq, err := ResponsesToAnthropicRequest(&req)
+	require.NoError(t, err)
+	assert.JSONEq(t, customToolInputSchema, string(kiroReq.Tools[0].InputSchema))
 
 	wire, err := json.Marshal(tool)
 	require.NoError(t, err)

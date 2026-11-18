@@ -50,7 +50,9 @@ func getWebSearchManager() *websearch.Manager {
 // shouldEmulateWebSearch checks whether a request should be intercepted.
 //
 // Judgment chain: manager exists → only web_search tool → global enabled → account/channel enabled.
-// Account-level mode: "enabled" (force on), "disabled" (force off), "default" (follow channel).
+// Account-level mode (Anthropic / OpenAI API Key only): "enabled" (force on), "disabled" (force off),
+// "default" (follow channel). Every other account, including Kiro direct accounts, reports
+// "default" from GetWebSearchEmulationMode and therefore follows the channel switch.
 func (s *GatewayService) shouldEmulateWebSearch(ctx context.Context, account *Account, groupID *int64, body []byte) bool {
 	return shouldEmulateWebSearchFor(ctx, s.settingService, s.channelService, account, groupID, body)
 }
@@ -137,6 +139,25 @@ func extractSearchQueryFromBody(body []byte) string {
 	return extractWebSearchTextFromContent(lastMsg.Get("content"))
 }
 
+// ExtractWebSearchQueryFromBody returns the client-authored search query before
+// gateway-side prompt rules modify the forwarded request.
+func ExtractWebSearchQueryFromBody(body []byte) string {
+	return extractSearchQueryFromBody(body)
+}
+
+func webSearchQueryForParsedRequest(parsed *ParsedRequest) string {
+	if parsed == nil {
+		return ""
+	}
+	if parsed.OriginalUserQuery != nil {
+		return *parsed.OriginalUserQuery
+	}
+	if parsed.Body == nil {
+		return ""
+	}
+	return extractSearchQueryFromBody(parsed.Body.Bytes())
+}
+
 func extractWebSearchTextFromContent(content gjson.Result) string {
 	if content.Type == gjson.String {
 		return content.String()
@@ -159,6 +180,8 @@ func extractWebSearchTextFromContent(content gjson.Result) string {
 
 // handleWebSearchEmulation intercepts a web-search-only request,
 // calls a third-party search API, and constructs an Anthropic-format response.
+// The query is the client-authored text (before gateway prompt rules), and the
+// usage carries estimated input tokens plus Kiro cache emulation.
 func (s *GatewayService) handleWebSearchEmulation(
 	ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest,
 ) (*ForwardResult, error) {
@@ -166,17 +189,43 @@ func (s *GatewayService) handleWebSearchEmulation(
 	if parsed.OnUpstreamAccepted != nil {
 		parsed.OnUpstreamAccepted()
 	}
-	return writeEmulatedWebSearch(ctx, c, account, parsed.Body.Bytes(), parsed.Model, parsed.Stream)
+	model := parsed.Model
+	if model == "" {
+		model = defaultWebSearchModel
+	}
+	body := parsed.Body.Bytes()
+	if !isKiroWebSearchAccount(account) {
+		// 非 Kiro 账号保持原行为：usage 为空、旧 SSE 形态。
+		return runEmulatedWebSearch(ctx, c, account, extractSearchQueryFromBody(body), model, parsed.Stream, 0, nil)
+	}
+	inputTokens := estimateKiroInputTokens(ctx, s.kiroMeteringAlgorithm(ctx), body)
+	cacheUsage := s.buildKiroCacheEmulationUsage(ctx, account, parsed.Group, body, model, inputTokens)
+	return runEmulatedWebSearch(ctx, c, account, webSearchQueryForParsedRequest(parsed), model, parsed.Stream, inputTokens, cacheUsage)
 }
 
 // writeEmulatedWebSearch runs the search for the last user message and writes
-// an Anthropic Messages response (SSE when stream is true).
+// an Anthropic Messages response (SSE when stream is true). Used by the OpenAI
+// gateway's /v1/messages path, which has no parsed request or Kiro cache usage.
 func writeEmulatedWebSearch(
 	ctx context.Context, c *gin.Context, account *Account, body []byte, model string, stream bool,
 ) (*ForwardResult, error) {
+	if model == "" {
+		model = defaultWebSearchModel
+	}
+	return runEmulatedWebSearch(ctx, c, account, extractSearchQueryFromBody(body), model, stream, 0, nil)
+}
+
+// isKiroWebSearchAccount 判断是否启用 Kiro 专属的仿真响应形态（usage 估算、input_json_delta 等）。
+func isKiroWebSearchAccount(account *Account) bool {
+	return account != nil && account.Platform == PlatformKiro
+}
+
+func runEmulatedWebSearch(
+	ctx context.Context, c *gin.Context, account *Account, query, model string, stream bool,
+	inputTokens int, cacheUsage *kiroCacheEmulationUsage,
+) (*ForwardResult, error) {
 	startTime := time.Now()
 
-	query := extractSearchQueryFromBody(body)
 	if query == "" {
 		return nil, fmt.Errorf("web search emulation: no query found in messages")
 	}
@@ -199,14 +248,10 @@ func writeEmulatedWebSearch(
 	slog.Info("web search emulation: search completed",
 		"provider", providerName, "results_count", len(resp.Results))
 
-	if model == "" {
-		model = defaultWebSearchModel
-	}
-
 	if stream {
-		return writeWebSearchStreamResponse(c, query, resp, model, startTime)
+		return writeWebSearchStreamResponse(c, query, resp, model, startTime, inputTokens, cacheUsage, isKiroWebSearchAccount(account))
 	}
-	return writeWebSearchNonStreamResponse(c, query, resp, model, startTime)
+	return writeWebSearchNonStreamResponse(c, query, resp, model, startTime, inputTokens, cacheUsage, isKiroWebSearchAccount(account))
 }
 
 func doWebSearch(ctx context.Context, account *Account, query string) (*websearch.SearchResponse, string, error) {
@@ -235,20 +280,36 @@ func resolveAccountProxyURL(account *Account) string {
 // --- SSE streaming response ---
 
 func writeWebSearchStreamResponse(
-	c *gin.Context, query string, resp *websearch.SearchResponse, model string, startTime time.Time,
+	c *gin.Context, query string, resp *websearch.SearchResponse, model string, startTime time.Time, inputTokens int, cacheUsage *kiroCacheEmulationUsage, kiroShape bool,
 ) (*ForwardResult, error) {
 	msgID := webSearchMsgIDPrefix + uuid.New().String()
 	toolUseID := webSearchToolUseIDPrefix + uuid.New().String()[:16]
 	textSummary := buildTextSummary(query, resp.Results)
+	usage := buildWebSearchClaudeUsage(inputTokens, len(textSummary)/tokenEstimateDivisor, cacheUsage)
 
 	setSSEHeaders(c)
 	w := c.Writer
 	for _, fn := range []func() error{
-		func() error { return writeSSEMessageStart(w, msgID, model) },
-		func() error { return writeSSEServerToolUse(w, toolUseID, query, 0) },
-		func() error { return writeSSEToolResult(w, toolUseID, resp.Results, 1) },
+		func() error {
+			if !kiroShape {
+				return writeSSEMessageStartLegacy(w, msgID, model)
+			}
+			return writeSSEMessageStart(w, msgID, model, usage)
+		},
+		func() error {
+			if !kiroShape {
+				return writeSSEServerToolUseLegacy(w, toolUseID, query, 0)
+			}
+			return writeSSEServerToolUse(w, toolUseID, query, 0)
+		},
+		func() error {
+			if !kiroShape {
+				return writeSSEToolResultBlocks(w, toolUseID, buildSearchResultBlocksLegacy(resp.Results), 1)
+			}
+			return writeSSEToolResult(w, toolUseID, resp.Results, 1)
+		},
 		func() error { return writeSSETextBlock(w, textSummary, 2) },
-		func() error { return writeSSEMessageEnd(w, len(textSummary)/tokenEstimateDivisor) },
+		func() error { return writeSSEMessageEnd(w, usage.OutputTokens) },
 	} {
 		if err := fn(); err != nil {
 			slog.Warn("web search emulation: SSE write failed, stopping", "error", err)
@@ -257,7 +318,10 @@ func writeWebSearchStreamResponse(
 	}
 	w.Flush()
 
-	return &ForwardResult{Model: model, Duration: time.Since(startTime), Usage: ClaudeUsage{}}, nil
+	if !kiroShape {
+		usage = ClaudeUsage{}
+	}
+	return &ForwardResult{Model: model, Duration: time.Since(startTime), Usage: usage}, nil
 }
 
 func setSSEHeaders(c *gin.Context) {
@@ -268,7 +332,24 @@ func setSSEHeaders(c *gin.Context) {
 	c.Writer.WriteHeader(http.StatusOK)
 }
 
-func writeSSEMessageStart(w http.ResponseWriter, msgID, model string) error {
+func writeSSEMessageStart(w http.ResponseWriter, msgID, model string, usage ClaudeUsage) error {
+	evt := map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id": msgID, "type": "message", "role": "assistant", "model": model,
+			"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
+			"usage": map[string]int{
+				"input_tokens":                usage.InputTokens,
+				"output_tokens":               0,
+				"cache_creation_input_tokens": usage.CacheCreationInputTokens,
+				"cache_read_input_tokens":     usage.CacheReadInputTokens,
+			},
+		},
+	}
+	return flushSSEJSON(w, "message_start", evt)
+}
+
+func writeSSEMessageStartLegacy(w http.ResponseWriter, msgID, model string) error {
 	evt := map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
@@ -280,7 +361,7 @@ func writeSSEMessageStart(w http.ResponseWriter, msgID, model string) error {
 	return flushSSEJSON(w, "message_start", evt)
 }
 
-func writeSSEServerToolUse(w http.ResponseWriter, toolUseID, query string, index int) error {
+func writeSSEServerToolUseLegacy(w http.ResponseWriter, toolUseID, query string, index int) error {
 	start := map[string]any{
 		"type": "content_block_start", "index": index,
 		"content_block": map[string]any{
@@ -294,12 +375,44 @@ func writeSSEServerToolUse(w http.ResponseWriter, toolUseID, query string, index
 	return flushSSEJSON(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": index})
 }
 
+func writeSSEServerToolUse(w http.ResponseWriter, toolUseID, query string, index int) error {
+	start := map[string]any{
+		"type": "content_block_start", "index": index,
+		"content_block": map[string]any{
+			"type": "server_tool_use", "id": toolUseID,
+			"name": toolNameWebSearch, "input": map[string]any{},
+		},
+	}
+	if err := flushSSEJSON(w, "content_block_start", start); err != nil {
+		return err
+	}
+	inputJSON, err := json.Marshal(map[string]string{"query": query})
+	if err != nil {
+		return fmt.Errorf("marshal query: %w", err)
+	}
+	if err := flushSSEJSON(w, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": map[string]any{
+			"type":         "input_json_delta",
+			"partial_json": string(inputJSON),
+		},
+	}); err != nil {
+		return err
+	}
+	return flushSSEJSON(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": index})
+}
+
 func writeSSEToolResult(w http.ResponseWriter, toolUseID string, results []websearch.SearchResult, index int) error {
+	return writeSSEToolResultBlocks(w, toolUseID, buildSearchResultBlocks(results), index)
+}
+
+func writeSSEToolResultBlocks(w http.ResponseWriter, toolUseID string, blocks any, index int) error {
 	start := map[string]any{
 		"type": "content_block_start", "index": index,
 		"content_block": map[string]any{
 			"type": "web_search_tool_result", "tool_use_id": toolUseID,
-			"content": buildSearchResultBlocks(results),
+			"content": blocks,
 		},
 	}
 	if err := flushSSEJSON(w, "content_block_start", start); err != nil {
@@ -353,11 +466,22 @@ func flushSSEJSON(w http.ResponseWriter, event string, data any) error {
 // --- Non-streaming JSON response ---
 
 func writeWebSearchNonStreamResponse(
-	c *gin.Context, query string, resp *websearch.SearchResponse, model string, startTime time.Time,
+	c *gin.Context, query string, resp *websearch.SearchResponse, model string, startTime time.Time, inputTokens int, cacheUsage *kiroCacheEmulationUsage, kiroShape bool,
 ) (*ForwardResult, error) {
 	msgID := webSearchMsgIDPrefix + uuid.New().String()
 	toolUseID := webSearchToolUseIDPrefix + uuid.New().String()[:16]
 	textSummary := buildTextSummary(query, resp.Results)
+	usage := buildWebSearchClaudeUsage(inputTokens, len(textSummary)/tokenEstimateDivisor, cacheUsage)
+	usageMap := map[string]int{"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens}
+	if cacheUsage != nil {
+		usageMap["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+		usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	}
+
+	var searchBlocks any = buildSearchResultBlocks(resp.Results)
+	if !kiroShape {
+		searchBlocks = buildSearchResultBlocksLegacy(resp.Results)
+	}
 
 	msg := map[string]any{
 		"id": msgID, "type": "message", "role": "assistant", "model": model,
@@ -368,12 +492,12 @@ func writeWebSearchNonStreamResponse(
 			},
 			map[string]any{
 				"type": "web_search_tool_result", "tool_use_id": toolUseID,
-				"content": buildSearchResultBlocks(resp.Results),
+				"content": searchBlocks,
 			},
 			map[string]any{"type": "text", "text": textSummary},
 		},
 		"stop_reason": "end_turn", "stop_sequence": nil,
-		"usage": map[string]int{"input_tokens": 0, "output_tokens": len(textSummary) / tokenEstimateDivisor},
+		"usage": usageMap,
 	}
 
 	body, err := json.Marshal(msg)
@@ -382,12 +506,28 @@ func writeWebSearchNonStreamResponse(
 	}
 	c.Data(http.StatusOK, "application/json", body)
 
-	return &ForwardResult{Model: model, Duration: time.Since(startTime), Usage: ClaudeUsage{}}, nil
+	if !kiroShape {
+		usage = ClaudeUsage{}
+	}
+	return &ForwardResult{Model: model, Duration: time.Since(startTime), Usage: usage}, nil
+}
+
+func buildWebSearchClaudeUsage(inputTokens, outputTokens int, cacheUsage *kiroCacheEmulationUsage) ClaudeUsage {
+	usage := ClaudeUsage{InputTokens: inputTokens, OutputTokens: outputTokens}
+	if cacheUsage == nil {
+		return usage
+	}
+	usage.InputTokens = cacheUsage.InputTokens
+	usage.CacheReadInputTokens = cacheUsage.CacheReadInputTokens
+	usage.CacheCreationInputTokens = cacheUsage.CacheCreationInputTokens
+	usage.CacheCreation5mTokens = cacheUsage.CacheCreation5mInputTokens
+	usage.CacheCreation1hTokens = cacheUsage.CacheCreation1hInputTokens
+	return usage
 }
 
 // --- Helpers ---
 
-func buildSearchResultBlocks(results []websearch.SearchResult) []map[string]string {
+func buildSearchResultBlocksLegacy(results []websearch.SearchResult) []map[string]string {
 	blocks := make([]map[string]string, 0, len(results))
 	for _, r := range results {
 		block := map[string]string{
@@ -397,6 +537,24 @@ func buildSearchResultBlocks(results []websearch.SearchResult) []map[string]stri
 		}
 		if r.Snippet != "" {
 			block["page_content"] = r.Snippet
+		}
+		if r.PageAge != "" {
+			block["page_age"] = r.PageAge
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
+}
+
+func buildSearchResultBlocks(results []websearch.SearchResult) []map[string]any {
+	blocks := make([]map[string]any, 0, len(results))
+	for _, r := range results {
+		block := map[string]any{
+			"type":              "web_search_result",
+			"url":               r.URL,
+			"title":             r.Title,
+			"encrypted_content": r.Snippet,
+			"page_age":          nil,
 		}
 		if r.PageAge != "" {
 			block["page_age"] = r.PageAge

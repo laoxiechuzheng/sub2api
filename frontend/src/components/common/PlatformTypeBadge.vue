@@ -30,8 +30,8 @@
         <span>{{ typeLabel }}</span>
       </span>
     </div>
-    <!-- Row 2: Plan type + Privacy mode (only if either exists) -->
-    <div v-if="planLabel || privacyBadge" class="inline-flex items-center overflow-hidden rounded-md">
+    <!-- Row 2: Plan type + Privacy mode + Overages -->
+    <div v-if="planLabel || privacyBadge || overagesBadge" class="inline-flex items-center overflow-hidden rounded-md">
       <span v-if="planLabel" :class="['inline-flex items-center gap-1 px-1.5 py-1', planBadgeClass]">
         <GrokFreeIcon
           v-if="isGrokFreePlan"
@@ -45,6 +45,14 @@
           aria-hidden="true"
         />
         <span>{{ planLabel }}</span>
+      </span>
+      <span
+        v-if="overagesBadge"
+        :class="['inline-flex items-center gap-1 px-1.5 py-1', overagesBadge.class]"
+        :title="overagesBadge.title"
+      >
+        <Icon name="sparkles" size="xs" />
+        <span>{{ overagesBadge.label }}</span>
       </span>
       <span
         v-if="privacyBadge"
@@ -81,6 +89,7 @@ interface Props {
   type: AccountType
   authMode?: string
   planType?: string
+  overagesEnabled?: boolean
   privacyMode?: string
   subscriptionExpiresAt?: string
 }
@@ -185,6 +194,9 @@ const platformClass = computed(() => {
   if (props.platform === 'antigravity') {
     return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
   }
+  if (props.platform === 'kiro') {
+    return 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
+  }
   if (props.platform === 'grok') {
     return 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'
   }
@@ -213,6 +225,9 @@ const typeClass = computed(() => {
   if (props.platform === 'antigravity') {
     return 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'
   }
+  if (props.platform === 'kiro') {
+    return 'bg-violet-100 text-violet-600 dark:bg-violet-900/30 dark:text-violet-300'
+  }
   if (props.platform === 'grok') {
     return 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300'
   }
@@ -229,6 +244,16 @@ const typeClass = computed(() => {
     return 'bg-rose-100 text-rose-600 dark:bg-rose-900/30 dark:text-rose-400'
   }
   return 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
+})
+
+// Kiro 超刷（overage）已开启时在套餐旁挂一枚琥珀色徽标。
+const overagesBadge = computed(() => {
+  if (props.platform !== 'kiro' || !props.overagesEnabled) return null
+  return {
+    label: t('admin.accounts.status.overageActive'),
+    title: t('admin.accounts.usageWindow.kiroOverage'),
+    class: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+  }
 })
 
 const planBadgeClass = computed(() => {

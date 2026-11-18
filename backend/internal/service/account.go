@@ -4,7 +4,9 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"reflect"
 	"slices"
@@ -54,6 +56,13 @@ type Account struct {
 
 	TempUnschedulableUntil  *time.Time
 	TempUnschedulableReason string
+
+	KiroQuotaState     string
+	KiroQuotaReason    string
+	KiroQuotaResetAt   *time.Time
+	KiroRuntimeState   string
+	KiroRuntimeReason  string
+	KiroRuntimeResetAt *time.Time
 
 	SessionWindowStart  *time.Time
 	SessionWindowEnd    *time.Time
@@ -275,6 +284,10 @@ func (a *Account) IsPrivacySet() bool {
 
 func (a *Account) IsGemini() bool {
 	return a.Platform == PlatformGemini
+}
+
+func (a *Account) IsKiro() bool {
+	return a.Platform == PlatformKiro
 }
 
 func (a *Account) IsGrok() bool {
@@ -684,9 +697,10 @@ func (a *Account) SharedSnapshotCurrent() bool {
 
 func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]string {
 	if a.Credentials == nil {
-		// Antigravity 平台使用默认映射
-		if a.Platform == domain.PlatformAntigravity {
-			return domain.DefaultAntigravityModelMapping
+		// 部分平台在未显式配置 model_mapping 时仍应使用默认映射，
+		// 以限制可调度/可转发的模型集合。
+		if defaults := defaultModelMappingForPlatform(a.Platform); defaults != nil {
+			return defaults
 		}
 		if a.Platform == domain.PlatformGrok {
 			return xai.DefaultModelMapping()
@@ -698,9 +712,8 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		if a.IsGeminiGoogleOne() {
 			return geminicli.GoogleOneModelMapping()
 		}
-		// Antigravity 平台使用默认映射
-		if a.Platform == domain.PlatformAntigravity {
-			return domain.DefaultAntigravityModelMapping
+		if defaults := defaultModelMappingForPlatform(a.Platform); defaults != nil {
+			return defaults
 		}
 		if a.Platform == domain.PlatformGrok {
 			return xai.DefaultModelMapping()
@@ -722,17 +735,28 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		return result
 	}
 
-	// Antigravity 平台使用默认映射
+	// Google One 为账号级判定（依赖 credentials），需先于平台级默认映射
 	if a.IsGeminiGoogleOne() {
 		return geminicli.GoogleOneModelMapping()
 	}
-	if a.Platform == domain.PlatformAntigravity {
-		return domain.DefaultAntigravityModelMapping
+	if defaults := defaultModelMappingForPlatform(a.Platform); defaults != nil {
+		return defaults
 	}
 	if a.Platform == domain.PlatformGrok {
 		return xai.DefaultModelMapping()
 	}
 	return nil
+}
+
+func defaultModelMappingForPlatform(platform string) map[string]string {
+	switch platform {
+	case domain.PlatformAntigravity:
+		return domain.DefaultAntigravityModelMapping
+	case domain.PlatformKiro:
+		return domain.DefaultKiroModelMapping
+	default:
+		return nil
+	}
 }
 
 func mapPtr(m map[string]any) uintptr {
@@ -954,8 +978,8 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 	return matchWildcardMappingResult(mapping, requestedModel)
 }
 
-// IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
-// 如果未配置 mapping，返回 true（允许所有模型）。
+// IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）。
+// 对带默认映射的平台（如 Antigravity/Kiro），未显式配置时也会先回退到默认映射。
 //
 // 例外：OpenAI OAuth 账号（Codex 上游）的空映射会排除明确属于其他厂商
 // 家族的模型（deepseek-*/glm-* 等）——转发阶段 normalizeOpenAIModelForUpstream
@@ -998,11 +1022,18 @@ func (a *Account) isModelMappingSupported(requestedModel string) bool {
 		return true
 	}
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
-	return normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized)
+	if normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized) {
+		return true
+	}
+	if isKiroDirectModeAccount(a) {
+		_, ok := resolveKiroClaudeAlias(mapping, requestedModel)
+		return ok
+	}
+	return false
 }
 
-// GetMappedModel 获取映射后的模型名（支持通配符，最长优先匹配）
-// 如果未配置 mapping，返回原始模型名
+// GetMappedModel 获取映射后的模型名（支持通配符，最长优先匹配）。
+// 对带默认映射的平台（如 Antigravity/Kiro），未显式配置时返回默认映射结果。
 func (a *Account) GetMappedModel(requestedModel string) string {
 	mappedModel, _ := a.ResolveMappedModel(requestedModel)
 	return mappedModel
@@ -1021,6 +1052,11 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
 	if normalized != requestedModel {
 		if mappedModel, matched := resolveRequestedModelInMapping(mapping, normalized); matched {
+			return mappedModel, true
+		}
+	}
+	if isKiroDirectModeAccount(a) {
+		if mappedModel, matched := resolveKiroClaudeAlias(mapping, requestedModel); matched {
 			return mappedModel, true
 		}
 	}
@@ -1104,6 +1140,9 @@ func (a *Account) GetBaseURL() string {
 	}
 	baseURL := a.GetCredential("base_url")
 	if baseURL == "" {
+		if a.Platform == PlatformKiro {
+			return ""
+		}
 		// TypeSafe keys must never fall back to the Anthropic host.
 		if a.Platform == PlatformTypeSafe {
 			return typesafe.DefaultBaseURL
@@ -2415,6 +2454,89 @@ func (a *Account) IsAnthropicAPIKeyPassthroughEnabled() bool {
 	}
 	enabled, ok := a.Extra["anthropic_passthrough"].(bool)
 	return ok && enabled
+}
+
+// CreditUnitPriceUSD returns the account-level USD price per upstream credit used
+// for display-only cost estimates (Kiro: extra.kiro_credit_unit_price_usd).
+// Unset, non-numeric or non-positive values yield 0.
+func (a *Account) CreditUnitPriceUSD() float64 {
+	if a == nil || a.Extra == nil {
+		return 0
+	}
+	var key string
+	switch a.Platform {
+	case PlatformKiro:
+		key = "kiro_credit_unit_price_usd"
+	default:
+		return 0
+	}
+	var value float64
+	switch v := a.Extra[key].(type) {
+	case float64:
+		value = v
+	case float32:
+		value = float64(v)
+	case int:
+		value = float64(v)
+	case int64:
+		value = float64(v)
+	case json.Number:
+		value, _ = v.Float64()
+	case string:
+		value, _ = strconv.ParseFloat(strings.TrimSpace(v), 64)
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
+		return 0
+	}
+	return value
+}
+
+// ValidateKiroCreditUnitPriceFromExtra rejects invalid account-level Kiro credit pricing.
+func ValidateKiroCreditUnitPriceFromExtra(extra map[string]any) error {
+	return validateCreditUnitPriceFromExtra(extra, "kiro_credit_unit_price_usd")
+}
+
+// validateCreditUnitPriceFromExtra checks extra[key] is a finite number >= 0 and
+// normalizes it to float64 in place; a missing or nil key is accepted.
+func validateCreditUnitPriceFromExtra(extra map[string]any, key string) error {
+	if extra == nil {
+		return nil
+	}
+	raw, ok := extra[key]
+	if !ok || raw == nil {
+		return nil
+	}
+
+	var value float64
+	switch v := raw.(type) {
+	case float64:
+		value = v
+	case float32:
+		value = float64(v)
+	case int:
+		value = float64(v)
+	case int64:
+		value = float64(v)
+	case json.Number:
+		parsed, err := v.Float64()
+		if err != nil {
+			return fmt.Errorf("%s must be a number", key)
+		}
+		value = parsed
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return fmt.Errorf("%s must be a number", key)
+		}
+		value = parsed
+	default:
+		return fmt.Errorf("%s must be a number", key)
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return fmt.Errorf("%s must be a finite number >= 0", key)
+	}
+	extra[key] = value
+	return nil
 }
 
 // WebSearch 模拟三态常量

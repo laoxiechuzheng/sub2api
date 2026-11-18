@@ -59,13 +59,16 @@ const (
 	providerGeminiPathTemplate = "/v1beta/models/%s:generateContent"
 
 	// MonitorProviderOpenAI 等 provider 字符串常量（也是 ent enum 的实际值）。
-	// 后 4 个 provider（antigravity/kimi/zhipu/deepseek）为配额模式引入：
-	// antigravity 无探活 adapter（仅配额），其余 3 个复用 OpenAI 兼容探活。
+	// 后 5 个 provider（antigravity/kiro/kimi/zhipu/deepseek）为配额模式引入：
+	// antigravity 与 kiro 无探活 adapter（仅配额），国产 3 个复用 OpenAI 兼容探活。
+	// kiro 走 AWS CodeWhisperer event-stream 协议，与 providerAdapters 假定的
+	// 「JSON POST + gjson 取文本」形态不兼容，故不注册探活。
 	MonitorProviderOpenAI      = "openai"
 	MonitorProviderAnthropic   = "anthropic"
 	MonitorProviderGemini      = "gemini"
 	MonitorProviderGrok        = "grok"
 	MonitorProviderAntigravity = "antigravity"
+	MonitorProviderKiro        = "kiro"
 	MonitorProviderKimi        = "kimi"
 	MonitorProviderZhipu       = "zhipu"
 	MonitorProviderDeepseek    = "deepseek"

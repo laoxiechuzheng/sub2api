@@ -46,7 +46,7 @@ func (s *GatewayService) ForwardAsResponses(
 	}
 
 	// 1. Lower Codex client-side tools to function tools understood by Anthropic.
-	adaptedBody, clientToolMapping, err := adaptResponsesClientToolsForAnthropic(body)
+	adaptedBody, clientToolMapping, err := adaptResponsesClientToolsForAnthropic(body, account.Platform == PlatformKiro)
 	if err != nil {
 		return nil, fmt.Errorf("adapt responses client tools: %w", err)
 	}
@@ -62,7 +62,11 @@ func (s *GatewayService) ForwardAsResponses(
 	// 3. Convert Responses → Anthropic
 	// Resolve the final upstream model before model-specific conversion.
 	mappedModel := originalModel
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
+	if account.Platform == PlatformKiro {
+		if next := account.GetMappedModel(originalModel); next != "" {
+			mappedModel = next
+		}
+	} else if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
 		mappedModel = account.GetMappedModel(originalModel)
 	}
 	if mappedModel == originalModel && account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
@@ -76,11 +80,13 @@ func (s *GatewayService) ForwardAsResponses(
 			mappedModel = normalized
 		}
 	}
-	if err := validateClaude55Request(body, mappedModel); err != nil {
+	if err := validateClaude55RequestForAccount(body, account, mappedModel); err != nil {
 		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
 	responsesReq.Model = mappedModel
+	responsesReq.KiroCompat = account.Platform == PlatformKiro
+	markKiroResponsesCompat(c, responsesReq.KiroCompat)
 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
 	if err != nil {
 		if isClaude55SignedThinkingModel(mappedModel) {
@@ -93,11 +99,42 @@ func (s *GatewayService) ForwardAsResponses(
 	anthropicReq.Stream = true
 	reqStream := true
 
+	reasoningEffort := ExtractResponsesReasoningEffortFromBody(body, mappedModel, originalModel)
+	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 mapping 完成之后。
+	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, mappedModel)
+
+	// 4b. Codex remote compaction v2：input 里带 compaction_trigger 的请求不是普通
+	// 轮次，而是"把前文压缩成摘要"。Anthropic 协议族没有原生 compact 端点，转换器
+	// 已把触发器降级成摘要指令（见 apicompat.CompactionSummaryPrompt），这里只需把
+	// 请求参数调成适合产出摘要的形态。
+	// compaction 仅对 Kiro 账号启用；其他账号保持基线行为（触发器项被转换器忽略）。
+	isCompact := account.Platform == PlatformKiro && apicompat.HasCompactionTrigger(&responsesReq)
+	if isCompact {
+		// 压缩专用模型映射：账号未配 compact_model_mapping 时沿用普通映射结果。
+		if next, matched := account.ResolveCompactMappedModel(originalModel); matched {
+			if trimmed := strings.TrimSpace(next); trimmed != "" {
+				mappedModel = trimmed
+			}
+		}
+		// 摘要轮次不允许调用工具。tools 必须保留：历史里的 tool_use 块引用了工具
+		// 定义，删掉会让上游校验失败；tool_choice=none 已足够抑制调用。
+		anthropicReq.ToolChoice = json.RawMessage(`{"type":"none"}`)
+		// 摘要不需要思考块，省 token 也避免 thinking 与 tool_choice 的组合限制。
+		anthropicReq.Thinking = nil
+		// Codex 的 compact 请求不带 max_output_tokens，会落到转换器的 8192 默认值；
+		// 对覆盖数十万 token 前文的结构化摘要偏紧，容易被截断。
+		if anthropicReq.MaxTokens < compactionMinMaxTokens {
+			anthropicReq.MaxTokens = compactionMinMaxTokens
+		}
+	}
+	anthropicReq.Model = mappedModel
+
 	logger.L().Debug("gateway forward_as_responses: model mapping applied",
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),
 		zap.String("mapped_model", mappedModel),
 		zap.Bool("client_stream", clientStream),
+		zap.Bool("compaction", isCompact),
 	)
 
 	// 5. Marshal Anthropic request body
@@ -110,9 +147,10 @@ func (s *GatewayService) ForwardAsResponses(
 	// OpenAI Responses 协议进来的请求永远不是 Claude Code 客户端，所以对 OAuth 账号
 	// 必须完整执行 /v1/messages 主路径上的伪装链路（system 重写 + normalize + metadata 注入），
 	// 否则会被 Anthropic 判为第三方应用并扣 extra usage。
-	// 见 applyClaudeCodeOAuthMimicryToBody 的 godoc。
+	// 见 applyClaudeCodeOAuthMimicryToBody 与 shouldMimicClaudeCodeForAccount 的 godoc
+	// （后者说明了 Kiro 为何必须排除）。
 	isClaudeCode := false
-	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
+	shouldMimicClaudeCode := shouldMimicClaudeCodeForAccount(account, isClaudeCode)
 
 	if shouldMimicClaudeCode {
 		anthropicBody = s.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, anthropicBody, anthropicReq.System, mappedModel)
@@ -124,54 +162,94 @@ func (s *GatewayService) ForwardAsResponses(
 	anthropicBody = applyResponsesAnthropicCacheBreakpoints(anthropicBody, mappedModel)
 	anthropicBody = enforceCacheControlLimit(anthropicBody)
 
-	// 8. Get access token
-	token, tokenType, err := s.GetAccessToken(ctx, account)
-	if err != nil {
-		return nil, fmt.Errorf("get access token: %w", err)
-	}
-
-	// 9. Get proxy URL
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-
-	// 10. Build and send the request, recovering a concurrent token rotation once.
-	var upstreamReq *http.Request
-	var forwardedBody []byte
-	var resp *http.Response
-	for retriedRotatedToken := false; ; {
-		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-		upstreamReq, forwardedBody, err = s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
-		releaseUpstreamCtx()
-		if err != nil {
-			return nil, fmt.Errorf("build upstream request: %w", err)
+	var (
+		token         string
+		tokenType     string
+		proxyURL      string
+		upstreamReq   *http.Request
+		forwardedBody []byte
+		resp          *http.Response
+	)
+	kiroDirect := isKiroDirectModeAccount(account)
+	// compactionRetry 只在 Kiro 压缩请求上设置：上游确认超限后截断工具输出重试一次。
+	var compactionRetry func() (*http.Response, error)
+	if kiroDirect {
+		var group *Group
+		if parsed != nil {
+			group = parsed.Group
 		}
-		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
-		if err != nil {
-			if resp != nil && resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-			return nil, s.handleUpstreamTransportError(ctx, c, account, err, OpsUpstreamErrorEvent{
-				UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
+		cachePlan := s.prepareKiroResponsesCacheEmulationUsage(ctx, account, group, body, mappedModel, estimateKiroInputTokens(ctx, s.kiroMeteringAlgorithm(ctx), anthropicBody))
+		resp, _, err = s.openKiroAnthropicStreamResponse(ctx, account, parsed, anthropicBody, mappedModel, originalModel, c.Request.Header, group, cachePlan)
+		if err == nil && isCompact {
+			compactionRetry = newKiroCompactionRetry(anthropicBody, mappedModel, func(retryBody []byte) (*http.Response, error) {
+				retryResp, _, retryErr := s.openKiroAnthropicStreamResponse(ctx, account, parsed, retryBody, mappedModel, originalModel, c.Request.Header, group, cachePlan)
+				return retryResp, retryErr
 			})
+			resp, err = retryKiroCompactionOnContextLength(resp, compactionRetry)
 		}
-		if resp.StatusCode == http.StatusUnauthorized && !retriedRotatedToken {
-			if rotatedToken := s.rotatedClaudeAccessToken(ctx, account, token); rotatedToken != "" {
-				_ = resp.Body.Close()
-				token = rotatedToken
-				retriedRotatedToken = true
-				continue
+		if err != nil {
+			if failoverErr := kiroFailoverFromOpenErr(c, account, err); failoverErr != nil {
+				return nil, failoverErr
 			}
+			safeErr := sanitizeUpstreamErrorMessage(err.Error())
+			setOpsUpstreamError(c, 0, safeErr, "")
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: 0,
+				Kind:               "request_error",
+				Message:            safeErr,
+			})
+			writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream request failed")
+			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 		}
-		break
+	} else {
+		// 8. Get access token
+		token, tokenType, err = s.GetAccessToken(ctx, account)
+		if err != nil {
+			return nil, fmt.Errorf("get access token: %w", err)
+		}
+
+		// 9. Get proxy URL
+		if account.ProxyID != nil && account.Proxy != nil {
+			proxyURL = account.Proxy.URL()
+		}
+
+		// 10. Build and send the request, recovering a concurrent token rotation once.
+		for retriedRotatedToken := false; ; {
+			upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
+			upstreamReq, forwardedBody, err = s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
+			releaseUpstreamCtx()
+			if err != nil {
+				return nil, fmt.Errorf("build upstream request: %w", err)
+			}
+			resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+			if err != nil {
+				if resp != nil && resp.Body != nil {
+					_ = resp.Body.Close()
+				}
+				return nil, s.handleUpstreamTransportError(ctx, c, account, err, OpsUpstreamErrorEvent{
+					UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
+				})
+			}
+			if resp.StatusCode == http.StatusUnauthorized && !retriedRotatedToken {
+				if rotatedToken := s.rotatedClaudeAccessToken(ctx, account, token); rotatedToken != "" {
+					_ = resp.Body.Close()
+					token = rotatedToken
+					retriedRotatedToken = true
+					continue
+				}
+			}
+			break
+		}
+
+		// Bill the final Anthropic effort after conversion and account normalization.
+		// For example, OpenAI xhigh is forwarded as output_config.effort=max.
+		reasoningEffort = NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
+		reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, mappedModel)
 	}
 	defer func() { _ = resp.Body.Close() }()
-
-	// Bill the final Anthropic effort after conversion and account normalization.
-	// For example, OpenAI xhigh is forwarded as output_config.effort=max.
-	reasoningEffort := NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
-	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, mappedModel)
 
 	// 12. Handle error response with failover
 	if resp.StatusCode >= 400 {
@@ -181,7 +259,7 @@ func (s *GatewayService) ForwardAsResponses(
 		// thinking 整流重试：转换路径原先没有 /v1/messages 主路径上的整流链，上游因历史
 		// thinking 结构（assistant 末块是 thinking、签名失效等）返回 400 时整轮直接失败。
 		// 这里用同一策略清洗一次请求体重发，仍失败才走下面的错误处理 / failover。
-		if resp.StatusCode == http.StatusBadRequest &&
+		if !kiroDirect && resp.StatusCode == http.StatusBadRequest &&
 			(s.shouldRectifyThinkingTailError(respBody, mappedModel) ||
 				s.shouldRectifySignatureError(ctx, account, respBody, mappedModel)) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -242,6 +320,16 @@ func (s *GatewayService) ForwardAsResponses(
 			}
 
 			// Non-failover error: return Responses-formatted error to client
+			if account.Platform == PlatformKiro {
+				if fixed, ok := kiroContextLengthClientMessage(resp.StatusCode, respBody); ok {
+					if isCompact {
+						return nil, s.failCompactionWithCode(c, clientStream, http.StatusBadRequest,
+							"context_length_exceeded", kiroCompactionOverflowMessage, resp.Header.Get("x-request-id"))
+					}
+					writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", fixed)
+					return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+				}
+			}
 			writeResponsesError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", upstreamMsg)
 			return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 		}
@@ -250,24 +338,69 @@ func (s *GatewayService) ForwardAsResponses(
 	// 13. Handle normal response (convert Anthropic → Responses)
 	var result *ForwardResult
 	var handleErr error
-	if clientStream {
+	if isCompact {
+		// compact 请求必须缓冲：要拿到完整摘要文本才能合成 Codex 要求的单个
+		// compaction item，逐事件透传做不到。
+		result, handleErr = s.handleResponsesCompactionResponseWithRetry(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientStream, compactionRetry)
+		if exc := kiroUpstreamExceptionFromError(handleErr); exc != nil {
+			// 压缩处理只在客户端还没收到任何字节时把 Kiro 异常交回来：按 Kiro HTTP 错误处理，
+			// 不换号时以压缩失败的协议格式回写。
+			requestID := resp.Header.Get("x-request-id")
+			writeCompactionError := func(c *gin.Context, upstreamStatus int, message string) {
+				code := ""
+				if upstreamStatus == http.StatusBadRequest {
+					code = "invalid_request_error"
+				}
+				_ = s.failCompactionWithCode(c, clientStream, mapUpstreamStatusCode(upstreamStatus), code, message, requestID)
+			}
+			return nil, s.handleKiroUpstreamException(ctx, c, account, mappedModel, anthropicBody, exc, resp.Header, writeCompactionError)
+		}
+	} else if clientStream {
 		writerSizeBeforeStream := c.Writer.Size()
 		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
 		var sseErr *sseStreamErrorEventError
 		switch {
 		case errors.As(handleErr, &sseErr):
-			return nil, s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, mappedModel, c.Writer.Size() != writerSizeBeforeStream, sseErr.SafeToFailoverAfterWrite)
+			outputStarted := c.Writer.Size() != writerSizeBeforeStream
+			if kiroResult, handled, kiroErr := s.handleKiroStreamErrorEvent(ctx, c, account, resp, anthropicBody, originalModel, mappedModel, mappedModel, startTime, sseErr.RawData, outputStarted, writeKiroResponsesError); handled {
+				return kiroResult, kiroErr
+			}
+			return nil, s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, mappedModel, outputStarted, sseErr.SafeToFailoverAfterWrite)
 		case errors.Is(handleErr, errAnthropicNativeStreamIdle) && s.rateLimitService != nil:
 			s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 		}
 	} else {
 		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		if exc := kiroUpstreamExceptionFromError(handleErr); exc != nil {
+			// 非流式客户端还没收到任何字节：与 /v1/messages 非流式一致，按 Kiro HTTP 错误处理。
+			return nil, s.handleKiroUpstreamException(ctx, c, account, mappedModel, anthropicBody, exc, resp.Header, writeKiroResponsesError)
+		}
 	}
 
 	return result, handleErr
 }
 
-func adaptResponsesClientToolsForAnthropic(body []byte) ([]byte, apicompat.ResponsesClientToolMapping, error) {
+const kiroResponsesCompatContextKey = "kiro_responses_compat"
+
+// markKiroResponsesCompat 在请求上下文中标记目标账号为 Kiro，供 Anthropic→Responses
+// 响应转换（stream/buffered）启用 Kiro 专属扩展；其他账号不置位，保持基线行为。
+func markKiroResponsesCompat(c *gin.Context, enabled bool) {
+	if c != nil && enabled {
+		c.Set(kiroResponsesCompatContextKey, true)
+	}
+}
+
+func isKiroResponsesCompat(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	v, ok := c.Get(kiroResponsesCompatContextKey)
+	enabled, _ := v.(bool)
+	return ok && enabled
+}
+
+// kiroCompat 为 true 时启用 Kiro 移植的 namespace custom 子工具摊平；其他账号保持基线行为。
+func adaptResponsesClientToolsForAnthropic(body []byte, kiroCompat bool) ([]byte, apicompat.ResponsesClientToolMapping, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	var requestBody map[string]any
@@ -279,7 +412,11 @@ func adaptResponsesClientToolsForAnthropic(body []byte) ([]byte, apicompat.Respo
 		return body, apicompat.ResponsesClientToolMapping{}, err
 	}
 
-	mapping, changed, err := apicompat.AdaptResponsesClientTools(requestBody)
+	adaptTools := apicompat.AdaptResponsesClientTools
+	if kiroCompat {
+		adaptTools = apicompat.AdaptResponsesClientToolsKiroCompat
+	}
+	mapping, changed, err := adaptTools(requestBody)
 	if err != nil {
 		return body, apicompat.ResponsesClientToolMapping{}, err
 	}
@@ -386,6 +523,19 @@ func mergeAnthropicUsage(dst *ClaudeUsage, src apicompat.AnthropicUsage) {
 	}
 }
 
+func mergeKiroCreditsFromAnthropicPayload(dst *ClaudeUsage, payload string) {
+	if dst == nil || payload == "" || !gjson.Valid(payload) {
+		return
+	}
+	if credits := kiroCreditsFromUsageGJSON(gjson.Get(payload, "usage")); credits > 0 {
+		dst.KiroCredits = credits
+		return
+	}
+	if credits := kiroCreditsFromUsageGJSON(gjson.Get(payload, "message.usage")); credits > 0 {
+		dst.KiroCredits = credits
+	}
+}
+
 func normalizeAnthropicPromptTotal(usage *ClaudeUsage, promptTokens int, promptCacheMissTokens *int) {
 	if promptCacheMissTokens != nil {
 		usage.promptTotalPresent = false
@@ -489,8 +639,45 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 ) (*ForwardResult, error) {
 	observer := beginUpstreamResponseModelObservation(c)
 	requestID := resp.Header.Get("x-request-id")
+	finalResp, usage, streamStatus := s.collectAnthropicResponseFromSSE(resp.Body, requestID, nil, observer)
 
-	scanner := bufio.NewScanner(resp.Body)
+	if failure := streamStatus.failure(); failure != nil {
+		_ = resp.Body.Close()
+		if kiroUpstreamExceptionFromError(failure.err) != nil {
+			// Kiro 流内异常：不写响应、不计费，由调用方按 Kiro HTTP 错误处理（换号或回 4xx）。
+			return nil, failure.err
+		}
+		writeResponsesError(c, http.StatusBadGateway, "server_error", failure.message)
+		return &ForwardResult{
+			UpstreamResponseModel:         observer.Model(),
+			UpstreamResponseModelConflict: observer.Conflict(),
+			UpstreamResponseServiceTier:   observer.ServiceTier(),
+			RequestID:                     requestID, UpstreamHeaders: resp.Header, Usage: usage,
+			Model: originalModel, UpstreamModel: mappedModel, ReasoningEffort: reasoningEffort,
+			Duration: time.Since(startTime),
+		}, failure.err
+	}
+
+	if finalResp == nil {
+		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
+		return nil, fmt.Errorf("upstream stream ended without response")
+	}
+	return s.writeResponsesBufferedResult(
+		c, resp, finalResp, usage, requestID,
+		originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping,
+	)
+}
+
+// collectAnthropicResponseFromSSE 读完上游 Anthropic SSE 流并聚合成一个完整的
+// Anthropic 响应。onEvent 在每个事件解析成功后被调用（可为 nil），供调用方挂载
+// 心跳一类的副作用——compact 请求会借此在漫长的摘要生成期间向下游发送保活字节。
+func (s *GatewayService) collectAnthropicResponseFromSSE(
+	body io.ReadCloser,
+	requestID string,
+	onEvent func(),
+	observer *upstreamResponseModelObserver,
+) (*apicompat.AnthropicResponse, ClaudeUsage, *anthropicCompatStream) {
+	scanner := bufio.NewScanner(body)
 	maxLineSize := defaultMaxLineSize
 	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 		maxLineSize = s.cfg.Gateway.MaxLineSize
@@ -501,7 +688,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	// Accumulate the final Anthropic response from streaming events
 	var finalResp *apicompat.AnthropicResponse
 	var usage ClaudeUsage
-	streamStatus := newAnthropicCompatStreamStatus(resp.Body, nil)
+	streamStatus := newAnthropicCompatStreamStatus(body, nil)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -529,8 +716,13 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			)
 			continue
 		}
+		if onEvent != nil {
+			onEvent()
+		}
 
-		observer.ObserveAnthropic([]byte(payload))
+		if observer != nil {
+			observer.ObserveAnthropic([]byte(payload))
+		}
 		streamStatus.observe(&event, payload)
 		if streamStatus.upstreamErrType != "" {
 			break
@@ -547,6 +739,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			if event.Usage != nil {
 				mergeAnthropicUsage(&usage, *event.Usage)
 			}
+			mergeKiroCreditsFromAnthropicPayload(&usage, payload)
 			if event.Delta != nil && event.Delta.StopReason != "" && finalResp != nil {
 				finalResp.StopReason = apicompat.AnthropicStopReasonPtr(event.Delta.StopReason)
 			}
@@ -576,6 +769,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 	}
 
+	streamStatus.readErr = scanner.Err()
 	if err := scanner.Err(); err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("forward_as_responses buffered: read error",
@@ -584,27 +778,25 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			)
 		}
 	}
+	return finalResp, usage, streamStatus
+}
 
-	streamStatus.readErr = scanner.Err()
-	if failure := streamStatus.failure(); failure != nil {
-		_ = resp.Body.Close()
-		writeResponsesError(c, http.StatusBadGateway, "server_error", failure.message)
-		return &ForwardResult{
-			UpstreamResponseModel:         observer.Model(),
-			UpstreamResponseModelConflict: observer.Conflict(),
-			UpstreamResponseServiceTier:   observer.ServiceTier(),
-			RequestID:                     requestID, UpstreamHeaders: resp.Header, Usage: usage,
-			Model: originalModel, UpstreamModel: mappedModel, ReasoningEffort: reasoningEffort,
-			Duration: time.Since(startTime),
-		}, failure.err
-	}
-
-	if finalResp == nil {
-		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
-		return nil, fmt.Errorf("upstream stream ended without response")
-	}
-
-	// Update usage from accumulated delta
+// writeResponsesBufferedResult 把聚合好的 Anthropic 响应转成 Responses JSON 写回。
+func (s *GatewayService) writeResponsesBufferedResult(
+	c *gin.Context,
+	resp *http.Response,
+	finalResp *apicompat.AnthropicResponse,
+	usage ClaudeUsage,
+	requestID string,
+	originalModel string,
+	mappedModel string,
+	reasoningEffort *string,
+	startTime time.Time,
+	clientToolMapping apicompat.ResponsesClientToolMapping,
+) (*ForwardResult, error) {
+	observer := upstreamResponseModelObserverFromContext(c)
+	// Update usage from accumulated delta. 无条件赋值：纯缓存命中的响应
+	// （input/output 均为 0 但 cache read/write 非 0）不能被整体丢弃。
 	normalizeAnthropicEventUsageForResponses(&apicompat.AnthropicStreamEvent{Message: finalResp}, usage)
 
 	// Convert to Responses format
@@ -612,6 +804,9 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		finalResp.Model = mappedModel
 	}
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+	if isKiroResponsesCompat(c) {
+		responsesResp = apicompat.AnthropicToResponsesResponseWithCustomTools(finalResp, nil)
+	}
 	responsesResp.Model = originalModel // Use original model name
 
 	if s.responseHeaderFilter != nil {
@@ -629,6 +824,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		if err != nil {
 			return nil, fmt.Errorf("restore responses client tools: %w", err)
 		}
+		respBytes = withResponsesUpstreamCredits(c, respBytes, "usage", usage.KiroCredits)
 		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
 	} else {
 		c.JSON(http.StatusOK, responsesResp)
@@ -673,6 +869,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	c.Writer.WriteHeader(http.StatusOK)
 
 	state := apicompat.NewAnthropicEventToResponsesState()
+	state.KiroCompat = isKiroResponsesCompat(c)
 	state.Model = originalModel
 	state.PreserveThinkingSignatures = isClaude55SignedThinkingModel(mappedModel)
 	clientToolRestorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
@@ -730,6 +927,9 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 					return
 				}
 				eventType := gjson.GetBytes(restored, "type").String()
+				if isResponsesTerminalEvent(eventType) {
+					restored = withResponsesUpstreamCredits(c, restored, "response.usage", usage.KiroCredits)
+				}
 				if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
 					stream.markClientDisconnected()
 					logger.L().Info("forward_as_responses stream: client disconnected",
@@ -824,6 +1024,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			event.Type = eventType
 		}
 
+		mergeKiroCreditsFromAnthropicPayload(&usage, payload)
 		observer.ObserveAnthropic([]byte(payload))
 		stream.observe(&event, payload)
 		if stream.upstreamErrType != "" {

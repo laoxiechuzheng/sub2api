@@ -338,6 +338,48 @@ describe('MonitorFormDialog linked account selector', () => {
     }))
   })
 
+  // kiro 与 antigravity 同为「无探活 adapter」：选中后必须锁定 quota，否则
+  // 提交 quota_probe 会被后端 validateCheckMode 拒成 400。
+  it('forces quota mode and disables the probe options when kiro is selected', async () => {
+    accountsList.mockResolvedValue({ items: [{ id: 5427, name: 'Kiro Pro', platform: 'kiro' }] })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="monitor-check-mode-quota_probe"]').trigger('click')
+    await wrapper.get('[data-testid="monitor-provider-kiro"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="monitor-check-mode-probe"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="monitor-check-mode-quota_probe"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="monitor-check-mode-quota"]').attributes('aria-pressed')).toBe('true')
+
+    await wrapper.findAll('input[type="text"]')[0].setValue('Kiro Pro')
+    const dropdown = await openAccountDropdown(wrapper)
+    clickOption(dropdown, 'Kiro Pro (#5427)')
+    await nextTick()
+
+    await wrapper.get('#channel-monitor-form').trigger('submit')
+    await flushPromises()
+
+    expect(monitorCreate).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'kiro',
+      check_mode: 'quota',
+      account_id: 5427,
+    }))
+  })
+
+  // antigravity → kiro 都是仅配额 provider：不能被「切走时还原 probe」误伤。
+  it('keeps quota mode when switching between two quota-only providers', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="monitor-provider-antigravity"]').trigger('click')
+    await wrapper.get('[data-testid="monitor-provider-kiro"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="monitor-check-mode-quota"]').attributes('aria-pressed')).toBe('true')
+  })
+
   // P2-7(c)：update 切回 probe 显式发 account_id=0 解绑存量关联（null=不动）。
   it('unbinds the linked account with account_id=0 when a quota monitor switches back to probe', async () => {
     accountsGetById.mockRejectedValue(new Error('gone'))

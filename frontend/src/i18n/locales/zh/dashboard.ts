@@ -356,6 +356,8 @@ export default {
     accountCost: '成本',
     userBilled: '用户扣费',
     accountBilled: '账号计费',
+    upstreamCredits: '积分消耗',
+    upstreamCreditCostApprox: '约{amount}',
     resetNow: '现在',
     resetPending: '待刷新',
     accountMultiplier: '账号倍率',
@@ -524,6 +526,7 @@ export default {
       gemini: 'Gemini',
       grok: 'Grok',
       antigravity: 'Antigravity',
+      kiro: 'Kiro',
       kimi: 'Kimi',
       zhipu: '智谱 GLM',
       deepseek: 'DeepSeek',
@@ -555,8 +558,10 @@ export default {
         tokens: 'Token',
         shared: '共享',
         pro: 'Pro',
-        flash: 'Flash'
-      }
+        flash: 'Flash',
+        credits: '额度',
+        bonus: '赠额'
+      },
     },
     extraModelsHeader: '附加模型',
     extraModelsEmpty: '无附加模型',

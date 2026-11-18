@@ -351,6 +351,8 @@ export default {
     accountCost: 'Cost',
     userBilled: 'User billed',
     accountBilled: 'Account billed',
+    upstreamCredits: 'Credits used',
+    upstreamCreditCostApprox: 'approx. {amount}',
     resetNow: 'Now',
     resetPending: 'Pending refresh',
     accountMultiplier: 'Account rate',
@@ -519,6 +521,7 @@ export default {
       gemini: 'Gemini',
       grok: 'Grok',
       antigravity: 'Antigravity',
+      kiro: 'Kiro',
       kimi: 'Kimi',
       zhipu: 'Zhipu GLM',
       deepseek: 'DeepSeek',
@@ -550,8 +553,10 @@ export default {
         tokens: 'Tokens',
         shared: 'Shared',
         pro: 'Pro',
-        flash: 'Flash'
-      }
+        flash: 'Flash',
+        credits: 'Credits',
+        bonus: 'Bonus'
+      },
     },
     extraModelsHeader: 'Extra Models',
     extraModelsEmpty: 'No extra models',

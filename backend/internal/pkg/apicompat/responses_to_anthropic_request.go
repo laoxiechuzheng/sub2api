@@ -19,7 +19,7 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 	isHaiku55 := claude.IsHaiku55(req.Model)
 	isFableOrMythos52 := claude.IsFable52(req.Model) || claude.IsMythos52(req.Model)
 	isAdaptiveModel := isOpus55 || isSonnet55 || isHaiku55 || isFableOrMythos52
-	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, isAdaptiveModel)
+	system, messages, err := convertResponsesInputToAnthropicWithCompat(req.Instructions, req.Input, isAdaptiveModel, req.KiroCompat)
 	if err != nil {
 		return nil, err
 	}
@@ -48,12 +48,12 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 
 	// Convert tools
 	if len(req.Tools) > 0 {
-		out.Tools = convertResponsesToAnthropicTools(req.Tools)
+		out.Tools = convertResponsesToAnthropicToolsWithCompat(req.Tools, req.KiroCompat)
 	}
 
 	// Convert tool_choice (reverse of convertAnthropicToolChoiceToResponses)
 	if len(req.ToolChoice) > 0 {
-		tc, err := convertResponsesToAnthropicToolChoice(req.ToolChoice)
+		tc, err := convertResponsesToAnthropicToolChoiceWithCompat(req.ToolChoice, req.KiroCompat)
 		if err != nil {
 			return nil, fmt.Errorf("convert tool_choice: %w", err)
 		}
@@ -194,6 +194,12 @@ func mapResponsesEffortToAnthropic(effort string) string {
 // a Responses API instructions + input array. Returns the system as raw JSON
 // (for Anthropic's polymorphic system field) and a list of Anthropic messages.
 func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMessage, preserveThinking bool) (json.RawMessage, []AnthropicMessage, error) {
+	return convertResponsesInputToAnthropicWithCompat(instructions, inputRaw, preserveThinking, false)
+}
+
+// convertResponsesInputToAnthropicWithCompat 的 kiroCompat 为 true 时才启用 Kiro 移植引入的扩展
+// （custom_tool_call 历史项、compaction 回放/触发器、空工具输出占位）；false 时保持原有行为。
+func convertResponsesInputToAnthropicWithCompat(instructions string, inputRaw json.RawMessage, preserveThinking bool, kiroCompat bool) (json.RawMessage, []AnthropicMessage, error) {
 	var systemParts []string
 	if strings.TrimSpace(instructions) != "" {
 		systemParts = append(systemParts, strings.TrimSpace(instructions))
@@ -225,10 +231,13 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 				systemParts = append(systemParts, text)
 			}
 
-		case item.Type == "function_call":
-			// function_call → assistant message with tool_use block
+		case item.Type == "function_call" || (kiroCompat && item.Type == "custom_tool_call"):
+			// function_call/custom_tool_call → assistant message with tool_use block
 			input := json.RawMessage("{}")
-			if item.Arguments != "" {
+			if kiroCompat && item.Type == "custom_tool_call" {
+				customInput, _ := json.Marshal(map[string]string{"input": item.Input})
+				input = customInput
+			} else if item.Arguments != "" {
 				input = json.RawMessage(item.Arguments)
 			}
 			block := AnthropicContentBlock{
@@ -243,18 +252,50 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 				Content: blockJSON,
 			})
 
-		case item.Type == "function_call_output":
-			// function_call_output → user message with tool_result block
-			contentJSON := responsesFunctionOutputToAnthropicContent(item)
+		case item.Type == "function_call_output" || (kiroCompat && item.Type == "custom_tool_call_output"):
+			// *_call_output → user message with tool_result block
 			block := AnthropicContentBlock{
 				Type:      "tool_result",
 				ToolUseID: fromResponsesCallIDToAnthropic(item.CallID),
-				Content:   contentJSON,
+				Content:   responsesFunctionOutputToAnthropicContent(item, kiroCompat),
 			}
 			blockJSON, _ := json.Marshal([]AnthropicContentBlock{block})
 			messages = append(messages, AnthropicMessage{
 				Role:    "user",
 				Content: blockJSON,
+			})
+
+		case kiroCompat && IsCompactionItemType(item.Type):
+			// Codex remote compaction v2 回放：上一轮的压缩结果被原样放回 input，
+			// 代表被丢弃的全部前文。必须还原成 user message——若落到 default 分支
+			// 会因 Content==nil 被丢弃，压缩"成功"后前文就全没了。
+			// 注意不能转成 reasoning：本网关合成的 encrypted_content 是自造信封，
+			// Anthropic 摄入不了（理由同下方 reasoning 分支）。
+			summary := CompactionSummaryFromItem(&item)
+			if summary == "" {
+				continue
+			}
+			text, err := json.Marshal(WrapCompactionSummaryForReplay(summary))
+			if err != nil {
+				return nil, nil, fmt.Errorf("marshal compaction summary: %w", err)
+			}
+			messages = append(messages, AnthropicMessage{
+				Role:    "user",
+				Content: text,
+			})
+
+		case kiroCompat && strings.TrimSpace(item.Type) == CompactionTriggerType:
+			// 压缩触发器：Anthropic 协议族没有原生 compact 端点，只能把它降级成
+			// 一次普通轮次 + 摘要指令。同样必须显式处理，否则被 default 分支静默
+			// 丢弃，上游会当成普通对话继续干活（Codex 随后报 "expected exactly one
+			// compaction output item"）。
+			prompt, err := json.Marshal(CompactionSummaryPrompt)
+			if err != nil {
+				return nil, nil, fmt.Errorf("marshal compaction prompt: %w", err)
+			}
+			messages = append(messages, AnthropicMessage{
+				Role:    "user",
+				Content: prompt,
 			})
 
 		case item.Type == "reasoning":
@@ -350,11 +391,14 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 	return system, messages, nil
 }
 
-func responsesFunctionOutputToAnthropicContent(item ResponsesInputItem) json.RawMessage {
+func responsesFunctionOutputToAnthropicContent(item ResponsesInputItem, kiroCompat bool) json.RawMessage {
 	if len(item.outputRaw) == 0 {
 		output := item.Output
-		if output == "" {
-			output = "(empty)"
+		if kiroCompat {
+			output = strings.TrimSpace(output)
+			if output == "" || output == "null" || output == `""` {
+				output = "(empty)"
+			}
 		}
 		content, _ := json.Marshal(output)
 		return content
@@ -797,6 +841,10 @@ func parseContentBlocks(raw json.RawMessage) []AnthropicContentBlock {
 // convertResponsesToAnthropicTools maps Responses API tools to Anthropic format.
 // Reverse of convertAnthropicToolsToResponses.
 func convertResponsesToAnthropicTools(tools []ResponsesTool) []AnthropicTool {
+	return convertResponsesToAnthropicToolsWithCompat(tools, false)
+}
+
+func convertResponsesToAnthropicToolsWithCompat(tools []ResponsesTool, kiroCompat bool) []AnthropicTool {
 	var out []AnthropicTool
 	for _, t := range tools {
 		switch t.Type {
@@ -812,10 +860,14 @@ func convertResponsesToAnthropicTools(tools []ResponsesTool) []AnthropicTool {
 				InputSchema: normalizeAnthropicInputSchema(t.Parameters),
 			})
 		case "custom":
+			schema := t.Parameters
+			if kiroCompat && len(strings.TrimSpace(string(schema))) == 0 {
+				schema = json.RawMessage(customToolInputSchema)
+			}
 			out = append(out, AnthropicTool{
 				Name:        t.Name,
 				Description: t.Description,
-				InputSchema: normalizeAnthropicInputSchema(t.Parameters),
+				InputSchema: normalizeAnthropicInputSchema(schema),
 			})
 		default:
 			// Pass through unknown tool types
@@ -877,8 +929,13 @@ func normalizeAnthropicInputSchema(schema json.RawMessage) json.RawMessage {
 //	"required"                                 → {"type":"any"}
 //	"none"                                     → {"type":"none"}
 //	{"type":"function","name":"X"}                 → {"type":"tool","name":"X"}
+//	{"type":"custom","name":"X"}                   → {"type":"tool","name":"X"}
 //	{"type":"function","function":{"name":"X"}}     → {"type":"tool","name":"X"} // legacy
 func convertResponsesToAnthropicToolChoice(raw json.RawMessage) (json.RawMessage, error) {
+	return convertResponsesToAnthropicToolChoiceWithCompat(raw, false)
+}
+
+func convertResponsesToAnthropicToolChoiceWithCompat(raw json.RawMessage, kiroCompat bool) (json.RawMessage, error) {
 	// Try as string first
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -894,7 +951,7 @@ func convertResponsesToAnthropicToolChoice(raw json.RawMessage) (json.RawMessage
 		}
 	}
 
-	// Try as object with type=function
+	// Try as object with type=function/custom
 	var tc struct {
 		Type     string `json:"type"`
 		Name     string `json:"name"`
@@ -902,7 +959,7 @@ func convertResponsesToAnthropicToolChoice(raw json.RawMessage) (json.RawMessage
 			Name string `json:"name"`
 		} `json:"function"`
 	}
-	if err := json.Unmarshal(raw, &tc); err == nil && tc.Type == "function" {
+	if err := json.Unmarshal(raw, &tc); err == nil && (tc.Type == "function" || (kiroCompat && tc.Type == "custom")) {
 		name := strings.TrimSpace(tc.Name)
 		if name == "" {
 			name = strings.TrimSpace(tc.Function.Name)

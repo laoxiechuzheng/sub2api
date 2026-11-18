@@ -90,6 +90,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 	if groupIn == nil {
 		return errors.New("group is nil")
 	}
+	service.NormalizeGroupRuntimeFields(groupIn)
 	modelPricing, err := json.Marshal(groupIn.ModelPricing)
 	if err != nil {
 		return fmt.Errorf("marshal group model pricing: %w", err)
@@ -150,6 +151,14 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).
 		SetMaxReasoningEffortOverLimit(groupIn.MaxReasoningEffortOverLimit).
 		SetReasoningEffortMappings(groupIn.ReasoningEffortMappings).
+		SetKiroCacheEmulationEnabled(groupIn.KiroCacheEmulationEnabled).
+		SetKiroAutoStickyEnabled(groupIn.KiroAutoStickyEnabled).
+		SetKiroStickySessionTTLSeconds(groupIn.KiroStickySessionTTLSeconds).
+		SetKiroCacheEmulationRatio(groupIn.KiroCacheEmulationRatio).
+		SetKiroCacheEmulationMode(groupIn.KiroCacheEmulationMode).
+		SetKiroCacheCreationEmulationRatio(groupIn.KiroCacheCreationEmulationRatio).
+		SetKiroCacheReadEmulationRatio(groupIn.KiroCacheReadEmulationRatio).
+		SetKiroEndpointMode(groupIn.KiroEndpointMode).
 		SetPeakRateEnabled(groupIn.PeakRateEnabled).
 		SetPeakStart(groupIn.PeakStart).
 		SetPeakEnd(groupIn.PeakEnd).
@@ -207,6 +216,7 @@ func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service
 	if groupIn == nil {
 		return errors.New("group is nil")
 	}
+	service.NormalizeGroupRuntimeFields(groupIn)
 	tx, err := r.client.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
 		return err
@@ -284,6 +294,7 @@ func (r *groupRepository) GetByIDLite(ctx context.Context, id int64) (*service.G
 }
 
 func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) error {
+	service.NormalizeGroupRuntimeFields(groupIn)
 	modelPricing, err := json.Marshal(groupIn.ModelPricing)
 	if err != nil {
 		return fmt.Errorf("marshal group model pricing: %w", err)
@@ -336,6 +347,14 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).
 		SetMaxReasoningEffortOverLimit(groupIn.MaxReasoningEffortOverLimit).
 		SetReasoningEffortMappings(groupIn.ReasoningEffortMappings).
+		SetKiroCacheEmulationEnabled(groupIn.KiroCacheEmulationEnabled).
+		SetKiroAutoStickyEnabled(groupIn.KiroAutoStickyEnabled).
+		SetKiroStickySessionTTLSeconds(groupIn.KiroStickySessionTTLSeconds).
+		SetKiroCacheEmulationRatio(groupIn.KiroCacheEmulationRatio).
+		SetKiroCacheEmulationMode(groupIn.KiroCacheEmulationMode).
+		SetKiroCacheCreationEmulationRatio(groupIn.KiroCacheCreationEmulationRatio).
+		SetKiroCacheReadEmulationRatio(groupIn.KiroCacheReadEmulationRatio).
+		SetKiroEndpointMode(groupIn.KiroEndpointMode).
 		SetPeakRateEnabled(groupIn.PeakRateEnabled).
 		SetPeakStart(groupIn.PeakStart).
 		SetPeakEnd(groupIn.PeakEnd).

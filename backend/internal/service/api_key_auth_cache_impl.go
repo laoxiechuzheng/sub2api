@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 28 // v28: group force_openai_ultrafast (OpenAI gateway reads it from ctx)
+const apiKeyAuthSnapshotVersion = 29 // v29: v28 (v26 (Kiro cache fields + group profit control + search/audio/video_model_prices billing fields + long-context + model pricing + CN providers + group force/free_openai_fast + codex_models_manifest_config + model_allowlist) + group image_count_billing switch (per-image billing on image endpoints) + v27 group require_privacy_set (OpenAI scheduling reads it from ctx)) + group force_openai_ultrafast (OpenAI gateway reads it from ctx)
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -431,6 +431,14 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			MaxReasoningEffort:              apiKey.Group.MaxReasoningEffort,
 			MaxReasoningEffortOverLimit:     apiKey.Group.MaxReasoningEffortOverLimit,
 			ReasoningEffortMappings:         apiKey.Group.ReasoningEffortMappings,
+			KiroCacheEmulationEnabled:       apiKey.Group.EffectiveKiroCacheEmulationEnabled(),
+			KiroAutoStickyEnabled:           apiKey.Group.EffectiveKiroAutoStickyEnabled(),
+			KiroStickySessionTTLSeconds:     apiKey.Group.EffectiveKiroStickySessionTTLSeconds(),
+			KiroCacheEmulationRatio:         apiKey.Group.EffectiveKiroCacheEmulationRatio(),
+			KiroCacheEmulationMode:          apiKey.Group.EffectiveKiroCacheEmulationMode(),
+			KiroCacheCreationEmulationRatio: apiKey.Group.KiroCacheCreationEmulationRatio,
+			KiroCacheReadEmulationRatio:     apiKey.Group.KiroCacheReadEmulationRatio,
+			KiroEndpointMode:                apiKey.Group.EffectiveKiroEndpointMode(),
 			PeakRateEnabled:                 apiKey.Group.PeakRateEnabled,
 			PeakStart:                       apiKey.Group.PeakStart,
 			PeakEnd:                         apiKey.Group.PeakEnd,
@@ -537,6 +545,14 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			MaxReasoningEffort:              snapshot.Group.MaxReasoningEffort,
 			MaxReasoningEffortOverLimit:     snapshot.Group.MaxReasoningEffortOverLimit,
 			ReasoningEffortMappings:         snapshot.Group.ReasoningEffortMappings,
+			KiroCacheEmulationEnabled:       snapshot.Group.KiroCacheEmulationEnabled,
+			KiroAutoStickyEnabled:           snapshot.Group.KiroAutoStickyEnabled,
+			KiroStickySessionTTLSeconds:     snapshot.Group.KiroStickySessionTTLSeconds,
+			KiroCacheEmulationRatio:         snapshot.Group.KiroCacheEmulationRatio,
+			KiroCacheEmulationMode:          snapshot.Group.KiroCacheEmulationMode,
+			KiroCacheCreationEmulationRatio: snapshot.Group.KiroCacheCreationEmulationRatio,
+			KiroCacheReadEmulationRatio:     snapshot.Group.KiroCacheReadEmulationRatio,
+			KiroEndpointMode:                snapshot.Group.KiroEndpointMode,
 			PeakRateEnabled:                 snapshot.Group.PeakRateEnabled,
 			PeakStart:                       snapshot.Group.PeakStart,
 			PeakEnd:                         snapshot.Group.PeakEnd,
@@ -546,6 +562,8 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			ProfitSafetyBuffer:              snapshot.Group.ProfitSafetyBuffer,
 			RequirePrivacySet:               snapshot.Group.RequirePrivacySet,
 		}
+		normalizeKiroCacheEmulationFields(apiKey.Group)
+		normalizeKiroEndpointFields(apiKey.Group)
 	}
 	s.compileAPIKeyIPRules(apiKey)
 	return apiKey

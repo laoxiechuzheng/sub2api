@@ -154,7 +154,7 @@ import type { SyncUpstreamPreviewParams } from '@/api/admin/accounts'
 import { useClipboard } from '@/composables/useClipboard'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { allModels, getModelsByPlatform } from '@/composables/useModelWhitelist'
+import { allModels, getModelsByPlatform, kiroUpstreamIDsFromMetadata } from '@/composables/useModelWhitelist'
 import { supportsUpstreamModelSync } from '@/constants/platformCatalog'
 import { extractApiErrorMessage } from '@/utils/apiError'
 
@@ -177,6 +177,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: string[]]
+  'update:kiroUpstreamIDs': [value: Record<string, string>]
   'upstream-synced': []
   'upstream-sync-finished': []
 }>()
@@ -189,6 +190,7 @@ const searchQuery = ref('')
 const customModel = ref('')
 const isComposing = ref(false)
 const isSyncingUpstream = ref(false)
+const kiroUpstreamIDs = ref<Record<string, string>>({})
 let upstreamSyncVersion = 0
 
 watch(
@@ -220,13 +222,20 @@ const normalizedPlatforms = computed(() => {
   )
 })
 
+// 清单驱动的通用判断（多协议供应商 + anthropic/openai/gemini/antigravity/grok），
+// 再加上 fork 定制的 kiro（relay）上游模型同步。
+const isUpstreamSyncable = (platform: string) => {
+  const normalized = platform.toLowerCase()
+  if (supportsUpstreamModelSync(normalized)) return true
+  return normalized === 'kiro'
+}
 const canSyncUpstream = computed(() => {
   if (props.accountId) {
     if (normalizedPlatforms.value.length === 0) return true
-    return normalizedPlatforms.value.some(supportsUpstreamModelSync)
+    return normalizedPlatforms.value.some(platform => isUpstreamSyncable(platform))
   }
   if (props.syncCredentials) {
-    return supportsUpstreamModelSync(props.syncCredentials.platform)
+    return isUpstreamSyncable(props.syncCredentials.platform)
   }
   return false
 })
@@ -336,6 +345,11 @@ const syncUpstreamModels = async () => {
     }
 
     const upstreamModels = result.models.map(model => model.trim()).filter(Boolean)
+    const incomingIDs = kiroUpstreamIDsFromMetadata(result.metadata)
+    if (Object.keys(incomingIDs).length > 0) {
+      kiroUpstreamIDs.value = { ...kiroUpstreamIDs.value, ...incomingIDs }
+      emit('update:kiroUpstreamIDs', kiroUpstreamIDs.value)
+    }
     if (upstreamModels.length === 0) {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
       return

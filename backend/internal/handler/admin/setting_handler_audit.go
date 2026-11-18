@@ -455,6 +455,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.OpenAITTFTMode != after.OpenAITTFTMode {
 		changed = append(changed, "openai_ttft_mode")
 	}
+	if before.GatewayKiroTokenizer != after.GatewayKiroTokenizer {
+		changed = append(changed, "gateway_kiro_tokenizer")
+	}
+	if before.GatewayKiroCacheScopeClient != after.GatewayKiroCacheScopeClient {
+		changed = append(changed, "gateway_kiro_cache_scope_client")
+	}
 	if before.EnableMetadataPassthrough != after.EnableMetadataPassthrough {
 		changed = append(changed, "enable_metadata_passthrough")
 	}

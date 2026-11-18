@@ -48,6 +48,24 @@ func ProvideSessionLimitCache(rdb *redis.Client, cfg *config.Config) service.Ses
 	return NewSessionLimitCache(rdb, defaultIdleTimeoutMinutes)
 }
 
+// ProvideKiroCacheEmulationRemoteStore 创建 Kiro 缓存模拟的跨节点共享存储；
+// 配置关闭或缺少 Redis client 时返回 nil（tracker 按纯内存模式工作）。
+func ProvideKiroCacheEmulationRemoteStore(rdb *redis.Client, cfg *config.Config) service.KiroCacheEmulationRemoteStore {
+	if rdb == nil || cfg == nil || !cfg.Gateway.KiroCacheEmulationRedisEnabled {
+		return nil
+	}
+	return NewKiroCacheEmulationRemoteStore(rdb)
+}
+
+// ProvideKiroPromptCacheRemoteStore 创建 Kiro 提示词缓存推断的跨节点存储（用于 credits
+// 反推 output 时推断命中量）。缺少 Redis client 时返回 nil，只用进程内存。
+func ProvideKiroPromptCacheRemoteStore(rdb *redis.Client) service.KiroPromptCacheRemoteStore {
+	if rdb == nil {
+		return nil
+	}
+	return NewKiroPromptCacheRemoteStore(rdb)
+}
+
 // ProvideSchedulerCache 创建调度快照缓存，并注入快照分块参数。
 func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.SchedulerCache {
 	mgetChunkSize := defaultSchedulerSnapshotMGetChunkSize
@@ -121,6 +139,8 @@ var ProviderSet = wire.NewSet(
 	NewInternal500CounterCache,
 	ProvideConcurrencyCache,
 	ProvideSessionLimitCache,
+	ProvideKiroCacheEmulationRemoteStore,
+	ProvideKiroPromptCacheRemoteStore,
 	NewRPMCache,
 	NewUserRPMCache,
 	NewUserMsgQueueCache,

@@ -17,6 +17,13 @@ describe("groups model allowlist layout", () => {
     expect(groupsViewSource).not.toContain("sticky top-0");
   });
 
+  it("keeps platform badge colors centralized for Kiro", () => {
+    expect(groupsViewSource).toContain("platformBadgeLightClass(value)");
+    expect(groupsViewSource).toContain("platformBadgeLightClass(group.platform)");
+    expect(groupsViewSource).not.toContain("value === 'anthropic' || value === 'kiro'");
+    expect(groupsViewSource).not.toContain("group.platform === 'anthropic' || group.platform === 'kiro'");
+  });
+
   it("uses a wide dialog and keeps model pricing controls responsive", () => {
     expect(groupsViewSource).toContain('width="wide"');
     expect(groupsViewSource).toContain(

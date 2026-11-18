@@ -18,7 +18,7 @@ import (
 )
 
 // 独立固定的持久化协议：不得从prepare或产品列清单反推预期。
-const v0222UsageInsertColumnContract = `user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, upstream_response_model, upstream_model_mismatch, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, image_input_tokens, image_input_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, requested_reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, long_context_billing_applied, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, upstream_request_id, session_id, native_compaction_v2, composite_route_id, composite_route_kind, composite_fallback_chain, cache_creation_30m_tokens, cache_creation_12h_tokens, created_at`
+const v0222UsageInsertColumnContract = `user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, upstream_response_model, upstream_model_mismatch, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, image_input_tokens, image_input_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, requested_reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, long_context_billing_applied, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, kiro_credits, upstream_request_id, session_id, native_compaction_v2, composite_route_id, composite_route_kind, composite_fallback_chain, cache_creation_30m_tokens, cache_creation_12h_tokens, created_at`
 
 func v0222UsagePointer[T any](value T) *T { return &value }
 
@@ -44,20 +44,20 @@ func v0222UsageFixture() (*service.UsageLog, []driver.Value) {
 		InboundEndpoint: v0222UsagePointer("/v1/messages"), UpstreamEndpoint: v0222UsagePointer("/v1/responses"),
 		CacheTTLOverridden: true, LongContextBillingApplied: true, ChannelID: v0222UsagePointer(int64(154)),
 		ModelMappingChain: v0222UsagePointer("public→wire"), BillingTier: v0222UsagePointer("tier"), BillingMode: v0222UsagePointer("token"),
-		AccountStatsCost: v0222UsagePointer(7.75), UpstreamRequestID: v0222UsagePointer("upstream-id"), SessionID: v0222UsagePointer("session-id"),
+		AccountStatsCost: v0222UsagePointer(7.75), KiroCredits: v0222UsagePointer(0.17), UpstreamRequestID: v0222UsagePointer("upstream-id"), SessionID: v0222UsagePointer("session-id"),
 		NativeCompactionV2: true, CompositeRouteID: v0222UsagePointer(int64(162)),
 		CompositeRouteKind:     v0222UsagePointer(service.CompositeRouteRequestKindCompaction),
 		CompositeFallbackChain: v0222UsagePointer("primary (429) → backup"), CacheCreation30mTokens: 73, CacheCreation12hTokens: 89,
 		CreatedAt: created,
 	}
-	// 全67值为独立字面量；只共享不可变created时间，不调用prepare生成预期。
+	// 全68值为独立字面量；只共享不可变created时间，不调用prepare生成预期。
 	expected := []driver.Value{
 		int64(101), int64(102), int64(103), "v0222-client", "stored-model", "public-model", "wire-model", "observed-model", true,
 		int64(110), int64(111), int64(112), int64(113), int64(198), int64(115), int64(17), int64(19),
 		int64(118), 1.19, int64(120), 1.21, 1.22, 1.23, 1.24, 1.25, 12.5, 3.25, 1.28, 1.5,
 		int64(1), int64(3), true, true, int64(134), int64(135), "synthetic-client", "192.0.2.1", int64(138),
 		"size", "input-size", "output-size", "output", `{"4K":2}`, int64(144), "resolution", int64(146),
-		"priority", "xhigh", "max", "/v1/messages", "/v1/responses", true, true, int64(154), "public→wire", "tier", "token", 7.75,
+		"priority", "xhigh", "max", "/v1/messages", "/v1/responses", true, true, int64(154), "public→wire", "tier", "token", 7.75, 0.17,
 		"upstream-id", "session-id", true, int64(162), "compaction", "primary (429) → backup", int64(73), int64(89), created,
 	}
 	return log, expected
@@ -85,7 +85,7 @@ func v0222UsageColumns(value string) []string {
 func v0222RequireUsageInsertSQL(t *testing.T, query string, batch, indexed bool) {
 	t.Helper()
 	expected := v0222UsageColumns(v0222UsageInsertColumnContract)
-	require.Len(t, expected, 67)
+	require.Len(t, expected, 68)
 	insert := regexp.MustCompile(`(?s)INSERT INTO usage_logs\s*\((.*?)\)`).FindStringSubmatch(query)
 	require.Len(t, insert, 2)
 	require.Equal(t, expected, v0222UsageColumns(insert[1]))
@@ -104,16 +104,16 @@ func v0222RequireUsageInsertSQL(t *testing.T, query string, batch, indexed bool)
 		values := regexp.MustCompile(`(?s)INSERT INTO usage_logs\s*\(.*?\) VALUES\s*\((.*?)\)`).FindStringSubmatch(query)
 		require.Len(t, values, 2)
 		placeholders := v0222UsageColumns(values[1])
-		require.Len(t, placeholders, 67)
+		require.Len(t, placeholders, 68)
 		for i, placeholder := range placeholders {
 			require.Equal(t, fmt.Sprintf("$%d", i+1), placeholder)
 		}
 	}
 }
 
-func TestUsageLogV0222PersistenceIndependent67ParameterAnd68ColumnContract(t *testing.T) {
+func TestUsageLogV0222PersistenceIndependent68ParameterAnd69ColumnContract(t *testing.T) {
 	log, expected := v0222UsageFixture()
-	require.Len(t, expected, 67)
+	require.Len(t, expected, 68)
 	require.Equal(t, expected, v0222UsageDriverValues(t, prepareUsageLogInsert(log).args))
 	require.Equal(t, append([]string{"id"}, v0222UsageColumns(v0222UsageInsertColumnContract)...), v0222UsageColumns(usageLogSelectColumns))
 	require.Equal(t, []string{
@@ -121,7 +121,7 @@ func TestUsageLogV0222PersistenceIndependent67ParameterAnd68ColumnContract(t *te
 		"integer", "integer", "integer", "integer", "integer", "integer", "integer", "numeric", "integer", "numeric",
 		"numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "smallint", "smallint", "boolean", "boolean",
 		"integer", "integer", "text", "text", "integer", "text", "text", "text", "text", "jsonb", "integer", "text", "integer",
-		"text", "text", "text", "text", "text", "boolean", "boolean", "bigint", "text", "text", "text", "numeric", "text", "text",
+		"text", "text", "text", "text", "text", "boolean", "boolean", "bigint", "text", "text", "text", "numeric", "numeric", "text", "text",
 		"boolean", "bigint", "text", "text", "integer", "integer", "timestamptz",
 	}, usageLogInsertArgTypes[:])
 }
@@ -132,7 +132,7 @@ func TestUsageLogV0222PersistenceMultirowArgumentsKeepFullStride(t *testing.T) {
 	second.RequestID = "v0222-second"
 	second.CacheCreation30mTokens, second.CacheCreation12hTokens = 97, 101
 	second.TotalCost, second.ActualCost, second.AccountStatsCost = 22.5, 4.5, v0222UsagePointer(8.75)
-	secondExpected[3], secondExpected[64], secondExpected[65] = "v0222-second", int64(97), int64(101)
+	secondExpected[3], secondExpected[65], secondExpected[66] = "v0222-second", int64(97), int64(101)
 	secondExpected[25], secondExpected[26], secondExpected[57] = 22.5, 4.5, 8.75
 	firstPrepared, secondPrepared := prepareUsageLogInsert(first), prepareUsageLogInsert(second)
 	firstKey, secondKey := usageLogBatchKey(first.RequestID, first.APIKeyID), usageLogBatchKey(second.RequestID, second.APIKeyID)
@@ -140,21 +140,21 @@ func TestUsageLogV0222PersistenceMultirowArgumentsKeepFullStride(t *testing.T) {
 	expected := append([]driver.Value{int64(0)}, firstExpected...)
 	expected = append(expected, int64(1))
 	expected = append(expected, secondExpected...)
-	require.Len(t, args, 136)
+	require.Len(t, args, 138)
 	require.Equal(t, expected, v0222UsageDriverValues(t, args))
 	v0222RequireUsageInsertSQL(t, query, true, true)
 	placeholders := usageLogPlaceholderRe.FindAllString(query, -1)
-	require.Len(t, placeholders, 136)
+	require.Len(t, placeholders, 138)
 	for i, placeholder := range placeholders {
 		require.True(t, placeholder == fmt.Sprintf("$%d", i+1), "placeholder %d=%s", i+1, placeholder)
 	}
 	query, args = buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{firstPrepared, secondPrepared})
 	expected = append(append([]driver.Value{}, firstExpected...), secondExpected...)
-	require.Len(t, args, 134)
+	require.Len(t, args, 136)
 	require.Equal(t, expected, v0222UsageDriverValues(t, args))
 	v0222RequireUsageInsertSQL(t, query, true, false)
 	placeholders = usageLogPlaceholderRe.FindAllString(query, -1)
-	require.Len(t, placeholders, 134)
+	require.Len(t, placeholders, 136)
 	for i, placeholder := range placeholders {
 		require.Equal(t, fmt.Sprintf("$%d", i+1), placeholder)
 	}
@@ -239,16 +239,16 @@ func TestUsageLogV0222PersistenceRealInsertEntrypointsAndFallback(t *testing.T) 
 	}
 }
 
-func TestUsageLogV0222PersistenceScan68KeepsCostsTTLAndComposite(t *testing.T) {
+func TestUsageLogV0222PersistenceScan69KeepsCostsTTLAndComposite(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
 			_, expected := v0222UsageFixture()
 			if legacy {
 				// 以下是独立协议位置，不从prepare或产品字段反推。
-				for _, i := range []int{15, 16, 64, 65} {
+				for _, i := range []int{15, 16, 65, 66} {
 					expected[i] = int64(0)
 				}
-				for _, i := range []int{5, 28, 57, 61, 62, 63} {
+				for _, i := range []int{5, 28, 57, 58, 62, 63, 64} {
 					expected[i] = nil
 				}
 			}
@@ -267,6 +267,7 @@ func TestUsageLogV0222PersistenceScan68KeepsCostsTTLAndComposite(t *testing.T) {
 				require.Equal(t, "stored-model", got.RequestedModel)
 				require.Nil(t, got.AccountRateMultiplier)
 				require.Nil(t, got.AccountStatsCost)
+				require.Nil(t, got.KiroCredits)
 				require.Nil(t, got.CompositeRouteID)
 				require.Nil(t, got.CompositeRouteKind)
 				require.Nil(t, got.CompositeFallbackChain)
@@ -277,6 +278,7 @@ func TestUsageLogV0222PersistenceScan68KeepsCostsTTLAndComposite(t *testing.T) {
 			} else {
 				require.Equal(t, "public-model", got.RequestedModel)
 				require.Equal(t, 7.75, *got.AccountStatsCost)
+				require.Equal(t, 0.17, *got.KiroCredits)
 				require.Equal(t, 1.5, *got.AccountRateMultiplier)
 				require.EqualValues(t, 162, *got.CompositeRouteID)
 				require.Equal(t, "compaction", *got.CompositeRouteKind)

@@ -163,6 +163,16 @@ type Group struct {
 	// ReasoningEffortMappings Anthropic/OpenAI 推理强度映射，可按模型精确名、前缀或后缀限定。
 	ReasoningEffortMappings []domain.ReasoningEffortMapping `json:"reasoning_effort_mappings"`
 
+	// Kiro 模拟缓存配置（仅 Kiro 平台生效）
+	KiroCacheEmulationEnabled       bool    `json:"kiro_cache_emulation_enabled"`
+	KiroAutoStickyEnabled           bool    `json:"kiro_auto_sticky_enabled"`
+	KiroStickySessionTTLSeconds     int     `json:"kiro_sticky_session_ttl_seconds"`
+	KiroCacheEmulationRatio         float64 `json:"kiro_cache_emulation_ratio"`
+	KiroCacheEmulationMode          string  `json:"kiro_cache_emulation_mode"`
+	KiroCacheCreationEmulationRatio float64 `json:"kiro_cache_creation_emulation_ratio"`
+	KiroCacheReadEmulationRatio     float64 `json:"kiro_cache_read_emulation_ratio"`
+	KiroEndpointMode                string  `json:"kiro_endpoint_mode"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -246,6 +256,12 @@ type Account struct {
 
 	TempUnschedulableUntil  *time.Time `json:"temp_unschedulable_until"`
 	TempUnschedulableReason string     `json:"temp_unschedulable_reason"`
+	KiroQuotaState          string     `json:"kiro_quota_state,omitempty"`
+	KiroQuotaReason         string     `json:"kiro_quota_reason,omitempty"`
+	KiroQuotaResetAt        *time.Time `json:"kiro_quota_reset_at,omitempty"`
+	KiroRuntimeState        string     `json:"kiro_runtime_state,omitempty"`
+	KiroRuntimeReason       string     `json:"kiro_runtime_reason,omitempty"`
+	KiroRuntimeResetAt      *time.Time `json:"kiro_runtime_reset_at,omitempty"`
 
 	SessionWindowStart  *time.Time `json:"session_window_start"`
 	SessionWindowEnd    *time.Time `json:"session_window_end"`
@@ -715,6 +731,10 @@ type AdminUsageLog struct {
 	AccountRateMultiplier *float64 `json:"account_rate_multiplier"`
 	// AccountStatsCost 自定义定价规则计算的账号统计费用（nil 表示使用默认公式）
 	AccountStatsCost *float64 `json:"account_stats_cost,omitempty"`
+	// UpstreamCredits 本次请求消耗的上游积分（Kiro credits），仅管理端可见。
+	UpstreamCredits *float64 `json:"upstream_credits,omitempty"`
+	// UpstreamCreditCost 按账号当前积分单价估算的上游成本（USD）；未设单价时为 nil。
+	UpstreamCreditCost *float64 `json:"upstream_credit_cost,omitempty"`
 
 	// IPAddress 用户请求 IP
 	IPAddress *string `json:"ip_address,omitempty"`

@@ -185,6 +185,10 @@ func newTestGatewayHandlerWithSchedulerCache(t *testing.T, group *service.Group,
 		nil, // httpUpstream
 		nil, // deferredService
 		nil, // claudeTokenProvider
+		nil, // kiroTokenProvider
+		nil, // kiroCooldownStore
+		nil, // kiroCacheEmulationRemote
+		nil, // kiroPromptCacheRemote
 		nil, // sessionLimitCache
 		nil, // rpmCache
 		nil, // digestStore

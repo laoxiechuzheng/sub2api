@@ -222,6 +222,14 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldMaxReasoningEffort,
 				group.FieldMaxReasoningEffortOverLimit,
 				group.FieldReasoningEffortMappings,
+				group.FieldKiroCacheEmulationEnabled,
+				group.FieldKiroAutoStickyEnabled,
+				group.FieldKiroStickySessionTTLSeconds,
+				group.FieldKiroCacheEmulationRatio,
+				group.FieldKiroCacheEmulationMode,
+				group.FieldKiroCacheCreationEmulationRatio,
+				group.FieldKiroCacheReadEmulationRatio,
+				group.FieldKiroEndpointMode,
 				group.FieldPeakRateEnabled,
 				group.FieldPeakStart,
 				group.FieldPeakEnd,
@@ -979,7 +987,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 			modelPricing = nil
 		}
 	}
-	return &service.Group{
+	out := &service.Group{
 		ID:                              g.ID,
 		Name:                            g.Name,
 		Description:                     derefString(g.Description),
@@ -1041,6 +1049,14 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		MaxReasoningEffort:              g.MaxReasoningEffort,
 		MaxReasoningEffortOverLimit:     g.MaxReasoningEffortOverLimit,
 		ReasoningEffortMappings:         g.ReasoningEffortMappings,
+		KiroCacheEmulationEnabled:       g.KiroCacheEmulationEnabled,
+		KiroAutoStickyEnabled:           g.KiroAutoStickyEnabled,
+		KiroStickySessionTTLSeconds:     g.KiroStickySessionTTLSeconds,
+		KiroCacheEmulationRatio:         g.KiroCacheEmulationRatio,
+		KiroCacheEmulationMode:          g.KiroCacheEmulationMode,
+		KiroCacheCreationEmulationRatio: g.KiroCacheCreationEmulationRatio,
+		KiroCacheReadEmulationRatio:     g.KiroCacheReadEmulationRatio,
+		KiroEndpointMode:                g.KiroEndpointMode,
 		PeakRateEnabled:                 g.PeakRateEnabled,
 		PeakStart:                       g.PeakStart,
 		PeakEnd:                         g.PeakEnd,
@@ -1051,6 +1067,8 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		CreatedAt:                       g.CreatedAt,
 		UpdatedAt:                       g.UpdatedAt,
 	}
+	service.NormalizeGroupRuntimeFields(out)
+	return out
 }
 
 func derefString(s *string) string {

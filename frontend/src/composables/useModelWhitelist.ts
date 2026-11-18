@@ -137,6 +137,39 @@ const antigravityModels = [
   'tab_flash_lite_preview'
 ]
 
+const kiroModels = [
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'kimi-k3',
+  'codex-auto-review',
+  'claude-opus-4-8',
+  'claude-opus-4-8-thinking',
+  'claude-opus-4-7',
+  'claude-opus-4-7-thinking',
+  'claude-opus-4-6',
+  'claude-opus-4-6-thinking',
+  'claude-opus-5',
+  'claude-opus-5-thinking',
+  'claude-opus-5-5',
+  'claude-opus-5-5-thinking',
+  'claude-sonnet-5',
+  'claude-sonnet-5-thinking',
+  'claude-sonnet-5-5',
+  'claude-sonnet-5-5-thinking',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-6-thinking',
+  'claude-opus-4-5-20251101',
+  'claude-opus-4-5-20251101-thinking',
+  'claude-sonnet-4-5-20250929',
+  'claude-sonnet-4-5-20250929-thinking',
+  'claude-haiku-4-5-20251001',
+  'claude-haiku-4-5-20251001-thinking',
+  'claude-haiku-5-5',
+  'claude-haiku-5-5-thinking',
+  'grok-4.7'
+]
+
 // 智谱 GLM
 const zhipuModels = [
   'glm-4', 'glm-4v', 'glm-4-plus', 'glm-4-0520',
@@ -460,6 +493,39 @@ const antigravityPresetMappings = [
   { label: 'Opus 4.8', from: 'claude-opus-4-8', to: 'claude-opus-4-8', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400' }
 ]
 
+const kiroPresetMappings = [
+  { label: 'GPT-5.6 Sol', from: 'gpt-5.6-sol', to: 'gpt-5.6-sol', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-300' },
+  { label: 'GPT-5.6 Terra', from: 'gpt-5.6-terra', to: 'gpt-5.6-terra', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-300' },
+  { label: 'GPT-5.6 Luna', from: 'gpt-5.6-luna', to: 'gpt-5.6-luna', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-300' },
+  { label: 'Kimi K3', from: 'kimi-k3', to: 'kimi-k3', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-300' },
+  { label: 'Codex Auto Review→Luna', from: 'codex-auto-review', to: 'gpt-5.6-luna', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-300' },
+  { label: 'Opus 4.8', from: 'claude-opus-4-8', to: 'claude-opus-4.8', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Opus 4.8 Thinking', from: 'claude-opus-4-8-thinking', to: 'claude-opus-4.8', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Opus 4.7', from: 'claude-opus-4-7', to: 'claude-opus-4.7', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Opus 4.7 Thinking', from: 'claude-opus-4-7-thinking', to: 'claude-opus-4.7', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Opus 4.6', from: 'claude-opus-4-6', to: 'claude-opus-4.6', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Opus 4.6 Thinking', from: 'claude-opus-4-6-thinking', to: 'claude-opus-4.6', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Opus 5', from: 'claude-opus-5', to: 'claude-opus-5', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Opus 5 Thinking', from: 'claude-opus-5-thinking', to: 'claude-opus-5', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Opus 5.5', from: 'claude-opus-5-5', to: 'claude-opus-5.5', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Opus 5.5 Thinking', from: 'claude-opus-5-5-thinking', to: 'claude-opus-5.5', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300' },
+  { label: 'Sonnet 5', from: 'claude-sonnet-5', to: 'claude-sonnet-5', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-300' },
+  { label: 'Sonnet 5 Thinking', from: 'claude-sonnet-5-thinking', to: 'claude-sonnet-5', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-300' },
+  { label: 'Sonnet 5.5', from: 'claude-sonnet-5-5', to: 'claude-sonnet-5.5', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-300' },
+  { label: 'Sonnet 5.5 Thinking', from: 'claude-sonnet-5-5-thinking', to: 'claude-sonnet-5.5', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-300' },
+  { label: 'Sonnet 4.6', from: 'claude-sonnet-4-6', to: 'claude-sonnet-4.6', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-300' },
+  { label: 'Sonnet 4.6 Thinking', from: 'claude-sonnet-4-6-thinking', to: 'claude-sonnet-4.6', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-300' },
+  { label: 'Opus 4.5', from: 'claude-opus-4-5-20251101', to: 'claude-opus-4.5', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-300' },
+  { label: 'Opus 4.5 Thinking', from: 'claude-opus-4-5-20251101-thinking', to: 'claude-opus-4.5', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-300' },
+  { label: 'Sonnet 4.5', from: 'claude-sonnet-4-5-20250929', to: 'claude-sonnet-4.5', color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-300' },
+  { label: 'Sonnet 4.5 Thinking', from: 'claude-sonnet-4-5-20250929-thinking', to: 'claude-sonnet-4.5', color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-300' },
+  { label: 'Haiku 4.5', from: 'claude-haiku-4-5-20251001', to: 'claude-haiku-4.5', color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-300' },
+  { label: 'Haiku 4.5 Thinking', from: 'claude-haiku-4-5-20251001-thinking', to: 'claude-haiku-4.5', color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-300' },
+  { label: 'Haiku 5.5', from: 'claude-haiku-5-5', to: 'claude-haiku-5.5', color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-300' },
+  { label: 'Haiku 5.5 Thinking', from: 'claude-haiku-5-5-thinking', to: 'claude-haiku-5.5', color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-300' },
+  { label: 'Grok 4.7', from: 'grok-4.7', to: 'grok-4.7', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-300' }
+]
+
 // Bedrock 预设映射（与后端 DefaultBedrockModelMapping 保持一致）
 const bedrockPresetMappings = [
   { label: 'Fable 5.2', from: 'claude-fable-5-2', to: 'anthropic.claude-fable-5-2', color: 'bg-rose-100 text-rose-700 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-400' },
@@ -479,11 +545,14 @@ const bedrockPresetMappings = [
   { label: 'Haiku 4.5', from: 'claude-haiku-4-5', to: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400' },
 ]
 
+const kiroDefaultMappings = kiroPresetMappings.map(({ from, to }) => ({ from, to }))
+
 // Antigravity 默认映射（从后端 API 获取，与 constants.go 保持一致）
 // 使用 fetchAntigravityDefaultMappings() 异步获取
 import { getAntigravityDefaultModelMapping } from '@/api/admin/accounts'
 
 let _antigravityDefaultMappingsCache: { from: string; to: string }[] | null = null
+let _kiroDefaultMappingsCache: { from: string; to: string }[] | null = null
 
 export async function fetchAntigravityDefaultMappings(): Promise<{ from: string; to: string }[]> {
   if (_antigravityDefaultMappingsCache !== null) {
@@ -496,7 +565,15 @@ export async function fetchAntigravityDefaultMappings(): Promise<{ from: string;
     console.warn('[fetchAntigravityDefaultMappings] API failed, using empty fallback', e)
     return []
   }
-  return _antigravityDefaultMappingsCache
+  return _antigravityDefaultMappingsCache.map(({ from, to }) => ({ from, to }))
+}
+
+export async function fetchKiroDefaultMappings(): Promise<{ from: string; to: string }[]> {
+  if (_kiroDefaultMappingsCache !== null) {
+    return _kiroDefaultMappingsCache.map(({ from, to }) => ({ from, to }))
+  }
+  _kiroDefaultMappingsCache = kiroDefaultMappings.map(({ from, to }) => ({ from, to }))
+  return _kiroDefaultMappingsCache.map(({ from, to }) => ({ from, to }))
 }
 
 // =====================
@@ -525,6 +602,7 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'claude': return claudeModels
     case 'gemini': return geminiModels
     case 'antigravity': return antigravityModels
+    case 'kiro': return kiroModels
     case 'zhipu': return zhipuModels
     case 'qwen': return qwenModels
     case 'deepseek': return deepseekModels
@@ -568,6 +646,7 @@ export function getPresetMappingsByPlatform(platform: string) {
   if (platform === 'gemini') return geminiPresetMappings
   if (platform === 'grok' || platform === 'xai') return grokPresetMappings
   if (platform === 'antigravity') return antigravityPresetMappings
+  if (platform === 'kiro') return kiroPresetMappings
   if (platform === 'bedrock') return bedrockPresetMappings
   return anthropicPresetMappings
 }
@@ -592,8 +671,138 @@ export interface ModelMappingEntry {
   to: string
 }
 
+export interface ModelMappingBuildOptions {
+  // 直连 Kiro：白名单只在后端 MapModel 能折出同一个上游 ID 时存成恒等映射，
+  // 折不出来的同步名字存成 对外名 → 上游 ID。
+  kiroDirect?: boolean
+  // 同步得到的对外名 → 上游 modelId。未知 Claude 名只认这份，不再猜点号位置。
+  kiroUpstreamIDs?: Record<string, string> | null
+}
+
+// 与后端 kiro.MapModel 的明确条目保持一致。
+const kiroKnownUpstreamIDs: Record<string, string> = {
+  'gpt-5.6-sol': 'gpt-5.6-sol',
+  'gpt-5.6-terra': 'gpt-5.6-terra',
+  'gpt-5.6-luna': 'gpt-5.6-luna',
+  'claude-opus-4-8': 'claude-opus-4.8',
+  'claude-opus-4-8-thinking': 'claude-opus-4.8',
+  'claude-opus-4.8': 'claude-opus-4.8',
+  'claude-opus-4-7': 'claude-opus-4.7',
+  'claude-opus-4-7-thinking': 'claude-opus-4.7',
+  'claude-opus-4.7': 'claude-opus-4.7',
+  'claude-opus-4-6': 'claude-opus-4.6',
+  'claude-opus-4-6-thinking': 'claude-opus-4.6',
+  'claude-opus-4.6': 'claude-opus-4.6',
+  'claude-opus-5': 'claude-opus-5',
+  'claude-opus-5-thinking': 'claude-opus-5',
+  'claude-opus-5-5': 'claude-opus-5.5',
+  'claude-opus-5-5-thinking': 'claude-opus-5.5',
+  'claude-opus-5.5': 'claude-opus-5.5',
+  'claude-opus-5.5-thinking': 'claude-opus-5.5',
+  'claude-sonnet-5': 'claude-sonnet-5',
+  'claude-sonnet-5-thinking': 'claude-sonnet-5',
+  'claude-sonnet-5-5': 'claude-sonnet-5.5',
+  'claude-sonnet-5-5-thinking': 'claude-sonnet-5.5',
+  'claude-sonnet-5.5': 'claude-sonnet-5.5',
+  'claude-sonnet-5.5-thinking': 'claude-sonnet-5.5',
+  'claude-sonnet-4-6': 'claude-sonnet-4.6',
+  'claude-sonnet-4-6-thinking': 'claude-sonnet-4.6',
+  'claude-sonnet-4.6': 'claude-sonnet-4.6',
+  'claude-opus-4-5-20251101': 'claude-opus-4.5',
+  'claude-opus-4-5-20251101-thinking': 'claude-opus-4.5',
+  'claude-opus-4.5': 'claude-opus-4.5',
+  'claude-sonnet-4-5-20250929': 'claude-sonnet-4.5',
+  'claude-sonnet-4-5-20250929-thinking': 'claude-sonnet-4.5',
+  'claude-sonnet-4.5': 'claude-sonnet-4.5',
+  'claude-haiku-4-5-20251001': 'claude-haiku-4.5',
+  'claude-haiku-4-5-20251001-thinking': 'claude-haiku-4.5',
+  'claude-haiku-4.5': 'claude-haiku-4.5',
+  'claude-sonnet-4-thinking': 'claude-sonnet-4'
+}
+
+// 与后端 claudeVersionNormalizePattern 相同：不带日期的 claude-{family}-{major}-{minor}。
+const kiroFoldableClaudePattern = /^(claude-(?:sonnet|haiku|opus))-(\d+)-(\d{1,2})(?:-thinking)?$/
+
+// kiroForwardedModelID 模拟后端 resolveKiroUpstreamModel：账号映射目标为 model 时，
+// 转发给上游的实际 modelId。先查固定表，再把 4.5 及以上的短横线版本折成点号，否则原样。
+function kiroForwardedModelID(model: string): string {
+  const trimmed = model.trim()
+  const id = trimmed.toLowerCase()
+  const known = kiroKnownUpstreamIDs[id]
+  if (known) return known
+
+  const base = id.endsWith('-thinking') ? id.slice(0, -'-thinking'.length) : id
+  const matches = kiroFoldableClaudePattern.exec(base)
+  if (matches) {
+    const major = Number(matches[2])
+    const minor = Number(matches[3])
+    if (major > 4 || (major === 4 && minor >= 5)) {
+      return `${matches[1]}-${matches[2]}.${matches[3]}`
+    }
+  }
+  return trimmed
+}
+
+function kiroSyncedUpstreamID(model: string, upstreamIDs?: Record<string, string> | null): string {
+  const trimmed = model.trim()
+  const synced = upstreamIDs?.[trimmed] ?? upstreamIDs?.[trimmed.toLowerCase()]
+  return synced?.trim() ?? ''
+}
+
+// 只有存成恒等后后端转发的上游 ID 正好等于 to，才算白名单。
+// claude-opus-4-5 → claude-opus-4.5 归白名单；claude-3-7-sonnet → claude-3.7-sonnet 仍是映射。
+function isKiroDirectWhitelistPair(from: string, to: string): boolean {
+  return from === to || kiroForwardedModelID(from) === to
+}
+
+// kiroUpstreamModelID 先认默认表和日期别名，再用同步带回的上游 ID。
+// 两边都没有的名字原样保存。
+export function kiroUpstreamModelID(
+  model: string,
+  upstreamIDs?: Record<string, string> | null
+): string {
+  const trimmed = model.trim()
+  const known = kiroKnownUpstreamIDs[trimmed.toLowerCase()]
+  if (known) return known
+  return kiroSyncedUpstreamID(trimmed, upstreamIDs) || trimmed
+}
+
+export function kiroUpstreamIDsFromMetadata(
+  metadata?: Record<string, { id?: string } | undefined> | null
+): Record<string, string> {
+  const ids: Record<string, string> = {}
+  if (!metadata) return ids
+  for (const [name, entry] of Object.entries(metadata)) {
+    const from = name.trim()
+    const upstreamID = entry?.id?.trim()
+    if (!from || !upstreamID) continue
+    ids[from] = upstreamID
+  }
+  return ids
+}
+
+// appendKiroSyncedMappings 只追加还没有的 from。已知表优先，否则用同步带回的上游 ID。
+export function appendKiroSyncedMappings(
+  rows: ModelMappingEntry[],
+  publicNames: string[],
+  upstreamIDs?: Record<string, string> | null
+): { rows: ModelMappingEntry[]; added: number } {
+  const next = rows.map(row => ({ from: row.from, to: row.to }))
+  const existing = new Set(next.map(row => row.from.trim()).filter(Boolean))
+  let added = 0
+  for (const name of publicNames) {
+    const from = name.trim()
+    if (!from || existing.has(from)) continue
+    existing.add(from)
+    next.push({ from, to: kiroUpstreamModelID(from, upstreamIDs) })
+    added += 1
+  }
+  return { rows: next, added }
+}
+
 export function splitModelMappingObject(
-  modelMapping?: Record<string, unknown> | null
+  modelMapping?: Record<string, unknown> | null,
+  options?: ModelMappingBuildOptions
 ): { allowedModels: string[]; modelMappings: ModelMappingEntry[] } {
   const allowedModels: string[] = []
   const modelMappings: ModelMappingEntry[] = []
@@ -608,7 +817,10 @@ export function splitModelMappingObject(
     const to = rawTo.trim()
     if (!from || !to) continue
 
-    if (from === to) {
+    const isWhitelist = options?.kiroDirect
+      ? isKiroDirectWhitelistPair(from, to)
+      : from === to
+    if (isWhitelist) {
       allowedModels.push(from)
     } else {
       modelMappings.push({ from, to })
@@ -621,7 +833,8 @@ export function splitModelMappingObject(
 export function buildModelMappingObject(
   mode: ModelRestrictionMode,
   allowedModels: string[],
-  modelMappings: ModelMappingEntry[]
+  modelMappings: ModelMappingEntry[],
+  options?: ModelMappingBuildOptions
 ): Record<string, string> | null {
   const mapping: Record<string, string> = {}
 
@@ -633,7 +846,12 @@ export function buildModelMappingObject(
       // 写入 model_mapping 会导致 GetMappedModel() 把真实模型映射成 "claude-*"，从而转发失败。
       // 因此这里跳过包含通配符的条目。
       if (!normalizedModel.includes('*')) {
-        mapping[normalizedModel] = normalizedModel
+        // 直连 Kiro 能被 MapModel 折出同一上游 ID 的写成恒等；折不出来的同步名字写上游 ID。
+        const synced = options?.kiroDirect
+          ? kiroSyncedUpstreamID(normalizedModel, options.kiroUpstreamIDs)
+          : ''
+        mapping[normalizedModel] =
+          synced && synced !== kiroForwardedModelID(normalizedModel) ? synced : normalizedModel
       }
     }
   }

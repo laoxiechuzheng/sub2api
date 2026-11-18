@@ -86,6 +86,9 @@ const labelI18nKeys: Record<string, string> = {
   shared: 'monitorCommon.quota.labels.shared',
   pro: 'monitorCommon.quota.labels.pro',
   flash: 'monitorCommon.quota.labels.flash',
+  // Kiro 主额度 / 免费试用赠额（appendKiroCreditTier 的两个 label）
+  credits: 'monitorCommon.quota.labels.credits',
+  bonus: 'monitorCommon.quota.labels.bonus',
 }
 
 function windowLabel(window: string): string {

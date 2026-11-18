@@ -344,6 +344,11 @@ type ResponsesRequest struct {
 	ServiceTier        string              `json:"service_tier,omitempty"`
 	PromptCacheKey     string              `json:"prompt_cache_key,omitempty"`
 	PreviousResponseID string              `json:"previous_response_id,omitempty"`
+
+	// KiroCompat 仅在目标账号为 Kiro 时由网关置位：启用 Kiro 移植引入的 Codex 兼容扩展
+	// （custom_tool_call 历史项、compaction 回放、空输出占位、custom 工具默认 schema 等）。
+	// 不参与序列化；false 时转换行为与上游基线完全一致。
+	KiroCompat bool `json:"-"`
 }
 
 // ResponsesReasoning configures reasoning effort in the Responses API.
@@ -369,15 +374,25 @@ type ResponsesInputItem struct {
 	Content json.RawMessage `json:"content,omitempty"` // string or []ResponsesContentPart
 
 	// type=reasoning (multi-turn replay of encrypted reasoning)
+	// type=compaction 也复用该字段承载压缩摘要信封（见 responses_compaction.go）。
 	EncryptedContent string `json:"encrypted_content,omitempty"`
 
-	// type=function_call
+	// type=compaction（Codex remote compaction v2 把压缩结果原样放回 input 回放）。
+	// 两个字段都带 omitempty：CC→Responses 桥接构造的 item 永不含 compaction，
+	// 序列化输出因此逐字节不变。
+	Summary []ResponsesSummary `json:"summary,omitempty"`
+	Status  string             `json:"status,omitempty"`
+
+	// type=function_call / custom_tool_call
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	Input     string `json:"input,omitempty"`
 	ID        string `json:"id,omitempty"`
 
-	// type=function_call_output
+	// type=function_call_output / custom_tool_call_output
+	// Output is the string form of the tool result. Complex outputs (content-part
+	// arrays) are preserved in outputRaw and rehydrated by the Anthropic converter.
 	Output    string `json:"output,omitempty"`
 	outputRaw json.RawMessage
 }

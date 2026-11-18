@@ -452,6 +452,11 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 			return nil, err
 		}
 		ComputeQuotaResetAt(account.Extra)
+		if isKiroDirectModeAccount(account) {
+			if err := ValidateKiroCreditUnitPriceFromExtra(account.Extra); err != nil {
+				return nil, err
+			}
+		}
 		NormalizeFixedQuotaWindows(account.Extra)
 	}
 	if input.ExpiresAt != nil && *input.ExpiresAt > 0 {
@@ -732,6 +737,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 		ComputeQuotaResetAt(account.Extra)
+		if isKiroDirectModeAccount(account) {
+			if err := ValidateKiroCreditUnitPriceFromExtra(account.Extra); err != nil {
+				return nil, err
+			}
+		}
 		NormalizeFixedQuotaWindows(account.Extra)
 	}
 	if input.Extra == nil {
@@ -1788,6 +1798,23 @@ func (s *adminServiceImpl) EnsureAntigravityPrivacy(ctx context.Context, account
 	}
 	applyAntigravityPrivacyMode(account, mode)
 	return mode
+}
+
+// EnsureKiroProfileArn 检查 Kiro OAuth 账号是否已有 profile_arn，
+// 缺失或为占位符则调用 kiroResolveAndPersistProfileArn 解析并持久化。
+func (s *adminServiceImpl) EnsureKiroProfileArn(ctx context.Context, account *Account) string {
+	if account == nil || account.Platform != PlatformKiro || account.Type != AccountTypeOAuth {
+		return ""
+	}
+	existingARN := strings.TrimSpace(account.GetCredential("profile_arn"))
+	if existingARN != "" && !kiroIsPlaceholderProfileARN(existingARN) {
+		return existingARN
+	}
+	token := strings.TrimSpace(account.GetCredential("access_token"))
+	if token == "" {
+		return ""
+	}
+	return kiroResolveAndPersistProfileArn(ctx, s.accountRepo, account, token)
 }
 
 // ForceAntigravityPrivacy 强制重新设置 Antigravity OAuth 账号隐私，无论当前状态。

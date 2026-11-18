@@ -50,6 +50,18 @@ func anthropicCacheCreationInputTokens(usage AnthropicUsage) int {
 // Responses API response. This is the reverse of ResponsesToAnthropic and
 // enables Anthropic upstream responses to be returned in OpenAI Responses format.
 func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
+	return anthropicToResponsesResponse(resp, nil, false)
+}
+
+// AnthropicToResponsesResponseWithCustomTools converts Anthropic tool_use blocks
+// back to custom_tool_call outputs for tool names that were originally declared
+// as Responses custom/freeform tools. 该入口同时启用 Kiro 移植的扩展映射
+// （如 model_context_window_exceeded → incomplete），仅供 Kiro 账号使用。
+func AnthropicToResponsesResponseWithCustomTools(resp *AnthropicResponse, customTools map[string]bool) *ResponsesResponse {
+	return anthropicToResponsesResponse(resp, customTools, true)
+}
+
+func anthropicToResponsesResponse(resp *AnthropicResponse, customTools map[string]bool, kiroCompat bool) *ResponsesResponse {
 	id := resp.ID
 	if id == "" {
 		id = generateResponsesID()
@@ -104,10 +116,22 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 			if len(block.Input) > 0 {
 				args = string(block.Input)
 			}
+			callID := toResponsesCallID(block.ID)
+			if customTools[block.Name] {
+				outputs = append(outputs, ResponsesOutput{
+					Type:   "custom_tool_call",
+					ID:     generateItemID(),
+					CallID: callID,
+					Name:   block.Name,
+					Input:  extractCustomToolCallInput(args),
+					Status: "completed",
+				})
+				continue
+			}
 			outputs = append(outputs, ResponsesOutput{
 				Type:      "function_call",
 				ID:        generateItemID(),
-				CallID:    toResponsesCallID(block.ID),
+				CallID:    callID,
 				Name:      block.Name,
 				Arguments: args,
 				Status:    "completed",
@@ -138,7 +162,7 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 	out.Output = outputs
 
 	// Map stop_reason → status
-	out.Status = anthropicStopReasonToResponsesStatus(AnthropicStopReasonString(resp.StopReason), resp.Content)
+	out.Status = anthropicStopReasonToResponsesStatus(AnthropicStopReasonString(resp.StopReason), resp.Content, kiroCompat)
 	if out.Status == "incomplete" {
 		out.IncompleteDetails = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
 	}
@@ -167,7 +191,12 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 }
 
 // anthropicStopReasonToResponsesStatus maps Anthropic stop_reason to Responses status.
-func anthropicStopReasonToResponsesStatus(stopReason string, blocks []AnthropicContentBlock) string {
+// model_context_window_exceeded (context full) is reported like max_tokens, as
+// incomplete/max_output_tokens, so Responses/Chat clients can trigger compaction.
+func anthropicStopReasonToResponsesStatus(stopReason string, blocks []AnthropicContentBlock, kiroCompat bool) string {
+	if kiroCompat && stopReason == "model_context_window_exceeded" {
+		return "incomplete"
+	}
 	switch stopReason {
 	case "max_tokens":
 		return "incomplete"
@@ -198,7 +227,15 @@ type AnthropicEventToResponsesState struct {
 	// Current output tracking
 	OutputIndex     int
 	CurrentItemID   string
-	CurrentItemType string // "message" | "function_call" | "reasoning"
+	CurrentItemType string // "message" | "function_call" | "custom_tool_call" | "reasoning"
+
+	// CustomTools marks Responses custom/freeform tool names so Anthropic tool_use
+	// blocks can be restored to custom_tool_call events for Codex routing.
+	CustomTools map[string]bool
+
+	// KiroCompat 仅在目标账号为 Kiro 时置位：启用 Kiro 移植的扩展行为
+	// （model_context_window_exceeded → incomplete、function_call 参数始终归一为 JSON 对象等）。
+	KiroCompat bool
 
 	// For message output: accumulate text parts
 	ContentIndex int
@@ -209,10 +246,15 @@ type AnthropicEventToResponsesState struct {
 	// For function_call: track per-output info
 	CurrentCallID string
 	CurrentName   string
+	// CurrentArgs accumulates input_json_delta fragments for the currently
+	// open function_call. Codex treats function_call_arguments.done and
+	// output_item.done as authoritative for tool execution, so the full
+	// arguments must be carried on both terminal events — the streamed
+	// deltas alone are not enough.
+	CurrentArgs string
 
 	// Content of the currently open item, folded into Outputs when it closes.
 	CurrentContent             []ResponsesContentPart // message
-	CurrentArgs                string                 // function_call
 	CurrentSummary             string                 // reasoning
 	CurrentThinking            AnthropicContentBlock
 	PreserveThinkingSignatures bool
@@ -313,7 +355,7 @@ func FinalizeAnthropicResponsesStream(state *AnthropicEventToResponsesState) []R
 	// Close any open item
 	events = append(events, closeCurrentResponsesItem(state)...)
 
-	status, incompleteDetails := anthropicResponsesStreamTerminalState(state.StopReason)
+	status, incompleteDetails := anthropicResponsesStreamTerminalState(state.StopReason, state.KiroCompat)
 	events = append(events, makeResponsesCompletedEvent(state, status, incompleteDetails))
 	state.CompletedSent = true
 	return events
@@ -436,8 +478,13 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 
 		state.CurrentItemID = generateItemID()
 		state.CurrentItemType = "function_call"
+		if state.CustomTools[evt.ContentBlock.Name] {
+			state.CurrentItemType = "custom_tool_call"
+		}
 		state.CurrentCallID = toResponsesCallID(evt.ContentBlock.ID)
 		state.CurrentName = evt.ContentBlock.Name
+		state.CurrentArgs = ""
+		state.currentArgsBuffer = nil
 		// The canonical Anthropic stream leaves input empty here and streams the
 		// arguments as input_json_delta, but Anthropic-compatible relays may put
 		// the complete arguments on this event and never send a delta. Keep them
@@ -448,7 +495,7 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 		events = append(events, makeResponsesEvent(state, "response.output_item.added", &ResponsesStreamEvent{
 			OutputIndex: state.OutputIndex,
 			Item: &ResponsesOutput{
-				Type:   "function_call",
+				Type:   state.CurrentItemType,
 				ID:     state.CurrentItemID,
 				CallID: state.CurrentCallID,
 				Name:   state.CurrentName,
@@ -497,7 +544,11 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 		// A real delta supersedes whatever content_block_start carried; keeping
 		// both would splice two complete JSON documents together.
 		state.PendingToolInput = ""
+		// Accumulate the fragment so terminal events can carry the full tool input.
 		state.CurrentArgs = appendStreamString(&state.currentArgsBuffer, state.CurrentArgs, evt.Delta.PartialJSON)
+		if state.CurrentItemType == "custom_tool_call" {
+			return nil
+		}
 		return []ResponsesStreamEvent{makeResponsesEvent(state, "response.function_call_arguments.delta", &ResponsesStreamEvent{
 			OutputIndex: state.OutputIndex,
 			Delta:       evt.Delta.PartialJSON,
@@ -549,18 +600,45 @@ func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *Anthropic
 		}
 		state.PendingToolInput = ""
 
-		// Emit function_call_arguments.done + output item done.
-		// arguments must repeat exactly what the deltas already streamed for this
-		// item: clients reconcile the done event against the accumulated
-		// function_call_arguments.delta payloads and reject the call as
-		// inconsistent_tool_call when the two disagree. Omitting the field left it
-		// empty while the deltas carried the whole JSON.
+		// Emit function_call_arguments.done + output item done. Codex needs the
+		// full arguments on both terminal events to deserialize and execute the
+		// call, and clients reconcile the done event against the accumulated
+		// function_call_arguments.delta payloads (inconsistent_tool_call when
+		// they disagree), so carry the accumulated buffer (defaulting to "{}").
 		events = append(events, makeResponsesEvent(state, "response.function_call_arguments.done", &ResponsesStreamEvent{
 			OutputIndex: state.OutputIndex,
 			ItemID:      state.CurrentItemID,
 			CallID:      state.CurrentCallID,
 			Name:        state.CurrentName,
-			Arguments:   state.CurrentArgs,
+			Arguments:   functionCallDoneArguments(state),
+		}))
+		events = append(events, closeCurrentResponsesItem(state)...)
+		return events
+
+	case "custom_tool_call":
+		// 与 function_call 分支同理：中转把完整参数放在 content_block_start 上且不发
+		// delta 时，seed 是唯一来源。custom 工具不向客户端流式发参数 delta，只需把
+		// seed 并入缓冲，否则 input 为空、工具以空参数执行。
+		if state.CurrentArgs == "" && state.PendingToolInput != "" {
+			state.CurrentArgs = state.PendingToolInput
+			state.currentArgsBuffer = nil
+		}
+		state.PendingToolInput = ""
+		input := extractCustomToolCallInput(normalizeResponsesFunctionArgs(state.CurrentArgs))
+		events := []ResponsesStreamEvent{}
+		if input != "" {
+			events = append(events, makeResponsesEvent(state, "response.custom_tool_call_input.delta", &ResponsesStreamEvent{
+				OutputIndex: state.OutputIndex,
+				ItemID:      state.CurrentItemID,
+				Delta:       input,
+			}))
+		}
+		events = append(events, makeResponsesEvent(state, "response.custom_tool_call_input.done", &ResponsesStreamEvent{
+			OutputIndex: state.OutputIndex,
+			ItemID:      state.CurrentItemID,
+			CallID:      state.CurrentCallID,
+			Name:        state.CurrentName,
+			Input:       input,
 		}))
 		events = append(events, closeCurrentResponsesItem(state)...)
 		return events
@@ -628,7 +706,7 @@ func anthToResHandleMessageStop(state *AnthropicEventToResponsesState) []Respons
 	var events []ResponsesStreamEvent
 	events = append(events, closeCurrentResponsesItem(state)...)
 
-	status, incompleteDetails := anthropicResponsesStreamTerminalState(state.StopReason)
+	status, incompleteDetails := anthropicResponsesStreamTerminalState(state.StopReason, state.KiroCompat)
 	events = append(events, makeResponsesCompletedEvent(state, status, incompleteDetails))
 	state.CompletedSent = true
 	return events
@@ -636,8 +714,8 @@ func anthToResHandleMessageStop(state *AnthropicEventToResponsesState) []Respons
 
 // --- helper functions ---
 
-func anthropicResponsesStreamTerminalState(stopReason string) (string, *ResponsesIncompleteDetails) {
-	if stopReason == "max_tokens" {
+func anthropicResponsesStreamTerminalState(stopReason string, kiroCompat bool) (string, *ResponsesIncompleteDetails) {
+	if stopReason == "max_tokens" || (kiroCompat && stopReason == "model_context_window_exceeded") {
 		return "incomplete", &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
 	}
 	return "completed", nil
@@ -661,45 +739,27 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
 		return nil
 	}
 
-	// Assemble the full item: both output_item.done and response.completed must
-	// carry its content. Emitting only {type,id,status} makes SDK-side
-	// accumulation produce an empty output.
-	item := ResponsesOutput{
-		Type:   state.CurrentItemType,
-		ID:     state.CurrentItemID,
-		Status: "completed",
-	}
-	switch state.CurrentItemType {
-	case "message":
-		item.Role = "assistant"
-		item.Content = state.CurrentContent
-	case "function_call":
-		item.CallID = state.CurrentCallID
-		item.Name = state.CurrentName
-		args := state.CurrentArgs
-		if args == "" {
-			args = "{}"
-		}
-		item.Arguments = args
-	case "reasoning":
-		if state.PreserveThinkingSignatures && (state.CurrentThinking.Signature != "" || state.CurrentThinking.Data != "") {
-			state.CurrentThinking.Thinking = state.CurrentSummary
-			item.EncryptedContent = encodeAnthropicThinking(state.CurrentThinking)
-		}
-		if state.CurrentSummary != "" {
-			item.Summary = []ResponsesSummary{{Type: "summary_text", Text: state.CurrentSummary}}
-		}
-	}
-	state.Outputs = append(state.Outputs, item)
+	itemType := state.CurrentItemType
+	itemID := state.CurrentItemID
+	// Capture the function_call identity/arguments before the reset below so
+	// the terminal output_item.done can carry them — Codex materializes the
+	// tool call from this item, and empty call_id/name/arguments make it
+	// unroutable (observed as "only chat, no tool calls").
+	callID := state.CurrentCallID
+	name := state.CurrentName
+	args := state.CurrentArgs
+	content := state.CurrentContent
+	summary := state.CurrentSummary
+	thinking := state.CurrentThinking
 
 	// Reset
 	state.CurrentItemType = ""
 	state.CurrentItemID = ""
 	state.CurrentCallID = ""
 	state.CurrentName = ""
-	state.CurrentContent = nil
 	state.CurrentArgs = ""
 	state.currentArgsBuffer = nil
+	state.CurrentContent = nil
 	state.PendingToolInput = ""
 	state.CurrentSummary = ""
 	state.currentSummaryBuffer = nil
@@ -710,10 +770,61 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
 	state.OutputIndex++
 	state.ContentIndex = 0
 
+	// Assemble the full item: both output_item.done and response.completed must
+	// carry its content. Emitting only {type,id,status} makes SDK-side
+	// accumulation produce an empty output.
+	item := ResponsesOutput{
+		Type:   itemType,
+		ID:     itemID,
+		Status: "completed",
+	}
+	switch itemType {
+	case "message":
+		item.Role = "assistant"
+		item.Content = content
+	case "function_call":
+		item.CallID = callID
+		item.Name = name
+		item.Arguments = normalizeResponsesFunctionArgs(args)
+	case "custom_tool_call":
+		item.CallID = callID
+		item.Name = name
+		item.Input = extractCustomToolCallInput(normalizeResponsesFunctionArgs(args))
+	case "reasoning":
+		if summary != "" {
+			item.Summary = []ResponsesSummary{{Type: "summary_text", Text: summary}}
+		}
+		if state.PreserveThinkingSignatures && (thinking.Signature != "" || thinking.Data != "") {
+			thinking.Thinking = summary
+			item.EncryptedContent = encodeAnthropicThinking(thinking)
+		}
+	}
+	state.Outputs = append(state.Outputs, item)
+
 	return []ResponsesStreamEvent{makeResponsesEvent(state, "response.output_item.done", &ResponsesStreamEvent{
 		OutputIndex: state.OutputIndex - 1, // Use the index before increment
 		Item:        &item,
 	})}
+}
+
+// normalizeResponsesFunctionArgs returns a JSON object string for function_call
+// arguments, defaulting empty input to "{}" so strict clients (Codex CLI) can
+// always deserialize the call. Mirrors the non-streaming path in
+// AnthropicToResponsesResponse.
+// functionCallDoneArguments 返回 function_call_arguments.done 事件携带的参数。
+// 基线行为是原样透传累积缓冲；Kiro 账号额外把空参数归一为 "{}"。
+func functionCallDoneArguments(state *AnthropicEventToResponsesState) string {
+	if state.KiroCompat {
+		return normalizeResponsesFunctionArgs(state.CurrentArgs)
+	}
+	return state.CurrentArgs
+}
+
+func normalizeResponsesFunctionArgs(args string) string {
+	if strings.TrimSpace(args) == "" {
+		return "{}"
+	}
+	return args
 }
 
 func makeResponsesCreatedEvent(state *AnthropicEventToResponsesState) ResponsesStreamEvent {

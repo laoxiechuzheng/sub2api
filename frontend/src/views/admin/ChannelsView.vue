@@ -423,13 +423,13 @@
                 <label class="input-label text-xs mb-0">{{ t('admin.channels.form.modelPricing', 'Model Pricing') }}</label>
                 <div class="flex items-center gap-2">
                   <button
-                    v-if="supportsPricingModelSync(section.platform)"
+                    v-if="supportsPricingModelSync(section.platform) || isKiroPlatform(section.platform)"
                     type="button"
                     @click="syncLatestModels(sIdx)"
                     :disabled="!!syncingPlatform"
                     class="text-xs text-gray-500 hover:text-primary-600 disabled:opacity-50"
                   >
-                    {{ syncingPlatform === section.platform ? t('admin.channels.form.syncingModels') : t('admin.channels.form.syncLatestModels') }}
+                    {{ syncingPlatform === section.platform ? pricingModelsActionLoadingLabel(section.platform) : pricingModelsActionLabel(section.platform) }}
                   </button>
                   <button type="button" @click="addPricingEntry(sIdx)" class="text-xs text-primary-600 hover:text-primary-700">
                     + {{ t('common.add', 'Add') }}
@@ -635,6 +635,7 @@ import { extractApiErrorMessage } from '@/utils/apiError'
 import { adminAPI } from '@/api/admin'
 import type { Channel, ChannelModelPricing, CreateChannelRequest, UpdateChannelRequest, AccountStatsPricingRule } from '@/api/admin/channels'
 import type { PricingFormEntry } from '@/components/admin/channel/types'
+import { getModelsByPlatform } from '@/composables/useModelWhitelist'
 import { apiIntervalsToForm, apiTimePricingToForm, createDefaultTimePricingForm, findModelConflict, formIntervalsToAPI, formReasoningEffortMultipliersToAPI, formTimePricingToAPI, isValidPositiveMultiplier, mTokToPerToken, perTokenToMTok, validateIntervals, validateReasoningEffortMultipliers, validateTimePricing } from '@/components/admin/channel/types'
 import type { AdminGroup, GroupPlatform } from '@/types'
 import type { Column } from '@/components/common/types'
@@ -671,6 +672,7 @@ const WEB_SEARCH_EMULATION_PLATFORMS: ReadonlySet<string> = new Set([
   'opencode_go',
   'minimax',
   'zhipu',
+  'kiro',
 ])
 
 const webSearchGlobalEnabled = ref(false)
@@ -895,12 +897,58 @@ function addPricingEntry(sectionIdx: number) {
 
 const syncingPlatform = ref<string | null>(null)
 
+function createTokenPricingEntry(models: string[], defaults: Partial<PricingFormEntry> = {}): PricingFormEntry {
+  return {
+    models,
+    billing_mode: 'token',
+    input_price: null,
+    output_price: null,
+    cache_write_price: null,
+    cache_write_1h_price: null,
+    cache_write_12h_price: null,
+    cache_read_price: null,
+    fast_multiplier: null,
+    flex_multiplier: null,
+    ultrafast_multiplier: null,
+    reasoning_effort_multipliers: null,
+    image_input_price: null,
+    image_output_price: null,
+    per_request_price: null,
+    intervals: [],
+    time_pricing: createDefaultTimePricingForm(),
+    ...defaults
+  }
+}
+
+function isKiroPlatform(platform: string): boolean {
+  return platform === 'kiro'
+}
+
+function pricingModelsActionLabel(platform: string): string {
+  return isKiroPlatform(platform)
+    ? t('admin.channels.form.fillDefaultModels', '填充默认模型')
+    : t('admin.channels.form.syncLatestModels')
+}
+
+function pricingModelsActionLoadingLabel(platform: string): string {
+  return isKiroPlatform(platform)
+    ? t('admin.channels.form.fillingDefaultModels', '填充中...')
+    : t('admin.channels.form.syncingModels')
+}
+
 async function syncLatestModels(sectionIdx: number) {
   const section = form.platforms[sectionIdx]
-  if (!section || syncingPlatform.value || !supportsPricingModelSync(section.platform)) return
+  // kiro 无定价目录 provider，但走 fork 专属的“填充默认模型”入口。
+  if (!section || syncingPlatform.value) return
+  if (!supportsPricingModelSync(section.platform) && !isKiroPlatform(section.platform)) return
   const platform = section.platform
   syncingPlatform.value = platform
   try {
+    if (isKiroPlatform(platform)) {
+      await fillKiroDefaultModels(sectionIdx)
+      return
+    }
+
     const result = await adminAPI.channels.syncPricingModels(platform)
     // Collect all model names already present in this platform's pricing entries
     const existingModels = new Set<string>()
@@ -937,6 +985,44 @@ async function syncLatestModels(sectionIdx: number) {
     appStore.showError(extractApiErrorMessage(error, t('admin.channels.form.syncModelsError')))
   } finally {
     syncingPlatform.value = null
+  }
+}
+
+async function fillKiroDefaultModels(sectionIdx: number) {
+  const section = form.platforms[sectionIdx]
+  const existingModels = new Set<string>()
+  for (const entry of section.model_pricing) {
+    for (const model of entry.models) existingModels.add(model)
+  }
+
+  const newModels = getModelsByPlatform('kiro').filter(model => !existingModels.has(model))
+  if (newModels.length === 0) {
+    appStore.showSuccess(t('admin.channels.form.fillDefaultModelsAlreadyConfigured', '默认模型已全部配置'))
+    return
+  }
+
+  const entries = await Promise.all(newModels.map(async (model) => {
+    const defaults = await loadDefaultPricingForRequestModel(model)
+    return createTokenPricingEntry([model], defaults)
+  }))
+
+  section.model_pricing.push(...entries)
+  appStore.showSuccess(t('admin.channels.form.fillDefaultModelsSuccess', { count: newModels.length }, `已填充 ${newModels.length} 个默认模型`))
+}
+
+async function loadDefaultPricingForRequestModel(model: string): Promise<Partial<PricingFormEntry>> {
+  try {
+    const result = await adminAPI.channels.getModelDefaultPricing(model)
+    if (!result.found) return {}
+    return {
+      input_price: perTokenToMTok(result.input_price ?? null),
+      output_price: perTokenToMTok(result.output_price ?? null),
+      cache_write_price: perTokenToMTok(result.cache_write_price ?? null),
+      cache_read_price: perTokenToMTok(result.cache_read_price ?? null),
+      image_output_price: perTokenToMTok(result.image_output_price ?? null)
+    }
+  } catch {
+    return {}
   }
 }
 

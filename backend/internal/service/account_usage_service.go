@@ -105,10 +105,17 @@ type antigravityUsageCache struct {
 	timestamp time.Time
 }
 
+// kiroUsageCache 缓存 Kiro 额度快照
+type kiroUsageCache struct {
+	usageInfo *UsageInfo
+	timestamp time.Time
+}
+
 const (
 	apiCacheTTL         = 3 * time.Minute
 	apiErrorCacheTTL    = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
 	antigravityErrorTTL = 1 * time.Minute        // Antigravity 错误缓存 TTL（可恢复错误）
+	kiroUsageErrorTTL   = 1 * time.Minute        // Kiro 错误缓存 TTL（可恢复错误）
 	apiQueryMaxJitter   = 800 * time.Millisecond // 用量查询最大随机延迟
 	windowStatsCacheTTL = 1 * time.Minute
 	openAIProbeCacheTTL = 10 * time.Minute
@@ -121,8 +128,10 @@ type UsageCache struct {
 	apiCache          sync.Map           // accountID -> *apiUsageCache
 	windowStatsCache  sync.Map           // accountID -> *windowStatsCache
 	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
+	kiroUsageCache    sync.Map           // accountID -> *kiroUsageCache
 	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
+	kiroUsageFlight   singleflight.Group // 防止同一 Kiro 账号的并发请求击穿缓存
 	openAIProbeCache  sync.Map           // accountID -> time.Time
 	grokProbeCache    sync.Map           // accountID -> last billing probe attempt
 }
@@ -143,6 +152,7 @@ type WindowStats struct {
 	Cost         float64 `json:"cost"`
 	StandardCost float64 `json:"standard_cost"`
 	UserCost     float64 `json:"user_cost"`
+	KiroCredits  float64 `json:"kiro_credits"`
 }
 
 // UsageProgress 使用量进度
@@ -196,6 +206,37 @@ type AICredit struct {
 	MinimumBalance float64 `json:"minimum_balance,omitempty"`
 }
 
+// KiroCreditProgress 表示 Kiro 主额度或 Bonus 的用量进度。
+type KiroCreditProgress struct {
+	CurrentUsage   float64    `json:"current_usage"`
+	UsageLimit     float64    `json:"usage_limit"`
+	PercentageUsed float64    `json:"percentage_used"`
+	DaysRemaining  int        `json:"days_remaining,omitempty"`
+	ExpiryDate     *time.Time `json:"expiry_date,omitempty"`
+}
+
+// KiroBonusProgress 表示官方 bonuses[] 中的一条赠送额度(兑换码/活动)。
+type KiroBonusProgress struct {
+	Name           string     `json:"name,omitempty"`
+	Status         string     `json:"status,omitempty"`
+	BonusCode      string     `json:"bonus_code,omitempty"`
+	Description    string     `json:"description,omitempty"`
+	CurrentUsage   float64    `json:"current_usage"`
+	UsageLimit     float64    `json:"usage_limit"`
+	PercentageUsed float64    `json:"percentage_used"`
+	DaysRemaining  int        `json:"days_remaining,omitempty"`
+	ExpiryDate     *time.Time `json:"expiry_date,omitempty"`
+	RedeemedAt     *time.Time `json:"redeemed_at,omitempty"`
+}
+
+// KiroOverageInfo 表示 Kiro 账号的超刷(overage)状态:超额用量与产生的费用。
+type KiroOverageInfo struct {
+	CurrentOverages float64 `json:"current_overages"`
+	OverageCharges  float64 `json:"overage_charges"`
+	CurrencyCode    string  `json:"currency_code,omitempty"`
+	CurrencySymbol  string  `json:"currency_symbol,omitempty"`
+}
+
 // UsageInfo 账号使用量信息
 type UsageInfo struct {
 	Source             string         `json:"source,omitempty"`               // "passive" or "active"
@@ -244,6 +285,22 @@ type UsageInfo struct {
 
 	// Antigravity AI Credits 余额
 	AICredits []AICredit `json:"ai_credits,omitempty"`
+
+	// Kiro Credits 额度信息(含超刷 overage)
+	KiroSubscriptionName string               `json:"kiro_subscription_name,omitempty"`
+	KiroSubscriptionType string               `json:"kiro_subscription_type,omitempty"`
+	KiroResetAt          *time.Time           `json:"kiro_reset_at,omitempty"`
+	KiroOveragesEnabled  bool                 `json:"kiro_overages_enabled,omitempty"`
+	KiroCredit           *KiroCreditProgress  `json:"kiro_credit,omitempty"`
+	KiroBonus            *KiroCreditProgress  `json:"kiro_bonus,omitempty"`
+	KiroBonuses          []*KiroBonusProgress `json:"kiro_bonuses,omitempty"`
+	KiroOverage          *KiroOverageInfo     `json:"kiro_overage,omitempty"`
+	KiroQuotaState       string               `json:"kiro_quota_state,omitempty"`
+	KiroQuotaReason      string               `json:"kiro_quota_reason,omitempty"`
+	KiroQuotaResetAt     *time.Time           `json:"kiro_quota_reset_at,omitempty"`
+	KiroRuntimeState     string               `json:"kiro_runtime_state,omitempty"`
+	KiroRuntimeReason    string               `json:"kiro_runtime_reason,omitempty"`
+	KiroRuntimeResetAt   *time.Time           `json:"kiro_runtime_reset_at,omitempty"`
 
 	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
 	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
@@ -320,6 +377,11 @@ type ClaudeUsageFetcher interface {
 	FetchUsageWithOptions(ctx context.Context, opts *ClaudeUsageFetchOptions) (*ClaudeUsageResponse, error)
 }
 
+type KiroUsageTokenProvider interface {
+	GetAccessToken(ctx context.Context, account *Account) (string, error)
+	ForceRefreshAccessToken(ctx context.Context, account *Account) (string, error)
+}
+
 // AccountUsageService 账号使用量查询服务
 type AccountUsageService struct {
 	accountRepo             AccountRepository
@@ -327,12 +389,14 @@ type AccountUsageService struct {
 	usageFetcher            ClaudeUsageFetcher
 	geminiQuotaService      *GeminiQuotaService
 	antigravityQuotaFetcher *AntigravityQuotaFetcher
+	kiroTokenProvider       KiroUsageTokenProvider
 	grokQuotaFetcher        *GrokQuotaFetcher
 	grokQuotaService        *GrokQuotaService
 	openAIQuotaService      *OpenAIQuotaService
 	cache                   *UsageCache
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
+	kiroCooldownStore       KiroCooldownStore
 	agentIdentityTaskMu     sync.Mutex
 	agentIdentityWS         agentIdentityWSConnectionInvalidator
 }
@@ -364,6 +428,20 @@ func NewAccountUsageService(
 		identityCache:           identityCache,
 		tlsFPProfileService:     tlsFPProfileService,
 	}
+}
+
+func (s *AccountUsageService) SetKiroTokenProvider(provider KiroUsageTokenProvider) *AccountUsageService {
+	if s != nil {
+		s.kiroTokenProvider = provider
+	}
+	return s
+}
+
+func (s *AccountUsageService) SetKiroCooldownStore(store KiroCooldownStore) *AccountUsageService {
+	if s != nil {
+		s.kiroCooldownStore = store
+	}
+	return s
 }
 
 func supportsAnthropicPassiveUsage(account *Account) bool {
@@ -405,6 +483,10 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
 		return usage, err
+	}
+
+	if isKiroDirectModeAccount(account) {
+		return s.getKiroUsage(ctx, account, "active", forceProbe)
 	}
 
 	// Antigravity 平台：使用 AntigravityQuotaFetcher 获取额度
@@ -653,6 +735,14 @@ func (s *AccountUsageService) getPassiveUsageForAccount(ctx context.Context, acc
 	if err := scopedAccountAccess(ctx, s.accountRepo, account, "accounts.usage.read", false); err != nil {
 		return nil, err
 	}
+
+	if account != nil && account.Platform == PlatformKiro {
+		if account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey {
+			return nil, fmt.Errorf("passive usage only supported for Kiro OAuth/APIKey accounts")
+		}
+		return s.getKiroUsage(ctx, account, "passive", false)
+	}
+
 	if !supportsAnthropicPassiveUsage(account) {
 		return nil, fmt.Errorf("passive usage only supported for Anthropic OAuth/SetupToken accounts")
 	}
@@ -1492,6 +1582,7 @@ func (s *AccountUsageService) addWindowStats(ctx context.Context, account *Accou
 			Cost:         stats.Cost,
 			StandardCost: stats.StandardCost,
 			UserCost:     stats.UserCost,
+			KiroCredits:  stats.KiroCredits,
 		}
 
 		// 缓存窗口统计（1 分钟）
@@ -1523,6 +1614,7 @@ func (s *AccountUsageService) GetTodayStats(ctx context.Context, accountID int64
 		Cost:         stats.Cost,
 		StandardCost: stats.StandardCost,
 		UserCost:     stats.UserCost,
+		KiroCredits:  stats.KiroCredits,
 	}, nil
 }
 
@@ -1605,6 +1697,7 @@ func windowStatsFromAccountStats(stats *usagestats.AccountStats) *WindowStats {
 		Cost:         stats.Cost,
 		StandardCost: stats.StandardCost,
 		UserCost:     stats.UserCost,
+		KiroCredits:  stats.KiroCredits,
 	}
 }
 

@@ -95,6 +95,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   gemini: 'Gemini',
   antigravity: 'Antigravity',
+  kiro: 'Kiro',
   grok: 'Grok',
   kimi: 'Kimi',
   zhipu: 'Zhipu GLM',

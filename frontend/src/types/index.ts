@@ -635,6 +635,14 @@ export interface Group {
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
   require_oauth_only: boolean
   require_privacy_set: boolean
+  kiro_auto_sticky_enabled: boolean
+  kiro_sticky_session_ttl_seconds: number
+  kiro_cache_emulation_enabled: boolean
+  kiro_cache_emulation_ratio: number
+  kiro_cache_emulation_mode: 'uniform' | 'independent'
+  kiro_cache_creation_emulation_ratio: number
+  kiro_cache_read_emulation_ratio: number
+  kiro_endpoint_mode?: string
   created_at: string
   updated_at: string
 }
@@ -921,6 +929,14 @@ export interface CreateGroupRequest {
   reasoning_effort_mappings?: ReasoningEffortMapping[]
   require_oauth_only?: boolean
   require_privacy_set?: boolean
+  kiro_auto_sticky_enabled?: boolean
+  kiro_sticky_session_ttl_seconds?: number
+  kiro_cache_emulation_enabled?: boolean
+  kiro_cache_emulation_ratio?: number
+  kiro_cache_emulation_mode?: 'uniform' | 'independent'
+  kiro_cache_creation_emulation_ratio?: number
+  kiro_cache_read_emulation_ratio?: number
+  kiro_endpoint_mode?: string
   // 从指定分组复制账号
   copy_accounts_from_group_ids?: number[]
 }
@@ -990,6 +1006,14 @@ export interface UpdateGroupRequest {
   reasoning_effort_mappings?: ReasoningEffortMapping[]
   require_oauth_only?: boolean
   require_privacy_set?: boolean
+  kiro_auto_sticky_enabled?: boolean
+  kiro_sticky_session_ttl_seconds?: number
+  kiro_cache_emulation_enabled?: boolean
+  kiro_cache_emulation_ratio?: number
+  kiro_cache_emulation_mode?: 'uniform' | 'independent'
+  kiro_cache_creation_emulation_ratio?: number
+  kiro_cache_read_emulation_ratio?: number
+  kiro_endpoint_mode?: string
   copy_accounts_from_group_ids?: number[]
 }
 
@@ -1334,6 +1358,7 @@ export interface Account {
   extra?: (CodexUsageSnapshot & OpenAICompactState & {
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
+    kiro_credit_unit_price_usd?: number
     upstream_billing_probe_enabled?: boolean
     upstream_billing_rate_sync_enabled?: boolean
     upstream_billing_probe?: UpstreamBillingProbeSnapshot
@@ -1391,6 +1416,12 @@ export interface Account {
   overload_until: string | null
   temp_unschedulable_until: string | null
   temp_unschedulable_reason: string | null
+  kiro_quota_state?: string | null
+  kiro_quota_reason?: string | null
+  kiro_quota_reset_at?: string | null
+  kiro_runtime_state?: string | null
+  kiro_runtime_reason?: string | null
+  kiro_runtime_reset_at?: string | null
 
   // Session window fields (5-hour window)
   session_window_start: string | null
@@ -1484,6 +1515,7 @@ export interface WindowStats {
   cost: number // Account cost (account multiplier)
   standard_cost?: number
   user_cost?: number
+  kiro_credits?: number
 }
 
 export interface UsageProgress {
@@ -1513,6 +1545,36 @@ export interface AntigravityQuotaGroup {
 export interface AntigravityModelQuota {
   utilization: number // 使用率 0-100
   reset_time: string  // 重置时间 ISO8601
+}
+
+export interface KiroCreditProgress {
+  current_usage: number
+  usage_limit: number
+  percentage_used: number
+  days_remaining?: number
+  expiry_date?: string | null
+}
+
+// Kiro bonuses[] 中的一条赠送额度（兑换码/活动）
+export interface KiroBonusProgress {
+  name?: string
+  status?: string // ACTIVE | EXHAUSTED
+  bonus_code?: string
+  description?: string
+  current_usage: number
+  usage_limit: number
+  percentage_used: number
+  days_remaining?: number
+  expiry_date?: string | null
+  redeemed_at?: string | null
+}
+
+// Kiro 账号的超刷（overage）状态：超额用量与产生的费用
+export interface KiroOverageInfo {
+  current_overages: number
+  overage_charges: number
+  currency_code?: string
+  currency_symbol?: string
 }
 
 export interface GrokQuotaWindow {
@@ -1596,6 +1658,21 @@ export interface AccountUsageInfo {
     amount?: number
     minimum_balance?: number
   }> | null
+  kiro_subscription_name?: string | null
+  kiro_subscription_type?: string | null
+  kiro_reset_at?: string | null
+  kiro_overages_enabled?: boolean
+  kiro_credit?: KiroCreditProgress | null
+  kiro_bonus?: KiroCreditProgress | null
+  kiro_bonuses?: KiroBonusProgress[] | null
+  kiro_overage?: KiroOverageInfo | null
+  kiro_quota_state?: string | null
+  kiro_quota_reason?: string | null
+  kiro_quota_reset_at?: string | null
+  kiro_runtime_state?: string | null
+  kiro_runtime_reason?: string | null
+  kiro_runtime_reset_at?: string | null
+
   // Antigravity 403 forbidden 状态
   is_forbidden?: boolean
   forbidden_reason?: string
@@ -1961,6 +2038,10 @@ export interface AdminUsageLog extends UsageLog {
   account_rate_multiplier?: number | null
   // 自定义定价规则计算的账号统计费用（nil 时使用 total_cost * multiplier）
   account_stats_cost?: number | null
+  // 本次消耗的上游积分（Kiro credits，仅管理员可见）
+  upstream_credits?: number | null
+  // 按账号当前积分单价估算的上游成本（USD，未设单价时为空）
+  upstream_credit_cost?: number | null
 
   // 渠道 ID 和计费等级（仅管理员可见）
   channel_id?: number | null

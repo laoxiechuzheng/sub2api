@@ -43,6 +43,12 @@ function makeAccount(overrides: Partial<Account>): Account {
     overload_until: null,
     temp_unschedulable_until: null,
     temp_unschedulable_reason: null,
+    kiro_quota_state: null,
+    kiro_quota_reason: null,
+    kiro_quota_reset_at: null,
+    kiro_runtime_state: null,
+    kiro_runtime_reason: null,
+    kiro_runtime_reset_at: null,
     session_window_start: null,
     session_window_end: null,
     session_window_status: null,
@@ -251,4 +257,89 @@ describe('AccountStatusIndicator', () => {
     // AICredits 积分耗尽状态应显示
     expect(wrapper.text()).toContain('admin.accounts.status.creditsExhausted')
   })
+
+  it('Kiro 运行时冷却在状态列复用限流展示', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 5,
+          name: 'kiro-cooldown',
+          platform: 'kiro',
+          kiro_runtime_state: 'cooldown',
+          kiro_runtime_reason: 'rate_limit_exceeded',
+          kiro_runtime_reset_at: '2099-03-15T00:00:00Z'
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('admin.accounts.status.rateLimited')
+    expect(wrapper.text()).toContain('admin.accounts.status.rateLimitedAutoResume')
+    expect(wrapper.text()).toContain('429')
+  })
+
+  it('Kiro suspended 在状态列显示为 forbidden', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 6,
+          name: 'kiro-suspended',
+          platform: 'kiro',
+          kiro_runtime_state: 'suspended',
+          kiro_runtime_reason: 'account_suspended',
+          kiro_runtime_reset_at: '2099-03-15T00:00:00Z'
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('admin.accounts.forbidden')
+  })
+
+  it('Kiro 超刷状态显示 overage 徽标（active 警示 / exhausted 危险）', () => {
+    const active = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 7,
+          name: 'kiro-overage-active',
+          platform: 'kiro',
+          kiro_quota_state: 'overage_active'
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+    expect(active.text()).toContain('admin.accounts.status.overageActive')
+
+    const exhausted = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 8,
+          name: 'kiro-overage-exhausted',
+          platform: 'kiro',
+          kiro_quota_state: 'overage_exhausted',
+          kiro_quota_reset_at: '2099-03-15T00:00:00Z'
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+    expect(exhausted.text()).toContain('admin.accounts.status.overageExhausted')
+    expect(exhausted.text()).toContain('admin.accounts.status.overageExhaustedUntil')
+  })
+
 })

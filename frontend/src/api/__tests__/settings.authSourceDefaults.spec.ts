@@ -12,7 +12,7 @@ import { listPlatformIds } from "@/constants/platformCatalog";
 
 /** 与后端 AllowedQuotaPlatforms 一致的全部具体平台（平台清单）。 */
 const quotaPlatforms = [
-  "anthropic", "openai", "gemini", "antigravity", "grok",
+  "anthropic", "openai", "gemini", "antigravity", "kiro", "grok",
   "kimi", "zhipu", "deepseek", "minimax", "opencode_go", "typesafe", "command_code", "cline",
 ];
 
@@ -98,6 +98,7 @@ describe("admin settings auth source defaults helpers", () => {
     // 未出现的平台（gemini/antigravity）归一化为 null
     expect(state.email.platform_quotas.gemini).toEqual({ daily: null, weekly: null, monthly: null });
     expect(state.email.platform_quotas.antigravity).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(state.email.platform_quotas.kiro).toEqual({ daily: null, weekly: null, monthly: null });
   });
 
   it("appends auth source defaults back onto update payload", () => {
@@ -230,6 +231,7 @@ describe("admin settings auth source defaults helpers", () => {
     // 缺失平台归一化为全 null
     expect(emailQuotas.gemini).toEqual({ daily: null, weekly: null, monthly: null });
     expect(emailQuotas.antigravity).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(emailQuotas.kiro).toEqual({ daily: null, weekly: null, monthly: null });
   });
 });
 
@@ -240,6 +242,7 @@ describe("normalizePlatformQuotasMap", () => {
     expect(result.openai).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.gemini).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.antigravity).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(result.kiro).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.grok).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.kimi).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.opencode_go).toEqual({ daily: null, weekly: null, monthly: null });

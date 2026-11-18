@@ -324,6 +324,18 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 	return decision, decision.Matched, nil
 }
 
+// isConcreteRequestPlatform 判定平台是否可作为 composite 的具体请求目标。
+// 与迁移 227 + 229 重建的 composite_model_routes_target_platform_check 终态一致。
+//
+// kiro 只能通过显式 composite_model_routes 路由行命中：DetectModelPlatform
+// 推断不出 kiro，因为 kiro 的模型名是 claude-* / gpt-*，与 anthropic/openai 冲突。
 func isConcreteRequestPlatform(platform string) bool {
 	return domain.IsConcretePlatform(platform)
+}
+
+// isServableAccountPlatform reports whether an account's platform is still
+// served: a registered concrete platform or a profile-only provider. Rows left
+// behind by a removed platform return false.
+func isServableAccountPlatform(platform string) bool {
+	return isConcreteRequestPlatform(platform) || LookupProviderProfile(platform) != nil
 }

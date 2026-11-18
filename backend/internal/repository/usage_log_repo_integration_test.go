@@ -906,6 +906,7 @@ func (s *UsageLogRepoSuite) TestGetAccountTodayStats() {
 
 	m1 := 1.5
 	m2 := 0.0
+	kiroCredits := 0.17
 	_, err := s.repo.Create(s.ctx, &service.UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
@@ -917,6 +918,7 @@ func (s *UsageLogRepoSuite) TestGetAccountTodayStats() {
 		TotalCost:             1.0,
 		ActualCost:            2.0,
 		AccountRateMultiplier: &m1,
+		KiroCredits:           &kiroCredits,
 		CreatedAt:             createdAt,
 	})
 	s.Require().NoError(err)
@@ -945,6 +947,8 @@ func (s *UsageLogRepoSuite) TestGetAccountTodayStats() {
 	s.Require().InEpsilon(1.5, stats.StandardCost, 0.0001)
 	// user cost = SUM(actual_cost)
 	s.Require().InEpsilon(3.0, stats.UserCost, 0.0001)
+	// kiro credits = SUM(kiro_credits)
+	s.Require().InEpsilon(0.17, stats.KiroCredits, 0.0001)
 }
 
 func (s *UsageLogRepoSuite) TestDashboardAggregationConsistency() {

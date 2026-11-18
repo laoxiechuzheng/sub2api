@@ -5340,6 +5340,43 @@
                 </p>
               </div>
 
+              <!-- Kiro 计量算法 -->
+              <div class="border-b border-gray-100 pb-5 dark:border-dark-700 md:col-span-2">
+                <label
+                  for="gateway-kiro-tokenizer"
+                  class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  {{ t("admin.settings.gatewayForwarding.kiroTokenizer") }}
+                </label>
+                <Select
+                  v-model="form.gateway_kiro_tokenizer"
+                  :options="kiroTokenizerOptions"
+                  data-testid="gateway-kiro-tokenizer"
+                  class="mt-2"
+                />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.gatewayForwarding.kiroTokenizerHint") }}
+                </p>
+              </div>
+
+              <!-- Kiro 缓存模拟分桶 -->
+              <div class="flex items-center justify-between border-b border-gray-100 pb-5 dark:border-dark-700 md:col-span-2">
+                <div>
+                  <label
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    {{ t("admin.settings.gatewayForwarding.kiroCacheScopeClient") }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.kiroCacheScopeClientHint") }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.gateway_kiro_cache_scope_client"
+                  data-testid="gateway-kiro-cache-scope-client"
+                />
+              </div>
+
               <!-- Fingerprint Unification -->
               <div class="flex items-center justify-between">
                 <div>
@@ -9034,6 +9071,12 @@ import {
 } from "./codexFingerprintSignals";
 
 const { t, locale } = useI18n();
+
+const kiroTokenizerOptions = computed(() => [
+  { value: "official", label: t("admin.settings.gatewayForwarding.kiroTokenizerOfficial") },
+  { value: "charclass", label: t("admin.settings.gatewayForwarding.kiroTokenizerCharClass") },
+  { value: "weighted", label: t("admin.settings.gatewayForwarding.kiroTokenizerWeighted") },
+]);
 const appStore = useAppStore();
 // 关闭 step-up 开关是敏感操作：后端返回 STEP_UP_REQUIRED 时弹 TOTP 码重试
 const settingsStepUp = useStepUp();
@@ -9981,6 +10024,8 @@ const form = reactive<SettingsForm>({
   openai_advanced_scheduler_weight_session_sticky: "",
   // Gateway forwarding behavior
   openai_ttft_mode: "semantic",
+  gateway_kiro_tokenizer: "official",
+  gateway_kiro_cache_scope_client: false,
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
@@ -11626,6 +11671,12 @@ async function saveSettings() {
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
       openai_ttft_mode:
         form.openai_ttft_mode === "visible" ? "visible" : "semantic",
+      gateway_kiro_tokenizer: ["official", "charclass", "weighted"].includes(
+        form.gateway_kiro_tokenizer,
+      )
+        ? form.gateway_kiro_tokenizer
+        : "official",
+      gateway_kiro_cache_scope_client: form.gateway_kiro_cache_scope_client,
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,

@@ -21,6 +21,7 @@ import (
 	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -37,6 +38,30 @@ import (
 const gatewayCompatibilityMetricsLogInterval = 1024
 
 var gatewayCompatibilityMetricsLogCounter atomic.Uint64
+
+var stickySessionHeaderNames = []string{
+	"X-Session-ID",
+	"Anthropic-Session-Id",
+	"X-Claude-Code-Session-Id",
+	"X-OpenCode-Session",
+	"X-Session-Affinity",
+	"X-Conversation-ID",
+	"Session-Id",
+	"session_id",
+	"conversation_id",
+}
+
+func explicitStickySessionIDFromHeaders(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	for _, name := range stickySessionHeaderNames {
+		if value := strings.TrimSpace(c.GetHeader(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
 
 // GatewayHandler handles API gateway requests
 type GatewayHandler struct {
@@ -288,13 +313,21 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	// 设置请求所属分组 ID（用于渠道级功能判断，如 WebSearch 模拟）
 	parsedReq.GroupID = apiKey.GroupID
+	parsedReq.Group = apiKey.Group
 
 	// 计算粘性会话hash
 	parsedReq.SessionContext = &service.SessionContext{
 		ClientIP:  ip.GetClientIP(c),
 		UserAgent: c.GetHeader("User-Agent"),
 		APIKeyID:  apiKey.ID,
+		UserID:    subject.UserID,
 	}
+
+	// 优先从 HTTP 请求头提取显式 Session ID，作为粘性会话最高优先级标识。
+	// 写入独立字段 ExplicitSessionID（不污染 metadata.user_id，后者还用于客户端亲和调度），
+	// 让 Kiro 等分组的客户端可以显式传递稳定 session 标识符，避免依赖请求体内容 hash。
+	parsedReq.ExplicitSessionID = explicitStickySessionIDFromHeaders(c)
+
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 
 	// [DEBUG-STICKY] 打印会话 hash 生成结果
@@ -1133,7 +1166,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if sessionKey != "" && (sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID) {
 				// Forward has completed; finish the bounded write even if the client disconnects.
 				bindCtx, cancelBind := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 5*time.Second)
-				bindErr := h.gatewayService.BindStickySession(bindCtx, currentAPIKey.GroupID, sessionKey, account.ID)
+				bindErr := h.gatewayService.BindStickySessionForGroup(bindCtx, currentAPIKey.GroupID, sessionKey, account.ID, currentAPIKey.Group)
 				cancelBind()
 				if bindErr != nil {
 					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
@@ -1312,7 +1345,14 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 	models := make([]string, 0)
 	schedulablePlatforms := h.gatewayService.GetSchedulablePlatforms(ctx, groupID)
 	for _, platform := range domain.CompositePrecedencePlatformIDs() {
+		// TypeSafe 仅经 /v1/systemone 提供服务，LLM 客户端目录按需排除。
 		if platform == service.PlatformTypeSafe && !includeSystemOne {
+			continue
+		}
+		// Kiro is omitted on purpose: its model names collide with Anthropic/OpenAI
+		// and cannot be inferred by DetectModelPlatform. Explicit composite_model_routes
+		// rows still surface kiro models via GetCompositeRouteModels below.
+		if platform == service.PlatformKiro {
 			continue
 		}
 		platformModels := h.gatewayService.GetAvailableModels(ctx, groupID, platform)
@@ -1464,6 +1504,16 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 // modelListingSource 汇总模型列表过滤的候选来源：账号映射键（availableModels）
 // 与平台默认列表（fallbackModels）。账号映射为空时回落默认列表；Anthropic
 // 平台两者取并集，其余平台以账号映射键为准。
+//
+// 仅 anthropic 平台需要合并平台默认模型：其 OAuth 账号可能完全没有 model_mapping，
+// 却能服务整个 claude 默认模型族；当分组内混用「无 mapping 的 OAuth 账号」与
+// 「带 mapping 的 APIKey 账号」时，GetAvailableModels 只会返回后者的 mapping keys，
+// 需要 merge 默认模型把 OAuth 能服务的 claude 模型补回来。
+//
+// 其它平台（含 kiro、openai、gemini 等）的 model_mapping 是严格白名单，明确限定了账号
+// 可调度/可转发的模型集合（kiro 未显式配置时也会套用 DefaultKiroModelMapping），未映射
+// 的模型本就无法服务，因此只返回账号可用模型、不合并默认模型——否则从账号 mapping 中移除
+// 某模型后，仍会被默认模型兜底塞回，导致 /v1/models 与账号实际可服务集合不一致。
 func modelListingSource(platform string, availableModels, fallbackModels []string) []string {
 	if platform == service.PlatformOpenAI && availableModels != nil {
 		return availableModels
@@ -1505,6 +1555,12 @@ func defaultModelIDsForPlatform(platform string) []string {
 			ids = append(ids, model.ID)
 		}
 		return ids
+	case service.PlatformKiro:
+		ids := make([]string, 0, len(kiro.DefaultModels))
+		for _, model := range kiro.DefaultModels {
+			ids = append(ids, model.ID)
+		}
+		return ids
 	case service.PlatformAnthropic:
 		return claude.DefaultModelIDs()
 	case service.PlatformGrok:
@@ -1521,6 +1577,11 @@ func defaultModelIDsForPlatform(platform string) []string {
 			// /v1/systemone, so the static fallback never advertises it to LLM
 			// clients. compositeAvailableModels lists it when the group can serve it.
 			if concretePlatform == service.PlatformTypeSafe {
+				continue
+			}
+			// Kiro is deliberately skipped as well: its claude-*/gpt-* model names
+			// collide with Anthropic/OpenAI and cannot be inferred by DetectModelPlatform.
+			if concretePlatform == service.PlatformKiro {
 				continue
 			}
 			for _, id := range defaultModelIDsForPlatform(concretePlatform) {
@@ -2152,7 +2213,7 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
-	_, ok = middleware2.GetAuthSubjectFromContext(c)
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
 		return
@@ -2233,7 +2294,9 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		ClientIP:  ip.GetClientIP(c),
 		UserAgent: c.GetHeader("User-Agent"),
 		APIKeyID:  apiKey.ID,
+		UserID:    subject.UserID,
 	}
+	parsedReq.ExplicitSessionID = explicitStickySessionIDFromHeaders(c)
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 
 	// 选择支持该模型的账号

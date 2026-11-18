@@ -11,6 +11,7 @@ export type Provider =
   | 'gemini'
   | 'grok'
   | 'antigravity'
+  | 'kiro'
   | 'kimi'
   | 'zhipu'
   | 'deepseek'

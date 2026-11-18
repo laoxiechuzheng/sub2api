@@ -1165,6 +1165,18 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 
 		usagePatch := s.extractSSEUsagePatch(event)
+		if eventType == "message_delta" {
+			if usageObj, ok := event["usage"].(map[string]any); ok {
+				if raw, exists := usageObj["_sub2api_kiro_credits"]; exists {
+					delete(usageObj, "_sub2api_kiro_credits")
+					// 调用方用请求头显式要积分时，改名为公开字段输出；否则照旧删除。
+					if v, ok := parseSSEUsageFloat(raw); ok && v > 0 && upstreamCreditsRequested(c) {
+						usageObj[upstreamCreditsUsageField] = raw
+					}
+					eventChanged = true
+				}
+			}
+		}
 		// 仅已解析的 message_stop 或上方的 [DONE] 启动尾窗口。
 		// 不能单凭 event 名称把带错误 type 的事件误当成终态。
 		if eventType == "message_stop" {
@@ -1434,6 +1446,8 @@ type sseUsagePatch struct {
 	hasCacheCreation5m       bool
 	cacheCreation1hTokens    int
 	hasCacheCreation1h       bool
+	kiroCredits              float64
+	hasKiroCredits           bool
 }
 
 func (s *GatewayService) extractSSEUsagePatch(event map[string]any) *sseUsagePatch {
@@ -1510,6 +1524,10 @@ func (s *GatewayService) extractSSEUsagePatch(event map[string]any) *sseUsagePat
 				patch.hasCacheCreation1h = true
 			}
 		}
+		if v, ok := parseSSEUsageFloat(usageObj["_sub2api_kiro_credits"]); ok && v > 0 {
+			patch.kiroCredits = v
+			patch.hasKiroCredits = true
+		}
 		return patch
 	}
 
@@ -1568,6 +1586,33 @@ func mergeSSEUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
 		usage.cacheCreationInputTokensFromDetails = true
 	}
 	normalizeAnthropicPromptTotal(usage, patch.promptTokens, patch.promptCacheMissTokens)
+	if patch.hasKiroCredits {
+		usage.KiroCredits = patch.kiroCredits
+	}
+}
+
+func parseSSEUsageFloat(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return f, true
+		}
+	case string:
+		if parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
 
 func parseSSEUsageInt(value any) (int, bool) {
@@ -1727,6 +1772,7 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	}
 
 	body = reverseToolNamesIfPresent(c, body)
+	body = stripSub2apiInternalUsageFieldsFromBody(body)
 
 	// 写入响应
 	c.Data(resp.StatusCode, contentType, body)

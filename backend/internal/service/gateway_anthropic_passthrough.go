@@ -571,6 +571,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 
 			if !clientDisconnected {
 				restored := reverseToolNamesIfPresentString(c, line)
+				restored = stripSub2apiInternalUsageFields(restored)
 				if _, err := io.WriteString(w, restored); err != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
@@ -652,6 +653,34 @@ func extractAnthropicSSEDataLine(line string) (string, bool) {
 	return line[start:], true
 }
 
+// stripSub2apiInternalUsageFieldsFromBody 从非流式 JSON 响应体中移除内部 usage 字段，
+// 不让 _sub2api_kiro_credits 泄漏给客户端；响应体不含该字段时原样返回。
+func stripSub2apiInternalUsageFieldsFromBody(body []byte) []byte {
+	if !bytes.Contains(body, []byte("_sub2api_kiro_credits")) {
+		return body
+	}
+	cleaned, err := sjson.DeleteBytes(body, "usage._sub2api_kiro_credits")
+	if err != nil {
+		return body
+	}
+	return cleaned
+}
+
+func stripSub2apiInternalUsageFields(line string) string {
+	if !strings.Contains(line, "_sub2api_kiro_credits") {
+		return line
+	}
+	data, ok := extractAnthropicSSEDataLine(line)
+	if !ok {
+		return line
+	}
+	cleaned, err := sjson.Delete(data, "usage._sub2api_kiro_credits")
+	if err != nil {
+		return line
+	}
+	return line[:len(line)-len(data)] + cleaned
+}
+
 // parseSSEUsagePassthrough 从 Anthropic SSE data 行提取 usage（包级函数：
 // Anthropic 平台 passthrough 与国产供应商原生 Anthropic 直通共用）。
 func parseSSEUsagePassthrough(data string, usage *ClaudeUsage) {
@@ -678,6 +707,9 @@ func parseSSEUsagePassthrough(data string, usage *ClaudeUsage) {
 				usage.OutputTokens = int(v)
 			}
 			mergeRawAnthropicCacheCreationUsage(deltaUsage, usage)
+			if v := deltaUsage.Get("_sub2api_kiro_credits"); v.Exists() && v.Float() > 0 {
+				usage.KiroCredits = v.Float()
+			}
 		}
 	default:
 		usageNode := parsed.Get("usage")
@@ -865,6 +897,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	}
 	body = restoreCompositeClientModel(ctx, body)
 	body = reverseToolNamesIfPresent(c, body)
+	body = stripSub2apiInternalUsageFieldsFromBody(body)
 	c.Data(resp.StatusCode, contentType, body)
 	return usage, nil
 }

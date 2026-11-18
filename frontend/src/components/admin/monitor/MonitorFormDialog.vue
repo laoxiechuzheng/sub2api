@@ -266,10 +266,12 @@ import {
   PROVIDER_GEMINI,
   PROVIDER_GROK,
   PROVIDER_ANTIGRAVITY,
+  PROVIDER_KIRO,
   PROVIDER_KIMI,
   PROVIDER_ZHIPU,
   PROVIDER_DEEPSEEK,
   PROVIDER_MINIMAX,
+  QUOTA_ONLY_PROVIDERS,
   PROVIDER_OPENCODE_GO,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
@@ -474,6 +476,7 @@ const providerOptions = computed<ProviderOption[]>(() => [
   { value: PROVIDER_GEMINI, label: t('monitorCommon.providers.gemini') },
   { value: PROVIDER_GROK, label: t('monitorCommon.providers.grok') },
   { value: PROVIDER_ANTIGRAVITY, label: t('monitorCommon.providers.antigravity') },
+  { value: PROVIDER_KIRO, label: t('monitorCommon.providers.kiro') },
   { value: PROVIDER_KIMI, label: t('monitorCommon.providers.kimi') },
   { value: PROVIDER_ZHIPU, label: t('monitorCommon.providers.zhipu') },
   { value: PROVIDER_DEEPSEEK, label: t('monitorCommon.providers.deepseek') },
@@ -497,13 +500,19 @@ interface CheckModeOption {
   disabled: boolean
 }
 
+// antigravity / kiro 无探活 adapter，只支持配额模式（后端 probeCapableProviders 的补集）。
+function isQuotaOnlyProvider(provider: Provider): boolean {
+  return QUOTA_ONLY_PROVIDERS.includes(provider)
+}
+
+const quotaOnlyProvider = computed(() => isQuotaOnlyProvider(form.provider))
+
 const checkModeOptions = computed<CheckModeOption[]>(() => [
   {
     value: CHECK_MODE_PROBE,
     label: t('admin.channelMonitor.form.checkModeProbe'),
     hint: t('admin.channelMonitor.form.checkModeProbeHint'),
-    // antigravity 无探活 adapter，仅配额模式。
-    disabled: form.provider === PROVIDER_ANTIGRAVITY,
+    disabled: quotaOnlyProvider.value,
   },
   {
     value: CHECK_MODE_QUOTA,
@@ -515,8 +524,7 @@ const checkModeOptions = computed<CheckModeOption[]>(() => [
     value: CHECK_MODE_QUOTA_PROBE,
     label: t('admin.channelMonitor.form.checkModeQuotaProbe'),
     hint: t('admin.channelMonitor.form.checkModeQuotaProbeHint'),
-    // antigravity 无探活 adapter，只支持配额模式。
-    disabled: form.provider === PROVIDER_ANTIGRAVITY,
+    disabled: quotaOnlyProvider.value,
   },
 ])
 
@@ -679,15 +687,14 @@ function selectProvider(provider: Provider) {
   form.account_id = null
   pinnedAccount.value = null
   accountHydrationFailed.value = false
-  // antigravity 仅配额模式：切到它时强制 quota（checkModeOptions 同步禁用其余项）。
-  if (provider === PROVIDER_ANTIGRAVITY && form.check_mode !== CHECK_MODE_QUOTA) {
+  // 仅配额模式的 provider：切到它时强制 quota（checkModeOptions 同步禁用其余项）。
+  if (isQuotaOnlyProvider(provider)) {
     form.check_mode = CHECK_MODE_QUOTA
-  }
-  // 对称还原：从 antigravity 切走时撤掉强制 quota，否则编辑存量 antigravity
-  // 监控换平台后仍停留在 quota（目标平台未必支持），update 会携带残留配置。
-  // 同步清掉 quota 占位模型（loadFromMonitor 回填的 'quota'），否则切回
-  // probe 后拿 'quota' 当探活模型（与离开 grok 清 DEFAULT_GROK_MODEL 同理）。
-  if (previousProvider === PROVIDER_ANTIGRAVITY && form.check_mode === CHECK_MODE_QUOTA) {
+  } else if (isQuotaOnlyProvider(previousProvider) && form.check_mode === CHECK_MODE_QUOTA) {
+    // 对称还原：切走时撤掉强制 quota，否则编辑存量 antigravity/kiro
+    // 监控换平台后仍停留在 quota（目标平台未必支持），update 会携带残留配置。
+    // 同步清掉 quota 占位模型（loadFromMonitor 回填的 'quota'），否则切回
+    // probe 后拿 'quota' 当探活模型（与离开 grok 清 DEFAULT_GROK_MODEL 同理）。
     form.check_mode = CHECK_MODE_PROBE
     if (form.primary_model.trim() === 'quota') form.primary_model = ''
   }
