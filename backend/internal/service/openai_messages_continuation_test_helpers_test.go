@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -46,4 +49,12 @@ func bindCompatProofForNextRequest(t *testing.T, s *OpenAIGatewayService, c *gin
 	proof.ChainHash = chain
 	proof.ReqCount, proof.Count = start, end
 	s.bindOpenAICompatSessionResponseProof(context.Background(), c, account, key, id, proof)
+}
+
+func v10Response(responseID, model, usage string, output []any) *http.Response {
+	response := map[string]any{"id": responseID, "object": "response", "model": model, "status": "completed", "output": output, "usage": json.RawMessage(usage)}
+	b, _ := json.Marshal(response)
+	sse := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"synthetic-created\",\"output\":[]}}\n\n"
+	sse += "data: {\"type\":\"response.completed\",\"response\":" + string(b) + "}\n\n"
+	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sse))}
 }

@@ -50,13 +50,6 @@ func v10Context(body []byte, keyID int64) (*gin.Context, *httptest.ResponseRecor
 	c.Set("api_key", &APIKey{ID: keyID})
 	return c, r
 }
-func v10Response(responseID, model, usage string, output []any) *http.Response {
-	response := map[string]any{"id": responseID, "object": "response", "model": model, "status": "completed", "output": output, "usage": json.RawMessage(usage)}
-	b, _ := json.Marshal(response)
-	sse := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"synthetic-created\",\"output\":[]}}\n\n"
-	sse += "data: {\"type\":\"response.completed\",\"response\":" + string(b) + "}\n\n"
-	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sse))}
-}
 func v10TextOutput(text string) []any {
 	return []any{map[string]any{"type": "message", "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": text}}}}
 }
