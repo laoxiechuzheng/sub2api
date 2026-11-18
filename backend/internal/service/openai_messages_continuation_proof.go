@@ -326,9 +326,9 @@ func (o *continuationObservation) observeEvent(evt apicompat.AnthropicStreamEven
 		}
 		switch block.Type {
 		case "text":
-			o.text.WriteString(block.Text)
+			_, _ = o.text.WriteString(block.Text)
 		case "thinking":
-			o.signature.WriteString(block.Signature)
+			_, _ = o.signature.WriteString(block.Signature)
 		case "tool_use":
 		default:
 			o.invalidate()
@@ -351,7 +351,7 @@ func (o *continuationObservation) observeEvent(evt apicompat.AnthropicStreamEven
 				o.invalidate()
 				return
 			}
-			o.text.WriteString(delta.Text)
+			_, _ = o.text.WriteString(delta.Text)
 		case "thinking_delta":
 			if o.active.Type != "thinking" {
 				o.invalidate()
@@ -362,14 +362,14 @@ func (o *continuationObservation) observeEvent(evt apicompat.AnthropicStreamEven
 				o.invalidate()
 				return
 			}
-			o.signature.WriteString(delta.Signature)
+			_, _ = o.signature.WriteString(delta.Signature)
 		case "input_json_delta":
 			if o.active.Type != "tool_use" {
 				o.invalidate()
 				return
 			}
 			o.argumentsSeen = true
-			o.arguments.WriteString(delta.PartialJSON)
+			_, _ = o.arguments.WriteString(delta.PartialJSON)
 		default:
 			o.invalidate()
 			return

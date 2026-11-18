@@ -147,7 +147,7 @@ func TestV10CacheARetryFullReplayRealPath(t *testing.T) {
 			assert.False(t, gjson.GetBytes(upstream.bodies[1], "previous_response_id").Exists())
 			assert.Equal(t, int64(17), gjson.GetBytes(upstream.bodies[1], "input.#").Int(), "15历史+system+guard必须全量")
 			assert.Equal(t, "synthetic-00", gjson.GetBytes(upstream.bodies[1], "input.2.content.0.text").String())
-			assert.Equal(t, kind == "unsupported", s.isOpenAICompatSessionContinuationDisabled(context.Background(), c, a, "synthetic-session"))
+			assert.Equal(t, kind == "unsupported", s.loadOpenAICompatSessionBinding(c, a, "synthetic-session").ContinuationDisabled)
 			t.Logf("synthetic retry=%s first_items=%d second_items=%d final_body_hash=%s", kind, gjson.GetBytes(upstream.bodies[0], "input.#").Int(), gjson.GetBytes(upstream.bodies[1], "input.#").Int(), v10Hash(upstream.bodies[1]))
 		})
 	}

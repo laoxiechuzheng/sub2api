@@ -151,7 +151,7 @@ func runInputTokensBoundaryChild(t *testing.T, scenario inputTokensBoundaryScena
 		case "missing_count":
 			responseBody = fmt.Sprintf(`{"error":%q}`, inputTokensBoundaryMarker)
 		}
-		var responseReader io.ReadCloser = io.NopCloser(strings.NewReader(responseBody))
+		var responseReader = io.NopCloser(strings.NewReader(responseBody))
 		if scenario.response == "read_error" {
 			responseReader = inputTokensBoundaryReadError{}
 		}
@@ -169,9 +169,10 @@ func runInputTokensBoundaryChild(t *testing.T, scenario inputTokensBoundaryScena
 		t.Setenv("OPENAI_INPUT_TOKENS_LIVE_TEST", scenario.optIn)
 	}
 	apiKey := "synthetic-" + inputTokensBoundaryMarker + strings.Repeat("x", 32)
-	if scenario.keyMode == "empty" {
+	switch scenario.keyMode {
+	case "empty":
 		apiKey = ""
-	} else if scenario.keyMode == "short" {
+	case "short":
 		apiKey = string([]byte{'s', 'k', '-'}) + "stub"
 	}
 	t.Setenv("OPENAI_API_KEY", apiKey)

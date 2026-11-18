@@ -81,7 +81,7 @@ SESSION_MEMORY_TESTS = tuple('TestSessionMemoryCache' + suffix for suffix in (
 CACHE_TEST_SOURCE_SHA256 = {
     'backend/internal/pkg/apicompat/cache_usage_test.go': '4b53948f99d7c54889f9a9316cac0725272ebf6b34b26bf2fa8cb3cf283a0403',
     'backend/internal/service/openai_gateway_messages_cache_contract_test.go': '7c440fd3d88dd11759d6d17525bdc48e446b9e241561beca35729ef3bbb84fc5',
-    'backend/internal/service/openai_messages_continuation_contract_test.go': '592afab351ffe5b30cac2bddaf5027623c6139a46b6e1b96e07fd390cec6175f',
+    'backend/internal/service/openai_messages_continuation_contract_test.go': '0340df356bbaf151bc66282bca3c8726c99557a64f0f31bb93f7f50a3ac5f7ae',
     'backend/internal/service/openai_messages_continuation_proof_test.go': '685fa1bb23d13fa78c95d94854b9678d30aa27786c256491fd9b97d1b23d3513',
     'backend/internal/service/openai_messages_continuation_recovery_test.go': '2b4abc2d7fcd9f078bcefe326aacfe8275c8bb2f70975e491a770e52a3609d24',
     'backend/internal/service/openai_messages_continuation_eligibility_test.go': 'c5c5c0c55aa86b34b130bbc9da0292643fd716cc437316896721ed57469dfd41',

@@ -156,9 +156,6 @@ func (s *OpenAIGatewayService) disableOpenAICompatSessionContinuation(_ context.
 	}
 	s.openaiCompatSessionResponses.Store(cacheKey, binding)
 }
-func (s *OpenAIGatewayService) isOpenAICompatSessionContinuationDisabled(_ context.Context, c *gin.Context, account *Account, key string) bool {
-	return s.loadOpenAICompatSessionBinding(c, account, key).ContinuationDisabled
-}
 func (s *OpenAIGatewayService) getOpenAICompatSessionTurnState(_ context.Context, c *gin.Context, account *Account, key string) string {
 	return strings.TrimSpace(s.loadOpenAICompatSessionBinding(c, account, key).TurnState)
 }
