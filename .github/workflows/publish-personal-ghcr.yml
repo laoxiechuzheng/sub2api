@@ -218,6 +218,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare private runtime export and identity evidence paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d "${RUNNER_TEMP}/release-provenance.XXXXXX")"
+          mkdir -p "${work_dir}/builder" "${work_dir}/runtime" \
+            "${GITHUB_WORKSPACE}/release-provenance" "${GITHUB_WORKSPACE}/release-image-identity"
+          {
+            echo "PROVENANCE_WORK_DIR=${work_dir}"
+            echo "PROVENANCE_DIR=${GITHUB_WORKSPACE}/release-provenance"
+            echo "IDENTITY_DIR=${GITHUB_WORKSPACE}/release-image-identity"
+          } >> "$GITHUB_ENV"
+
       - name: Build linux/amd64 image locally
         id: runtime_build
         uses: docker/build-push-action@v6
@@ -226,8 +239,11 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
-          load: true
           push: false
+          provenance: false
+          sbom: false
+          # 单一 Docker exporter：后续 docker load 使用这份已验证的原始 tar，而不是另一次导出。
+          outputs: type=docker,dest=${{ env.PROVENANCE_WORK_DIR }}/runtime/image.tar,oci-mediatypes=true,compression=gzip
           tags: |
             ${{ env.IMAGE_NAME }}:${{ steps.source.outputs.version }}
             ${{ env.IMAGE_NAME }}:latest
@@ -239,6 +255,21 @@ jobs:
             org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
             org.opencontainers.image.version=${{ steps.source.outputs.version }}
 
+      - name: Verify BuildKit archive ownership and load the same runtime image
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          BUILD_METADATA: ${{ steps.runtime_build.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          archive="${PROVENANCE_WORK_DIR}/runtime/image.tar"
+          python3 -I -B tools/ci/v0222_oci_identity.py export --metadata-env BUILD_METADATA \
+            --archive "$archive" --version-ref "${IMAGE_NAME}:${RELEASE_VERSION}" --latest-ref "${IMAGE_NAME}:latest" \
+            --build-manifest "${PROVENANCE_WORK_DIR}/runtime/buildkit-manifest.json" \
+            --receipt "${IDENTITY_DIR}/archive-identity.json"
+          docker load --input "$archive"
+          rm -- "$archive"
+
       - name: Export cached backend builder and final runtime files
         shell: bash
         env:
@@ -247,8 +278,7 @@ jobs:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
-          work_dir="$(mktemp -d "${RUNNER_TEMP}/release-provenance.XXXXXX")"
-          mkdir -p "${work_dir}/builder" "${work_dir}/runtime"
+          work_dir="$PROVENANCE_WORK_DIR"
           builder_tag="sub2api-provenance-builder:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           version_ref="${IMAGE_NAME}:${RELEASE_VERSION}"
 
@@ -282,11 +312,6 @@ jobs:
 
           cleanup
           trap - EXIT
-          {
-            echo "PROVENANCE_WORK_DIR=${work_dir}"
-            echo "PROVENANCE_DIR=${GITHUB_WORKSPACE}/release-provenance"
-          } >> "$GITHUB_ENV"
-          mkdir -p "${GITHUB_WORKSPACE}/release-provenance"
 
       - name: Verify binary provenance and runtime identity
         shell: bash
@@ -365,13 +390,14 @@ jobs:
             exit 1
           }
 
-          canonical_config_digest="$(python3 tools/ci/v0222_oci_identity.py local \
-            --metadata-env BUILD_METADATA --local-id "$runtime_image_id" \
+          canonical_config_digest="$(python3 -I -B tools/ci/v0222_oci_identity.py local \
+            --metadata-env BUILD_METADATA --local-id "$runtime_image_id" --latest-id "$latest_image_id" \
             --platform "$actual_platform" --source "$actual_source" \
             --revision "$actual_revision" --version "$actual_version" \
             --expected-source "$EXPECTED_OCI_SOURCE" --expected-revision "$SOURCE_SHA" \
             --expected-version "$RELEASE_VERSION" --binary-sha256 "$runtime_sha" \
-            --receipt "${PROVENANCE_WORK_DIR}/build-identity.json")"
+            --build-manifest "${PROVENANCE_WORK_DIR}/runtime/buildkit-manifest.json" \
+            --receipt "${IDENTITY_DIR}/build-identity.json")"
           {
             echo "BINARY_SHA256=${runtime_sha}"
             # Historical artifact field means canonical config C, never Docker store-dependent .Id.
@@ -497,22 +523,6 @@ jobs:
           set -euo pipefail
           version_ref="${IMAGE_NAME}:${RELEASE_VERSION}"
           latest_ref="${IMAGE_NAME}:latest"
-          digest_template='{{json .Manifest.Digest}}'
-          version_digest="$(docker buildx imagetools inspect --builder "$BUILDX_BUILDER_NAME" --format "$digest_template" "$version_ref" | jq -er .)"
-          latest_digest="$(docker buildx imagetools inspect --builder "$BUILDX_BUILDER_NAME" --format "$digest_template" "$latest_ref" | jq -er .)"
-          [[ "$version_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-            echo "invalid GHCR digest for version tag: $version_digest" >&2
-            exit 1
-          }
-          [[ "$latest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-            echo "invalid GHCR digest for latest tag: $latest_digest" >&2
-            exit 1
-          }
-          [[ "$version_digest" == "$latest_digest" ]] || {
-            echo "version and latest tags resolved to different registry manifests" >&2
-            exit 1
-          }
-
           current_image_id="$(docker image inspect --format '{{.Id}}' "$version_ref")"
           current_latest_image_id="$(docker image inspect --format '{{.Id}}' "$latest_ref")"
           [[ "$current_image_id" == "$OCI_DOCKER_LOCAL_IMAGE_ID" ]] || {
@@ -548,13 +558,17 @@ jobs:
             exit 1
           fi
 
-          identity_dir="${GITHUB_WORKSPACE}/release-image-identity"
-          mkdir -p "$identity_dir"
-          # CI must authenticate exact raw bytes; do not trim a newline or reserialize on mismatch.
+          # --format 会加载配置；这里只取原始 manifest，并校验两个 tag 和 digest 引用的字节一致。
+          version_raw="${PROVENANCE_WORK_DIR}/runtime/registry-version.json"
+          latest_raw="${PROVENANCE_WORK_DIR}/runtime/registry-latest.json"
+          pinned_raw="${PROVENANCE_WORK_DIR}/runtime/registry-pinned.json"
+          docker buildx imagetools inspect --builder "$BUILDX_BUILDER_NAME" --raw "$version_ref" > "$version_raw"
+          docker buildx imagetools inspect --builder "$BUILDX_BUILDER_NAME" --raw "$latest_ref" > "$latest_raw"
+          version_digest="sha256:$(sha256sum "$version_raw" | awk '{print $1}')"
           docker buildx imagetools inspect --builder "$BUILDX_BUILDER_NAME" --raw \
-            "${IMAGE_NAME}@${version_digest}" > "${identity_dir}/registry-manifest.json"
+            "${IMAGE_NAME}@${version_digest}" > "$pinned_raw"
           python3 -I -B tools/ci/v0222_oci_identity.py registry --metadata-env BUILD_METADATA \
-            --manifest "${identity_dir}/registry-manifest.json" \
+            --manifest "$pinned_raw" --version-manifest "$version_raw" --latest-manifest "$latest_raw" \
             --expected-digest "$version_digest" \
             --expected-source https://github.com/laoxiechuzheng/sub2api \
             --expected-revision "$SOURCE_SHA" --expected-version "$RELEASE_VERSION" \
@@ -563,9 +577,10 @@ jobs:
             --asset-manifest "${PROVENANCE_DIR}/asset-manifest.json" \
             --asset-manifest-sha256 "$ASSET_MANIFEST_SHA256" --asset-count "$ASSET_COUNT" \
             --asset-directory "${PROVENANCE_WORK_DIR}/builder/dist" \
-            --build-receipt "${PROVENANCE_WORK_DIR}/build-identity.json" \
-            --receipt "${identity_dir}/image-identity.json"
-          cp "${PROVENANCE_WORK_DIR}/build-identity.json" "${identity_dir}/build-identity.json"
+            --build-manifest "${PROVENANCE_WORK_DIR}/runtime/buildkit-manifest.json" \
+            --build-receipt "${IDENTITY_DIR}/build-identity.json" \
+            --receipt "${IDENTITY_DIR}/image-identity.json"
+          cp "$pinned_raw" "${IDENTITY_DIR}/registry-manifest.json"
 
           release_manifest="${PROVENANCE_DIR}/release-manifest.json"
           jq -n \

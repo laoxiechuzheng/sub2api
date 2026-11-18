@@ -1,11 +1,13 @@
 import importlib.util
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -27,15 +29,8 @@ oldboot = load_helper('v0222_old_app_probe')
 class OCIIdentityTests(unittest.TestCase):
     def setUp(self):
         self.config = 'sha256:' + 'a' * 64
-        self.manifest = 'sha256:' + 'b' * 64
         self.expected = {'source': 'https://github.com/laoxiechuzheng/sub2api',
                          'revision': 'c' * 40, 'version': '0.2.22-custom-fixture'}
-        self.local = {**self.expected, 'platform': 'linux/amd64', 'local_id': self.manifest}
-        self.metadata = {'containerimage.config.digest': self.config,
-                         'containerimage.digest': self.manifest,
-                         'containerimage.descriptor': {'mediaType': 'application/vnd.oci.image.manifest.v1+json',
-                             'digest': self.manifest, 'size': 501,
-                             'annotations': {'config.digest': self.config}}}
         self.raw = json.dumps({'schemaVersion': 2,
             'mediaType': 'application/vnd.docker.distribution.manifest.v2+json',
             'config': {'mediaType': 'application/vnd.docker.container.image.v1+json',
@@ -44,36 +39,57 @@ class OCIIdentityTests(unittest.TestCase):
                         'mediaType': 'application/vnd.docker.image.rootfs.diff.tar.gzip'}]},
             separators=(',', ':')).encode()
         self.registry_digest = 'sha256:' + hashlib.sha256(self.raw).hexdigest()
+        document = json.loads(self.raw)
+        document['mediaType'] = DockerArchiveIdentityTests.manifest_type
+        document['config']['mediaType'] = DockerArchiveIdentityTests.config_type
+        document['layers'][0]['mediaType'] = 'application/vnd.oci.image.layer.v1.tar+gzip'
+        self.build_raw = json.dumps(document, indent=2).encode()
+        self.manifest = 'sha256:' + hashlib.sha256(self.build_raw).hexdigest()
+        self.local = {**self.expected, 'platform': 'linux/amd64', 'local_id': self.manifest}
+        self.metadata = {'containerimage.config.digest': self.config,
+                         'containerimage.digest': self.manifest,
+                         'containerimage.descriptor': {'mediaType': document['mediaType'],
+                             'digest': self.manifest, 'size': len(self.build_raw),
+                             'annotations': {'config.digest': self.config}}}
 
-    def test_containerd_local_manifest_id_is_not_canonical_config(self):
-        self.assertEqual(self.config, oci.local_config_id(self.metadata, self.local, self.expected))
-
-    def test_legacy_local_config_id_remains_canonical(self):
-        self.local['local_id'] = self.config
-        self.assertEqual(self.config, oci.local_config_id(self.metadata, self.local, self.expected))
+    def test_top_level_config_if_present_must_agree_with_raw(self):
+        self.assertEqual(self.config, oci.validated_build_manifest(self.metadata, self.build_raw)['config']['digest'])
+        for wrong in (self.manifest, None, 'not-a-digest'):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                oci.validated_build_manifest({**self.metadata, 'containerimage.config.digest': wrong}, self.build_raw)
 
     def test_each_required_metadata_key_is_required(self):
-        for key in self.metadata:
+        for key in ('containerimage.digest', 'containerimage.descriptor'):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 metadata = dict(self.metadata)
                 del metadata[key]
-                oci.local_config_id(metadata, self.local, self.expected)
+                oci.validated_build_manifest(metadata, self.build_raw)
 
     def test_local_source_platform_revision_version_and_id_reject(self):
         for field, wrong in [('source', 'https://github.com/other/source'),
                              ('revision', 'e' * 40), ('version', 'other'),
                              ('platform', 'linux/arm64'), ('local_id', 'not-a-digest')]:
             with self.subTest(field=field), self.assertRaises(ValueError):
-                oci.local_config_id(self.metadata, {**self.local, field: wrong}, self.expected)
+                oci.validate_local_identity({**self.local, field: wrong}, self.expected)
 
     def test_buildkit_index_mismatch_and_bad_annotation_reject(self):
         for field, wrong in [('mediaType', 'application/vnd.oci.image.index.v1+json'),
-                             ('digest', 'sha256:' + 'f' * 64), ('size', 0),
+                             ('mediaType', 'application/vnd.docker.distribution.manifest.v2+json'),
+                             ('digest', 'sha256:' + 'f' * 64), ('size', 0), ('size', len(self.build_raw) + 1),
                              ('annotations', {'config.digest': 'sha256:' + 'f' * 64})]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 metadata = copy.deepcopy(self.metadata)
                 metadata['containerimage.descriptor'][field] = wrong
-                oci.local_config_id(metadata, self.local, self.expected)
+                oci.validated_build_manifest(metadata, self.build_raw)
+
+    def test_authentic_digest_does_not_make_unknown_manifest_shape_valid(self):
+        for raw in (b'{', b'{"schemaVersion":2,"schemaVersion":2}', b'[]', b'NaN', b'\xff'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                metadata = copy.deepcopy(self.metadata)
+                manifest = 'sha256:' + hashlib.sha256(raw).hexdigest()
+                metadata['containerimage.digest'] = manifest
+                metadata['containerimage.descriptor'].update(digest=manifest, size=len(raw))
+                oci.validated_build_manifest(metadata, raw)
 
     def test_hash_authenticated_registry_manifest_to_config(self):
         proof = oci.registry_link(self.raw, self.registry_digest, self.config)
@@ -86,6 +102,22 @@ class OCIIdentityTests(unittest.TestCase):
             with self.subTest(manifest=manifest), self.assertRaises(ValueError):
                 oci.registry_link(self.raw, manifest, config)
 
+    def test_registry_manifest_conversion_preserves_c_descriptor_size_and_layers(self):
+        docker = json.loads(self.raw)
+        build = json.loads(self.build_raw)
+        for document, mutation in (
+            (copy.deepcopy(docker), lambda d: d['config'].update(size=1)),
+            (copy.deepcopy(docker), lambda d: d['layers'].append(copy.copy(d['layers'][0]))),
+            (copy.deepcopy(build), lambda d: d['layers'][0].update(digest='sha256:' + 'e' * 64)),
+        ):
+            mutation(document)
+            raw = json.dumps(document).encode()
+            with self.assertRaises(ValueError):
+                oci.registry_link(raw, 'sha256:' + hashlib.sha256(raw).hexdigest(), self.config, build)
+        reserialized = json.dumps(build, separators=(',', ':')).encode()
+        self.assertEqual(self.config, oci.registry_link(reserialized,
+            'sha256:' + hashlib.sha256(reserialized).hexdigest(), self.config, build)['config_digest'])
+
     def test_raw_bytes_must_not_be_reserialized_or_trimmed(self):
         for raw in [self.raw + b'\n', self.raw.replace(b':', b': ', 1), self.raw[:-1]]:
             with self.subTest(raw_length=len(raw)), self.assertRaises(ValueError):
@@ -93,7 +125,8 @@ class OCIIdentityTests(unittest.TestCase):
 
     def test_registry_index_and_malformed_descriptors_reject(self):
         for change in [{'mediaType': 'application/vnd.oci.image.index.v1+json', 'manifests': []},
-                       {'schemaVersion': 1}, {'config': {}}, {'layers': []}]:
+                       {'schemaVersion': 1}, {'config': {}}, {'layers': []},
+                       {'layers': [{'mediaType': 'application/octet-stream', 'digest': 'sha256:' + 'd' * 64, 'size': 1}]}]:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 parsed = json.loads(self.raw)
                 parsed.update(change)
@@ -107,19 +140,143 @@ class OCIIdentityTests(unittest.TestCase):
     def test_cli_error_never_echoes_metadata_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             sentinel = 'SYNTHETIC_CONFIG_ENV_MUST_NOT_LEAK'
-            env = dict(os.environ, FIXTURE_METADATA=json.dumps({'auth': sentinel}))
+            env = dict(os.environ, FIXTURE_METADATA='{"auth":"' + sentinel, GITHUB_SHA=sentinel)
             result = subprocess.run([sys.executable, '-I', '-B',
                 str(Path(__file__).with_name('v0222_oci_identity.py')), 'local',
-                '--metadata-env', 'FIXTURE_METADATA', '--local-id', self.manifest,
+                '--metadata-env', 'FIXTURE_METADATA', '--local-id', self.manifest, '--latest-id', self.manifest,
+                '--build-manifest', str(Path(directory) / 'not-read.json'),
                 '--platform', 'linux/amd64', '--source', self.expected['source'],
                 '--revision', self.expected['revision'], '--version', self.expected['version'],
                 '--expected-source', self.expected['source'], '--expected-revision', self.expected['revision'],
                 '--expected-version', self.expected['version'], '--binary-sha256', '1' * 64,
                 '--receipt', str(Path(directory) / 'receipt.json')],
                 env=env, capture_output=True, timeout=10)
-            self.assertNotEqual(0, result.returncode)
-            self.assertNotIn(sentinel.encode(), result.stdout + result.stderr)
+            self.assertEqual(1, result.returncode)
+            self.assertEqual(b'', result.stdout)
+            self.assertEqual('OCI identity verification failed; no config blob was read', result.stderr.decode().strip())
             self.assertFalse((Path(directory) / 'receipt.json').exists())
+            failure = (Path(directory) / 'receipt.json.failure.json').read_bytes()
+            self.assertNotIn(sentinel.encode(), failure)
+            self.assertEqual({'verified': False, 'exit_code': 1, 'github_sha': None,
+                              'command': 'v0222_oci_identity.py local', 'runner_version': 'v0222-ci-v8.1',
+                              'failure_class': 'build_metadata'}, json.loads(failure))
+
+
+class DockerArchiveIdentityTests(unittest.TestCase):
+    refs = ('ghcr.io/example/image:fixture', 'ghcr.io/example/image:latest')
+    manifest_type = 'application/vnd.oci.image.manifest.v1+json'
+    config_type = 'application/vnd.oci.image.config.v1+json'
+    config = 'sha256:' + 'a' * 64
+    layer = 'sha256:' + 'd' * 64
+
+    def make_fixture(self, root, mutate=None):
+        # 这是 containerd archive exporter 的结构夹具，不包含可运行的镜像配置/层。
+        raw = json.dumps({'schemaVersion': 2, 'mediaType': self.manifest_type,
+            'config': {'mediaType': self.config_type, 'digest': self.config, 'size': 123},
+            'layers': [{'mediaType': 'application/vnd.oci.image.layer.v1.tar+gzip',
+                        'digest': self.layer, 'size': 8}]}, indent=2).encode()
+        manifest = 'sha256:' + hashlib.sha256(raw).hexdigest()
+        blob = lambda value: 'blobs/sha256/' + value.split(':')[1]
+        descriptor = {'mediaType': self.manifest_type, 'digest': manifest, 'size': len(raw),
+                      'annotations': {'org.opencontainers.image.created': '2026-11-19T00:00:00Z'}}
+        # 对照实际失败的 metadata：没有顶层 config digest，也没有 config.digest 注解。
+        metadata = {'containerimage.digest': manifest, 'containerimage.descriptor': descriptor}
+        index = {'schemaVersion': 2, 'mediaType': 'application/vnd.oci.image.index.v1+json',
+                 'manifests': [{**descriptor, 'annotations': {**descriptor['annotations'],
+                     'io.containerd.image.name': ref, 'org.opencontainers.image.ref.name': ref.split(':')[1]}}
+                     for ref in self.refs]}
+        docker = [{'Config': blob(self.config), 'RepoTags': list(self.refs), 'Layers': [blob(self.layer)]}]
+        blobs = {blob(manifest): raw, blob(self.config): b'?' * 123, blob(self.layer): b'layer123'}
+        if mutate:
+            mutate(metadata, index, docker, blobs)
+        entries = {'oci-layout': b'{"imageLayoutVersion":"1.0.0"}', 'index.json': json.dumps(index).encode(),
+                   'manifest.json': json.dumps(docker).encode(), **blobs}
+        archive = root / 'runtime.tar'
+        with tarfile.open(archive, 'w') as output:
+            for name, data in sorted(entries.items()):
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                output.addfile(member, io.BytesIO(data))
+        return metadata, archive, raw
+
+    def test_actual_missing_config_shape_uses_byte_bound_docker_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata, archive, raw = self.make_fixture(root)
+            # 新 API 先验证同一份随后加载的归档；配置来源只能是其原始 manifest。
+            self.assertEqual(raw, oci.docker_archive_manifest(metadata, archive, self.refs))
+            self.assertEqual(self.config, oci.validated_build_manifest(metadata, raw)['config']['digest'])
+
+    def test_archive_verifier_never_reads_config_or_layer_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            metadata, archive, expected_raw = self.make_fixture(Path(directory))
+            with tarfile.open(archive, 'r:') as layout:
+                opaque = [layout.getmember('blobs/sha256/' + value[7:]) for value in (self.config, self.layer)]
+            original_open = Path.open
+
+            def guarded_open(path, *args, **kwargs):
+                handle = original_open(path, *args, **kwargs)
+                real_read = handle.read
+
+                def guarded_read(size=-1):
+                    offset = handle.tell()
+                    self.assertGreaterEqual(size, 0)
+                    for member in opaque:
+                        self.assertTrue(offset + size <= member.offset_data or
+                                        offset >= member.offset_data + member.size, 'read touched opaque blob bytes')
+                    return real_read(size)
+
+                handle.read = guarded_read
+                return handle
+
+            with patch.object(Path, 'open', guarded_open):
+                self.assertEqual(expected_raw, oci.docker_archive_manifest(metadata, archive, self.refs))
+
+    def test_wrong_archive_owner_role_or_bytes_reject(self):
+        def corrupt_manifest(metadata, index, docker, blobs):
+            path = 'blobs/sha256/' + metadata['containerimage.digest'][7:]
+            blobs[path] = blobs[path].replace(b'"schemaVersion"', b'"schemeVersion"')
+
+        for name, mutate in {
+            'wrong-selected-raw-hash': corrupt_manifest,
+            'digest-points-to-unrelated-valid-blob': lambda m, i, d, b: i['manifests'][1].update(digest=self.layer),
+            'wrong-tag-owner': lambda m, i, d, b: i['manifests'][1]['annotations'].update({
+                'io.containerd.image.name': 'ghcr.io/other/image:latest'}),
+            'wrong-ref-annotation': lambda m, i, d, b: i['manifests'][1]['annotations'].update({
+                'org.opencontainers.image.ref.name': 'fixture'}),
+            'index-instead-of-image': lambda m, i, d, b: i['manifests'][0].update(mediaType=i['mediaType']),
+            'wrong-index-config-annotation': lambda m, i, d, b: i['manifests'][0]['annotations'].update({
+                'config.digest': self.layer}),
+            'wrong-index-size': lambda m, i, d, b: i['manifests'][0].update(size=m['containerimage.descriptor']['size'] + 1),
+            'wrong-docker-config': lambda m, i, d, b: d[0].update(Config='blobs/sha256/' + self.layer[7:]),
+            'manifest-is-config': lambda m, i, d, b: d[0].update(Config='blobs/sha256/' + m['containerimage.digest'][7:]),
+            'wrong-docker-layer': lambda m, i, d, b: d[0].update(Layers=['blobs/sha256/' + self.config[7:]]),
+            'wrong-docker-tag': lambda m, i, d, b: d[0]['RepoTags'].pop(),
+            'extra-unowned-blob': lambda m, i, d, b: b.update({'blobs/sha256/' + '9' * 64: b'x'}),
+            'unsupported-archive-member': lambda m, i, d, b: b.update({'./manifest.json': b'[]'}),
+            'wrong-config-member-size': lambda m, i, d, b: b.update({'blobs/sha256/' + self.config[7:]: b'x'}),
+        }.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
+                metadata, archive, _ = self.make_fixture(Path(directory), mutate)
+                oci.docker_archive_manifest(metadata, archive, self.refs)
+
+    def test_malformed_archive_never_emits_success_or_raw_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata, archive, _ = self.make_fixture(root)
+            archive.write_bytes(b'SYNTHETIC_UNTRUSTED_ARCHIVE')
+            manifest, receipt = root / 'build.json', root / 'export.json'
+            result = subprocess.run([sys.executable, '-I', '-B', str(Path(__file__).with_name('v0222_oci_identity.py')),
+                'export', '--metadata-env', 'FIXTURE_METADATA', '--archive', str(archive), '--version-ref', self.refs[0],
+                '--latest-ref', self.refs[1], '--build-manifest', str(manifest), '--receipt', str(receipt)],
+                env=dict(os.environ, FIXTURE_METADATA=json.dumps(metadata), GITHUB_SHA='c' * 40), capture_output=True, timeout=10)
+            self.assertEqual(1, result.returncode)
+            self.assertEqual(b'', result.stdout)
+            self.assertEqual('OCI identity verification failed; no config blob was read', result.stderr.decode().strip())
+            self.assertFalse(manifest.exists() or receipt.exists())
+            self.assertEqual({'verified': False, 'exit_code': 1, 'github_sha': 'c' * 40,
+                              'command': 'v0222_oci_identity.py export', 'runner_version': 'v0222-ci-v8.1',
+                              'failure_class': 'docker_archive'}, json.loads((root / 'export.json.failure.json').read_bytes()))
 
 
 def events_for(names, outcome='pass', package=gate.REPOSITORY, leaves=0):
@@ -149,7 +306,8 @@ def contract_events(tops, leaves):
 class OCICommandTests(unittest.TestCase):
     setUp = OCIIdentityTests.setUp
     # 保留原全部 OCI 用例；额外通过真实 Python CLI 跑 local→registry。
-    def cli_fixture(self, mutation=None, local_id=None, raw=None):
+    def cli_fixture(self, mutation=None, local_id=None, raw=None, local_emitted_id=None, latest_raw=None,
+                    build_drift=None, archive_fixture=False, prepush_latest_id=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             asset = root / 'dist/assets'
@@ -159,34 +317,79 @@ class OCICommandTests(unittest.TestCase):
             manifest.write_text(json.dumps({'files': [{'path': '/assets/index-fixture.js',
                 'sha256': hashlib.sha256(b'fixture-script').hexdigest(), 'size': 14}]}), encoding='utf-8')
             build, proof, registry = root / 'build.json', root / 'proof.json', root / 'raw.json'
-            env = dict(os.environ, FIXTURE_METADATA=json.dumps(self.metadata))
+            build_manifest = root / 'buildkit-manifest.json'
+            metadata, expected_build_raw = self.metadata, self.build_raw
+            if archive_fixture:
+                fixture = DockerArchiveIdentityTests()
+                metadata, archive, expected_build_raw = fixture.make_fixture(root)
+            env = dict(os.environ, FIXTURE_METADATA=json.dumps(metadata))
             base = [sys.executable, '-I', '-B', str(Path(__file__).with_name('v0222_oci_identity.py'))]
-            result = subprocess.run(base + ['local', '--metadata-env', 'FIXTURE_METADATA', '--local-id', self.manifest,
+            common = ['--metadata-env', 'FIXTURE_METADATA', '--build-manifest', str(build_manifest)]
+            if archive_fixture:
+                result = subprocess.run(base + ['export', *common, '--archive', str(archive),
+                    '--version-ref', fixture.refs[0], '--latest-ref', fixture.refs[1], '--receipt', str(root / 'export.json')],
+                    env=env, capture_output=True, timeout=10)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(expected_build_raw, build_manifest.read_bytes())
+            else:
+                build_manifest.write_bytes(expected_build_raw)
+            continuity = local_emitted_id or self.manifest
+            result = subprocess.run(base + ['local', *common, '--local-id', continuity,
+                '--latest-id', prepush_latest_id or continuity,
                 '--platform', 'linux/amd64', '--source', self.expected['source'], '--revision', self.expected['revision'],
                 '--version', self.expected['version'], '--expected-source', self.expected['source'],
                 '--expected-revision', self.expected['revision'], '--expected-version', self.expected['version'],
                 '--binary-sha256', '1' * 64, '--receipt', str(build)], env=env, capture_output=True, timeout=10)
+            if prepush_latest_id:
+                self.assertEqual('local_identity', json.loads((root / 'build.json.failure.json').read_text())['failure_class'])
+                self.assertFalse(build.exists())
+                return result
             self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(self.config.encode(), result.stdout.strip())
             value = json.loads(build.read_text())
+            self.assertEqual(continuity, value['local_id'])
+            self.assertEqual(self.config, value['config_digest'])
+            if build_drift:
+                build_manifest.write_bytes(build_drift)
             if mutation:
                 mutation(value)
                 build.write_text(json.dumps(value), encoding='utf-8')
             registry.write_bytes(raw if raw is not None else self.raw)
-            result = subprocess.run(base + ['registry', '--metadata-env', 'FIXTURE_METADATA', '--manifest', str(registry),
+            latest = root / 'latest.json'
+            latest.write_bytes(latest_raw if latest_raw is not None else registry.read_bytes())
+            result = subprocess.run(base + ['registry', *common, '--manifest', str(registry),
+                '--version-manifest', str(registry), '--latest-manifest', str(latest),
                 '--expected-digest', self.registry_digest, '--build-receipt', str(build), '--receipt', str(proof),
                 '--expected-source', self.expected['source'], '--expected-revision', self.expected['revision'],
-                '--expected-version', self.expected['version'], '--local-id', local_id or self.manifest,
-                '--latest-id', self.manifest, '--binary-sha256', '1' * 64, '--asset-manifest', str(manifest),
+                '--expected-version', self.expected['version'], '--local-id', local_id or continuity,
+                '--latest-id', continuity, '--binary-sha256', '1' * 64, '--asset-manifest', str(manifest),
                 '--asset-manifest-sha256', hashlib.sha256(manifest.read_bytes()).hexdigest(), '--asset-count', '1',
                 '--asset-directory', str(root / 'dist')], env=env, capture_output=True, timeout=10)
             if result.returncode:
                 self.assertFalse(proof.exists())
             else:
-                self.assertTrue(json.loads(proof.read_text())['verified'])
+                success = json.loads(proof.read_text())
+                self.assertTrue(success['verified'])
+                self.assertEqual(self.registry_digest, success['registry']['manifest_digest'])
+                self.assertEqual(self.config, success['registry']['config_digest'])
+                self.assertNotEqual(success['registry']['manifest_digest'], success['buildkit_manifest_digest'])
             return result
 
-    def test_cli_local_to_registry_positive(self):
+    def test_containerd_local_manifest_id_is_not_canonical_config(self):
         self.assertEqual(0, self.cli_fixture().returncode)
+
+    def test_legacy_local_config_id_may_coincide_with_independent_config(self):
+        self.assertEqual(0, self.cli_fixture(local_emitted_id=self.config).returncode)
+
+    def test_cli_actual_missing_shape_archive_local_and_reserialized_registry(self):
+        self.assertEqual(0, self.cli_fixture(archive_fixture=True).returncode)
+
+    def test_cli_prepush_latest_id_drift_reject(self):
+        self.assertEqual(1, self.cli_fixture(prepush_latest_id='sha256:' + 'e' * 64).returncode)
+
+    def test_cli_registry_tags_and_local_raw_drift_reject(self):
+        self.assertEqual(1, self.cli_fixture(latest_raw=self.raw + b'\n').returncode)
+        self.assertEqual(1, self.cli_fixture(build_drift=self.build_raw + b'\n').returncode)
 
     def test_cli_local_id_drift_reject(self):
         self.assertNotEqual(0, self.cli_fixture(local_id='sha256:' + 'e' * 64).returncode)
@@ -1706,9 +1909,26 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertNotIn('OCI_LOCAL_IMAGE_ID=${runtime_image_id}', self.publish)
         self.assertIn('"$current_image_id" == "$OCI_DOCKER_LOCAL_IMAGE_ID"', self.publish)
         self.assertIn('"$current_latest_image_id" == "$OCI_DOCKER_LOCAL_IMAGE_ID"', self.publish)
-        self.assertIn('"${IMAGE_NAME}@${version_digest}" > "${identity_dir}/registry-manifest.json"', self.publish)
-        self.assertIn('--build-receipt "${PROVENANCE_WORK_DIR}/build-identity.json"', self.publish)
+        self.assertIn('"${IMAGE_NAME}@${version_digest}" > "$pinned_raw"', self.publish)
+        self.assertIn('--build-receipt "${IDENTITY_DIR}/build-identity.json"', self.publish)
         self.assertIn('--arg oci_local_image_id "$OCI_LOCAL_IMAGE_ID"', self.publish)
+
+    def test_same_archive_is_verified_before_load_and_push_without_registry_config_fetch(self):
+        build = self.publish.split('id: runtime_build', 1)[1].split('- name:', 1)[0]
+        self.assertIn('outputs: type=docker,dest=${{ env.PROVENANCE_WORK_DIR }}/runtime/image.tar', build)
+        for setting in ('push: false', 'provenance: false', 'sbom: false', 'platforms: linux/amd64'):
+            self.assertIn(setting, build)
+        self.assertNotIn('load: true', build)
+        self.assertEqual(1, build.count('outputs:'))
+        self.assertLess(self.publish.index('v0222_oci_identity.py export'), self.publish.index('docker load --input "$archive"'))
+        self.assertLess(self.publish.index('docker load --input "$archive"'), self.publish.index('v0222_oci_identity.py local'))
+        self.assertLess(self.publish.index('v0222_oci_identity.py local'), self.publish.index('docker push'))
+        self.assertEqual(3, self.publish.count('imagetools inspect --builder "$BUILDX_BUILDER_NAME" --raw'))
+        self.assertNotIn('imagetools inspect --builder "$BUILDX_BUILDER_NAME" --format', self.publish)
+        self.assertIn('--manifest "$pinned_raw" --version-manifest "$version_raw" --latest-manifest "$latest_raw"', self.publish)
+        self.assertIn('if: always()', self.publish.split('Upload independent image identity proof', 1)[1])
+        for name in ('archive-identity', 'build-identity'):
+            self.assertIn(f'--receipt "${{IDENTITY_DIR}}/{name}.json"', self.publish)
 
     def test_sse_race_json_gate_is_wired_in_both_workflows(self):
         self.assertIn('|V0222SSEFastPath|V0222GatewayRetry|V8OpenAI|UsageLogV0222Persistence|UsageBillingV0222Apply|V10Cache|SessionMemory|SSEStreamReaderLifecycle|OpenAIInputTokensLiveBoundary|OpenAIWSPassthroughFirstTokenFollowsTTFTMode|OpenAIWSPassthroughTTFTOriginIncludesAdmission|OpenAIWSTTFTModeConn\'', self.publish)
