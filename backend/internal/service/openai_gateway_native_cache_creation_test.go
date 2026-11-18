@@ -61,6 +61,7 @@ func TestNativeAnthropicCacheCreationRouteBillingBoundary(t *testing.T) {
 						}
 						message := `{"id":"msg_cache","type":"message","role":"assistant","model":"k3","content":[],"usage":` + startUsage + `}`
 						payload := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":" + message + "}\n\n"
+						payload += anthropicVisibleTextSSE
 						for _, snapshot := range test.snapshots {
 							for range 2 {
 								payload += "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":" + snapshot + "}\n\n"
@@ -123,7 +124,12 @@ func TestNativeAnthropicCacheCreationRouteBillingBoundary(t *testing.T) {
 						require.Equal(t, test.ttl1h, result.Usage.CacheCreation1hTokens)
 						require.Equal(t, http.StatusOK, recorder.Code)
 						if route == "messages" {
-							require.Equal(t, payload, recorder.Body.String())
+							wantBody := payload
+							if stream && terminal == "stop" {
+								// 定制透传在首个 message_stop 后即结束，重复的 message_stop 不再转发。
+								wantBody = payload[:strings.LastIndex(payload, "event: message_stop")]
+							}
+							require.Equal(t, wantBody, recorder.Body.String())
 						} else {
 							assertNativeCacheCompatibleUsage(t, recorder.Body.String(), route, stream, uncachedInput, test.aggregate)
 						}

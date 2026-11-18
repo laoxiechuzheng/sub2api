@@ -200,12 +200,6 @@ func (s *AccountTestService) kiroSyncAccessToken(ctx context.Context, account *A
 	return token, nil
 }
 
-// kiroSyncPublicModelNames 把上游 modelId 展开成对外名。Claude 紧跟一行 -thinking。
-func kiroSyncPublicModelNames(ids []string) []string {
-	names, _ := kiroPublicCatalog(ids)
-	return names
-}
-
 // kiroPublicCatalog 展开对外名，并在 metadata 里记下原始 modelId。
 // thinking 别名指向同一个上游 ID。界面用这个 ID 保存映射，不再从短横线名字猜点号位置。
 func kiroPublicCatalog(ids []string) ([]string, map[string]UpstreamModelMetadata) {

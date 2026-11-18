@@ -332,10 +332,3 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 func isConcreteRequestPlatform(platform string) bool {
 	return domain.IsConcretePlatform(platform)
 }
-
-// isServableAccountPlatform reports whether an account's platform is still
-// served: a registered concrete platform or a profile-only provider. Rows left
-// behind by a removed platform return false.
-func isServableAccountPlatform(platform string) bool {
-	return isConcreteRequestPlatform(platform) || LookupProviderProfile(platform) != nil
-}

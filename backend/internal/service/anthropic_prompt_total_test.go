@@ -121,6 +121,7 @@ func TestAnthropicPromptTotalCacheReadZeroForwardBoundary(t *testing.T) {
 			for _, terminal := range []string{"stop", "eof"} {
 				t.Run(field+"/"+route+"/"+terminal, func(t *testing.T) {
 					payload := "event: message_start\ndata: " + `{"type":"message_start","message":{"id":"msg_zero","type":"message","role":"assistant","model":"claude-sonnet-4","content":[],"usage":{"input_tokens":100,"prompt_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}` + "\n\n"
+					payload += anthropicVisibleTextSSE
 					for range 2 {
 						payload += "event: message_delta\ndata: " + `{"type":"message_delta","usage":{"` + field + `":0}}` + "\n\n"
 					}
@@ -210,6 +211,7 @@ func TestAnthropicPromptTotalForwardBoundary(t *testing.T) {
 						inputField, wantInput = `"input_tokens":100,"prompt_tokens":100`, 50
 					}
 					payload := "event: message_start\ndata: " + `{"type":"message_start","message":{"id":"msg_total","type":"message","role":"assistant","model":"claude-sonnet-4","content":[],"usage":{` + inputField + `,"cache_creation":{"ephemeral_5m_input_tokens":20}}}}` + "\n\n"
+					payload += anthropicVisibleTextSSE
 					for range 2 {
 						payload += "event: message_delta\ndata: " + `{"type":"message_delta","usage":{"cache_creation":{"ephemeral_1h_input_tokens":30}}}` + "\n\n"
 					}

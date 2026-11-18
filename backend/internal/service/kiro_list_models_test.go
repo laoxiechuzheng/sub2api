@@ -54,8 +54,8 @@ func TestKiroListAvailableModelsPaginatesAndUsesProfileArn(t *testing.T) {
 	require.Equal(t, "application/json", requests[0].Header.Get("Accept"))
 	require.Empty(t, requests[0].Header.Get("X-Amz-Target"))
 	require.Equal(t, "page-2", requests[1].URL.Query().Get("nextToken"))
-	require.Equal(t, []string{"claude-opus-5-5", "claude-opus-5-5-thinking", "gpt-5.6-sol"}, kiroSyncPublicModelNames(ids))
-	_, metadata := kiroPublicCatalog(ids)
+	names, metadata := kiroPublicCatalog(ids)
+	require.Equal(t, []string{"claude-opus-5-5", "claude-opus-5-5-thinking", "gpt-5.6-sol"}, names)
 	require.Equal(t, "claude-opus-5.5", metadata["claude-opus-5-5"].ID)
 	require.Equal(t, "claude-opus-5.5", metadata["claude-opus-5-5-thinking"].ID)
 	require.Equal(t, "gpt-5.6-sol", metadata["gpt-5.6-sol"].ID)
@@ -116,7 +116,8 @@ func TestKiroListAvailableModelsAPIKeyOmitsProfileArn(t *testing.T) {
 	ids, err := kiroListAvailableModelIDsWithDo(context.Background(), account, "ksk_test", do)
 	require.NoError(t, err)
 	require.Equal(t, []string{"claude-opus-5"}, ids)
-	require.Equal(t, []string{"claude-opus-5", "claude-opus-5-thinking"}, kiroSyncPublicModelNames(ids))
+	names, _ := kiroPublicCatalog(ids)
+	require.Equal(t, []string{"claude-opus-5", "claude-opus-5-thinking"}, names)
 }
 
 func TestKiroListAvailableModelsStopsAfterTenPages(t *testing.T) {

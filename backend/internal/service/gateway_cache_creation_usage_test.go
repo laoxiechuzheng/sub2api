@@ -125,6 +125,13 @@ func TestAnthropicCacheCreationSnapshots(t *testing.T) {
 	}
 }
 
+// anthropicVisibleTextSSE 是一段客户端可见的文本输出。定制的 Anthropic 流式处理要求
+// 首个终态前必须出现可见输出（否则按 empty_visible_output 失败切换账号），
+// 所以计费边界用例的上游流需要带上它，才能走到 usage 汇总路径。
+const anthropicVisibleTextSSE = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+	"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+	"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+
 func TestAnthropicCacheCreationMissingDetailForwardBillingBoundary(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, test := range []struct {
@@ -150,6 +157,7 @@ func TestAnthropicCacheCreationMissingDetailForwardBillingBoundary(t *testing.T)
 			for _, terminal := range []string{"stop", "eof"} {
 				t.Run(test.name+"/"+route+"/"+terminal, func(t *testing.T) {
 					payload := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_cache\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":2," + test.start + "}}}\n\n"
+					payload += anthropicVisibleTextSSE
 					for range 2 {
 						payload += "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":" + test.delta + "}\n\n"
 					}
@@ -173,7 +181,12 @@ func TestAnthropicCacheCreationMissingDetailForwardBillingBoundary(t *testing.T)
 							streamed, err = service.handleStreamingResponse(context.Background(), response, ctx, &Account{ID: 701}, time.Now(), "claude-sonnet-4", "claude-sonnet-4", false)
 						} else {
 							streamed, err = service.handleStreamingResponseAnthropicAPIKeyPassthrough(context.Background(), response, ctx, &Account{ID: 701}, time.Now(), "claude-sonnet-4")
-							require.Equal(t, payload, recorder.Body.String())
+							wantBody := payload
+							if terminal == "stop" {
+								// 定制透传在首个 message_stop 后即结束，重复的 message_stop 不再转发。
+								wantBody = payload[:strings.LastIndex(payload, "event: message_stop")]
+							}
+							require.Equal(t, wantBody, recorder.Body.String())
 						}
 						require.NotNil(t, streamed)
 						result = &ForwardResult{RequestID: "cache_creation", Model: "claude-sonnet-4", Usage: *streamed.usage, Duration: time.Second}

@@ -102,28 +102,28 @@ func TestAdaptResponsesClientTools_NormalizesUniqueBareNamespaceHistory(t *testi
 	require.True(t, changed)
 	require.True(t, mapping.CustomTools["functions__exec"])
 
-	input := req["input"].([]any)
-	customCall := input[0].(map[string]any)
+	input := mustAsKiroCompatTest[[]any](t, req["input"])
+	customCall := mustAsKiroCompatTest[map[string]any](t, input[0])
 	require.Equal(t, "function_call", customCall["type"])
 	require.Equal(t, "functions__exec", customCall["name"])
-	require.JSONEq(t, "{\"input\":\"run()\"}", customCall["arguments"].(string))
+	require.JSONEq(t, "{\"input\":\"run()\"}", mustAsKiroCompatTest[string](t, customCall["arguments"]))
 
-	customOutput := input[1].(map[string]any)
+	customOutput := mustAsKiroCompatTest[map[string]any](t, input[1])
 	require.Equal(t, "function_call_output", customOutput["type"])
 	require.Equal(t, "custom_1", customOutput["call_id"])
 	require.Equal(t, "ok", customOutput["output"])
 
-	legacyCall := input[2].(map[string]any)
+	legacyCall := mustAsKiroCompatTest[map[string]any](t, input[2])
 	require.Equal(t, "function_call", legacyCall["type"])
 	require.Equal(t, "functions__exec", legacyCall["name"])
-	legacyOutput := input[3].(map[string]any)
+	legacyOutput := mustAsKiroCompatTest[map[string]any](t, input[3])
 	require.Equal(t, "legacy_1", legacyOutput["call_id"])
 	require.Equal(t, "legacy ok", legacyOutput["output"])
 
-	qualifiedCall := input[4].(map[string]any)
+	qualifiedCall := mustAsKiroCompatTest[map[string]any](t, input[4])
 	require.Equal(t, "functions__wait", qualifiedCall["name"])
 	require.NotContains(t, qualifiedCall, "namespace")
-	require.Equal(t, "functions__wait", input[5].(map[string]any)["name"])
+	require.Equal(t, "functions__wait", mustAsKiroCompatTest[map[string]any](t, input[5])["name"])
 }
 
 func TestFlattenResponsesNamespaces_DoesNotInferAmbiguousBareHistory(t *testing.T) {
@@ -157,7 +157,7 @@ func TestFlattenResponsesNamespaces_DoesNotInferAmbiguousBareHistory(t *testing.
 			_, changed, err := FlattenResponsesNamespacesKiroCompat(req, nil)
 			require.NoError(t, err)
 			require.True(t, changed)
-			call := req["input"].([]any)[0].(map[string]any)
+			call := mustAsKiroCompatTest[map[string]any](t, mustAsKiroCompatTest[[]any](t, req["input"])[0])
 			require.Equal(t, "exec", call["name"])
 			require.NotContains(t, call, "namespace")
 		})
@@ -298,6 +298,14 @@ func TestFlattenResponsesNamespaces_BaselineIgnoresCustomChildAndBareHistory(t *
 	require.True(t, changed)
 	require.NotContains(t, names, "functions__exec")
 	require.Contains(t, names, "functions__wait")
-	require.Len(t, req["tools"].([]any), 1)
-	require.Equal(t, "wait", req["input"].([]any)[0].(map[string]any)["name"])
+	require.Len(t, mustAsKiroCompatTest[[]any](t, req["tools"]), 1)
+	require.Equal(t, "wait", mustAsKiroCompatTest[map[string]any](t, mustAsKiroCompatTest[[]any](t, req["input"])[0])["name"])
+}
+
+// mustAsKiroCompatTest 做带检查的类型断言，避免测试里出现未检查的 x.(T)。
+func mustAsKiroCompatTest[T any](t *testing.T, value any) T {
+	t.Helper()
+	typed, ok := value.(T)
+	require.True(t, ok, "unexpected type %T", value)
+	return typed
 }

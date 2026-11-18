@@ -922,7 +922,7 @@ func normalizeAnthropicInputSchema(schema json.RawMessage) json.RawMessage {
 	return out
 }
 
-// convertResponsesToAnthropicToolChoice maps Responses tool_choice to Anthropic format.
+// convertResponsesToAnthropicToolChoiceWithCompat maps Responses tool_choice to Anthropic format.
 // Reverse of convertAnthropicToolChoiceToResponses.
 //
 //	"auto"                                     → {"type":"auto"}
@@ -931,10 +931,6 @@ func normalizeAnthropicInputSchema(schema json.RawMessage) json.RawMessage {
 //	{"type":"function","name":"X"}                 → {"type":"tool","name":"X"}
 //	{"type":"custom","name":"X"}                   → {"type":"tool","name":"X"}
 //	{"type":"function","function":{"name":"X"}}     → {"type":"tool","name":"X"} // legacy
-func convertResponsesToAnthropicToolChoice(raw json.RawMessage) (json.RawMessage, error) {
-	return convertResponsesToAnthropicToolChoiceWithCompat(raw, false)
-}
-
 func convertResponsesToAnthropicToolChoiceWithCompat(raw json.RawMessage, kiroCompat bool) (json.RawMessage, error) {
 	// Try as string first
 	var s string
