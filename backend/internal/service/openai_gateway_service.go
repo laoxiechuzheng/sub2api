@@ -304,6 +304,14 @@ type OpenAIForwardResult struct {
 	wsReplayInput                []json.RawMessage
 	wsReplayInputExists          bool
 	wsAccountFailoverReplayInput []json.RawMessage
+
+	// 仅 Messages→Responses 新恢复的失败用量使用此结算边界。
+	messagesResponsesRecoveredUsage bool
+}
+
+// IsRecoveredMessagesBufferedUsage identifies a buffered failure with recovered usage.
+func (r *OpenAIForwardResult) IsRecoveredMessagesBufferedUsage() bool {
+	return r != nil && r.messagesResponsesRecoveredUsage && !r.Stream
 }
 
 // SucceededForScheduling reports whether this result is an upstream success

@@ -7,6 +7,8 @@ package apicompat
 import (
 	"bytes"
 	"encoding/json"
+
+	"github.com/tidwall/gjson"
 )
 
 // ---------------------------------------------------------------------------
@@ -502,10 +504,12 @@ type ResponsesSummary struct {
 
 // ResponsesUsage holds token counts in Responses API format.
 type ResponsesUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	TotalTokens              int `json:"total_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	InputTokens                 int `json:"input_tokens"`
+	OutputTokens                int `json:"output_tokens"`
+	TotalTokens                 int `json:"total_tokens"`
+	CacheCreationInputTokens    int `json:"cache_creation_input_tokens,omitempty"`
+	CacheCreation30mInputTokens int `json:"-"`
+	CacheCreation12hInputTokens int `json:"-"`
 
 	// Optional detailed breakdown
 	InputTokensDetails  *ResponsesInputTokensDetails  `json:"input_tokens_details,omitempty"`
@@ -578,6 +582,18 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 	if u.TotalTokens == 0 && (u.InputTokens != 0 || u.OutputTokens != 0) {
 		u.TotalTokens = u.InputTokens + u.OutputTokens
 	}
+	// 原 typed 解码先完成：数字字符串、小数等非法用量仍按原约定拒绝。
+	// 仅缓存字段复用底层规则，总输入、输出和终态权威不变。
+	cache := CacheUsageFromGJSON(gjson.ParseBytes(data))
+	if u.InputTokensDetails == nil && cache.Read > 0 {
+		u.InputTokensDetails = &ResponsesInputTokensDetails{}
+	}
+	if u.InputTokensDetails != nil {
+		u.InputTokensDetails.CachedTokens = cache.Read
+	}
+	u.CacheCreationInputTokens = cache.Write
+	u.CacheCreation30mInputTokens = cache.TTL30m
+	u.CacheCreation12hInputTokens = cache.TTL12h
 	return nil
 }
 

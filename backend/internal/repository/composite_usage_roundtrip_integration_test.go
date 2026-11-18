@@ -119,7 +119,7 @@ func TestCompositeRouteFallbackConfigJSONBRoundTrip(t *testing.T) {
 }
 
 func TestCompositeUsageAttributionInsertReadRoundTrip(t *testing.T) {
-	for _, path := range []string{"single", "batch", "best_effort_batch"} {
+	for _, path := range []string{"single", "batch", "best_effort_batch", "no_result"} {
 		t.Run(path, func(t *testing.T) {
 			f := newCompositeUsageFixture(t, path != "single")
 			ctx := context.Background()
@@ -130,8 +130,21 @@ func TestCompositeUsageAttributionInsertReadRoundTrip(t *testing.T) {
 			var wg sync.WaitGroup
 			for i := range logs {
 				logs[i] = f.log(uuid.NewString(), "public-a", "image")
+				logs[i].CacheCreation5mTokens, logs[i].CacheCreation1hTokens = 17+i, 19+i
+				logs[i].CacheCreation30mTokens, logs[i].CacheCreation12hTokens = 73+i, 89+i
+				logs[i].CacheCreationTokens = 198 + 4*i
+				logs[i].TotalCost, logs[i].ActualCost = 12.5+float64(i), 3.25+float64(i)/10
+				accountCost, accountRate := 7.75+float64(i)/10, 1.5
+				logs[i].AccountStatsCost, logs[i].AccountRateMultiplier = &accountCost, &accountRate
+				upstreamID, session := fmt.Sprintf("upstream-%d", i), fmt.Sprintf("session-%d", i)
+				logs[i].UpstreamRequestID, logs[i].SessionID = &upstreamID, &session
+				logs[i].NativeCompactionV2 = true
 				if path == "single" {
 					inserted[i], errs[i] = f.repo.Create(ctx, logs[i])
+					continue
+				}
+				if path == "no_result" {
+					errs[i] = execUsageLogInsertNoResult(ctx, f.repo.sql, prepareUsageLogInsert(logs[i]))
 					continue
 				}
 				wg.Add(1)
@@ -153,7 +166,7 @@ func TestCompositeUsageAttributionInsertReadRoundTrip(t *testing.T) {
 			}
 			for i, log := range logs {
 				require.NoError(t, errs[i], "path=%s index=%d", path, i)
-				if path != "best_effort_batch" {
+				if path != "best_effort_batch" && path != "no_result" {
 					require.True(t, inserted[i])
 					require.Positive(t, log.ID)
 				}
@@ -168,6 +181,23 @@ func TestCompositeUsageAttributionInsertReadRoundTrip(t *testing.T) {
 					require.Equal(t, log.CompositeRouteKind, row.CompositeRouteKind)
 					require.Equal(t, log.CompositeFallbackChain, row.CompositeFallbackChain)
 					require.Equal(t, "public-a", row.RequestedModel)
+					require.Equal(t, 17+i, row.CacheCreation5mTokens)
+					require.Equal(t, 19+i, row.CacheCreation1hTokens)
+					require.Equal(t, 73+i, row.CacheCreation30mTokens)
+					require.Equal(t, 89+i, row.CacheCreation12hTokens)
+					require.Equal(t, 198+4*i, row.CacheCreationTokens)
+					require.InDelta(t, 12.5+float64(i), row.TotalCost, 1e-8)
+					require.InDelta(t, 3.25+float64(i)/10, row.ActualCost, 1e-8)
+					require.NotNil(t, row.AccountStatsCost)
+					require.InDelta(t, 7.75+float64(i)/10, *row.AccountStatsCost, 1e-8)
+					require.NotNil(t, row.AccountRateMultiplier)
+					require.Equal(t, 1.5, *row.AccountRateMultiplier)
+					require.NotNil(t, row.UpstreamRequestID)
+					require.Equal(t, fmt.Sprintf("upstream-%d", i), *row.UpstreamRequestID)
+					require.NotNil(t, row.SessionID)
+					require.Equal(t, fmt.Sprintf("session-%d", i), *row.SessionID)
+					require.True(t, row.NativeCompactionV2)
+					require.True(t, row.CreatedAt.Equal(f.createdAt))
 				}
 			}
 		})
@@ -186,6 +216,9 @@ func TestCompositeUsageCombinedFiltersAndExactPagination(t *testing.T) {
 	for _, combination := range combinations {
 		for i := 0; i < combination.count; i++ {
 			log := f.log(fmt.Sprintf("%s-%s-%d-%s", combination.model, combination.mode, i, uuid.NewString()), combination.model, combination.mode)
+			log.TotalCost, log.ActualCost = 12.5, 3.25
+			accountCost, accountRate := 7.75, 1.5
+			log.AccountStatsCost, log.AccountRateMultiplier = &accountCost, &accountRate
 			_, err := f.repo.Create(ctx, log)
 			require.NoError(t, err)
 		}
@@ -209,21 +242,40 @@ func TestCompositeUsageCombinedFiltersAndExactPagination(t *testing.T) {
 			stats, err := f.repo.GetStatsWithFilters(ctx, filters)
 			require.NoError(t, err)
 			require.EqualValues(t, combination.count, stats.TotalRequests)
+			n := float64(combination.count)
+			require.InDelta(t, 12.5*n, stats.TotalCost, 1e-8)
+			require.InDelta(t, 3.25*n, stats.TotalActualCost, 1e-8)
+			require.NotNil(t, stats.TotalAccountCost)
+			require.InDelta(t, 11.625*n, *stats.TotalAccountCost, 1e-8)
+			for _, endpoints := range [][]usagestats.EndpointStat{stats.Endpoints, stats.UpstreamEndpoints, stats.EndpointPaths} {
+				require.Len(t, endpoints, 1)
+				require.InDelta(t, 12.5*n, endpoints[0].Cost, 1e-8)
+				require.InDelta(t, 3.25*n, endpoints[0].ActualCost, 1e-8)
+				require.InDelta(t, 11.625*n, endpoints[0].AccountCost, 1e-8)
+			}
 			trend, err := f.repo.GetUsageTrendWithUsageFilters(ctx, start, end, "day", filters)
 			require.NoError(t, err)
 			require.Len(t, trend, 1)
 			require.EqualValues(t, combination.count, trend[0].Requests)
+			require.InDelta(t, 12.5*n, trend[0].Cost, 1e-8)
+			require.InDelta(t, 3.25*n, trend[0].ActualCost, 1e-8)
 			for _, source := range []string{usagestats.ModelSourceRequested, usagestats.ModelSourceUpstream, usagestats.ModelSourceMapping} {
 				models, err := f.repo.GetModelStatsWithUsageFiltersBySource(ctx, start, end, filters, source)
 				require.NoError(t, err)
 				require.Len(t, models, 1)
 				require.EqualValues(t, combination.count, models[0].Requests, source)
+				require.InDelta(t, 12.5*n, models[0].Cost, 1e-8, source)
+				require.InDelta(t, 3.25*n, models[0].ActualCost, 1e-8, source)
+				require.InDelta(t, 11.625*n, models[0].AccountCost, 1e-8, source)
 			}
 			groups, err := f.repo.GetGroupStatsWithUsageFilters(ctx, start, end, filters)
 			require.NoError(t, err)
 			require.Len(t, groups, 1)
 			require.Equal(t, f.groupID, groups[0].GroupID)
 			require.EqualValues(t, combination.count, groups[0].Requests)
+			require.InDelta(t, 12.5*n, groups[0].Cost, 1e-8)
+			require.InDelta(t, 3.25*n, groups[0].ActualCost, 1e-8)
+			require.InDelta(t, 11.625*n, groups[0].AccountCost, 1e-8)
 			breakdown, err := f.repo.GetUserBreakdownStats(ctx, start, end, usagestats.UserBreakdownDimension{
 				GroupID: f.groupID, Model: "upstream-a", ModelType: usagestats.ModelSourceUpstream, RequestedModel: combination.model,
 				BillingMode: combination.mode, CompositeRoute: usagestats.CompositeRouteFilterFallback,
@@ -232,6 +284,9 @@ func TestCompositeUsageCombinedFiltersAndExactPagination(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, breakdown, 1)
 			require.EqualValues(t, combination.count, breakdown[0].Requests)
+			require.InDelta(t, 12.5*n, breakdown[0].Cost, 1e-8)
+			require.InDelta(t, 3.25*n, breakdown[0].ActualCost, 1e-8)
+			require.InDelta(t, 11.625*n, breakdown[0].AccountCost, 1e-8)
 			if combination.count == 100 {
 				seen := make(map[int64]bool)
 				for pageNumber := 1; pageNumber <= 5; pageNumber++ {
@@ -268,10 +323,24 @@ func TestCompositeUsageLegacyInsertCompatibilityAndUnknownAttribution(t *testing
 		[]any{f.userID, f.apiKeyID, f.accountID, f.groupID, legacyRequest, f.createdAt}, &legacyID))
 	legacy, err := f.repo.GetByID(ctx, legacyID)
 	require.NoError(t, err)
-	require.Equal(t, "legacy-model", legacy.RequestedModel)
-	require.Nil(t, legacy.CompositeRouteID)
-	require.Nil(t, legacy.CompositeRouteKind)
-	require.Nil(t, legacy.CompositeFallbackChain)
+	legacyRows, legacyPage, err := f.repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 20}, usagestats.UsageLogFilters{APIKeyID: f.apiKeyID, RequestID: legacyRequest})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, legacyPage.Total)
+	require.Len(t, legacyRows, 1)
+	for _, row := range []*service.UsageLog{legacy, &legacyRows[0]} {
+		require.Equal(t, "legacy-model", row.RequestedModel)
+		require.Nil(t, row.CompositeRouteID)
+		require.Nil(t, row.CompositeRouteKind)
+		require.Nil(t, row.CompositeFallbackChain)
+		require.Zero(t, row.CacheCreation5mTokens)
+		require.Zero(t, row.CacheCreation1hTokens)
+		require.Zero(t, row.CacheCreation30mTokens)
+		require.Zero(t, row.CacheCreation12hTokens)
+		require.Nil(t, row.AccountStatsCost)
+		require.Nil(t, row.AccountRateMultiplier)
+		require.Equal(t, 1.0, row.TotalCost)
+		require.Equal(t, 1.0, row.ActualCost)
+	}
 
 	plain := f.log(uuid.NewString(), "current-plain", "token")
 	plain.CompositeRouteID, plain.CompositeRouteKind, plain.CompositeFallbackChain = nil, nil, nil

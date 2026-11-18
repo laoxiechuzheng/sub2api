@@ -118,7 +118,8 @@ func deriveAnthropicCompatPromptCacheKey(req *apicompat.AnthropicRequest, mapped
 	return compatPromptCacheKeyPrefix + hashSensitiveValueForLog(strings.Join(seedParts, "|"))
 }
 
-func deriveAnthropicCacheControlPromptCacheKey(req *apicompat.AnthropicRequest) string {
+// 原 anchor 算法仅用于保持非本次目标的 Grok identity 不变。
+func deriveLegacyAnthropicCacheControlPromptCacheKey(req *apicompat.AnthropicRequest) string {
 	if req == nil {
 		return ""
 	}
@@ -168,6 +169,53 @@ func deriveAnthropicCacheControlPromptCacheKey(req *apicompat.AnthropicRequest) 
 	}
 	sum := sha256.Sum256([]byte("anthropic-cache:" + strings.Join(parts, "\n")))
 	return fmt.Sprintf("anthropic-cache-%x", sum[:16])
+}
+
+func isolatedCompatPromptCacheBodyKey(apiKeyID int64, raw string) string {
+	seed := fmt.Sprintf("v1|apikey:%d|key:%s", apiKeyID, strings.TrimSpace(raw))
+	sum := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("sub2api-pck-%x", sum[:16])
+}
+
+func deriveAnthropicCacheControlPromptCacheKey(req *apicompat.AnthropicRequest) string {
+	if req == nil || deriveLegacyAnthropicCacheControlPromptCacheKey(req) == "" {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	var systemBlocks []apicompat.AnthropicContentBlock
+	if json.Unmarshal(req.System, &systemBlocks) == nil {
+		for _, block := range systemBlocks {
+			if block.Type == "text" && block.CacheControl != nil && strings.TrimSpace(block.CacheControl.Type) == "ephemeral" && strings.TrimSpace(block.Text) != "" {
+				parts = append(parts, "system:"+block.Text)
+			}
+		}
+	}
+	for _, message := range req.Messages {
+		if message.Role != "user" {
+			continue
+		}
+		var text string
+		if json.Unmarshal(message.Content, &text) != nil {
+			var blocks []apicompat.AnthropicContentBlock
+			if json.Unmarshal(message.Content, &blocks) == nil {
+				for _, block := range blocks {
+					if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+						text = block.Text
+						break
+					}
+				}
+			}
+		}
+		if strings.TrimSpace(text) != "" {
+			parts = append(parts, "first_user:"+text)
+		}
+		break
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return fmt.Sprintf("anthropic-cache-v2-%x", sum[:16])
 }
 
 func normalizeCompatSeedJSON(v json.RawMessage) string {

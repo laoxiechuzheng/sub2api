@@ -40,7 +40,7 @@ func TestOpenAICompatSessionCachesExpireWithoutRevisit(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("session-%d", i)
 		s.bindOpenAICompatAnthropicDigestPromptCacheKey(account, 1, "u:"+key, key, "")
-		s.bindOpenAICompatSessionResponseID(context.Background(), nil, account, key, "resp-test")
+		s.bindOpenAICompatSessionResponseProof(context.Background(), nil, account, key, "resp-test", compatContinuationProof{ReqCount: 1, Count: 2})
 	}
 	require.Equal(t, 100, s.openaiCompatAnthropicDigestSessions.ItemCount())
 	require.Equal(t, 100, s.openaiCompatSessionResponses.ItemCount())

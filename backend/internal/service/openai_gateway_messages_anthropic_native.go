@@ -273,6 +273,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 	if contentType == "" {
 		contentType = "application/json"
 	}
+	body = restoreCompositeClientModel(ctx, body)
 	body = reverseToolNamesIfPresent(c, body)
 	c.Data(resp.StatusCode, contentType, body)
 
@@ -430,6 +431,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 		keepaliveTimer.Reset(keepaliveInterval)
 	}
 	inPartialEvent := false
+	clientModel := compositeClientModel(ctx, "")
 
 	for {
 		select {
@@ -487,6 +489,15 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 			}
 
 			if !clientDisconnected {
+				// Observe and bill the upstream's original payload above; only the
+				// client-facing message_start receives the composite public alias.
+				if clientModel != "" {
+					if data, ok := extractAnthropicSSEDataLine(line); ok && gjson.Get(data, "type").String() == "message_start" && gjson.Get(data, "message.model").Exists() {
+						if rewritten, err := sjson.Set(data, "message.model", clientModel); err == nil {
+							line = "data: " + rewritten
+						}
+					}
+				}
 				restored := reverseToolNamesIfPresentString(c, line)
 				if _, err := io.WriteString(w, restored); err != nil {
 					clientDisconnected = true

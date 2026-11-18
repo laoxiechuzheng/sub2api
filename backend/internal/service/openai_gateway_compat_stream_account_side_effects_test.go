@@ -63,7 +63,7 @@ func compatStreamSideEffectsSSE(outputFirst bool, errorEvent string) string {
 	return strings.Join(lines, "\n")
 }
 
-const compatStreamAuthErrorEvent = `{"type":"error","status":401,"error":{"code":"invalid_api_key","type":"invalid_request_error","message":"Incorrect API key provided"}}`
+const compatStreamAuthErrorEvent = `{"type":"error","status":401,"error":{"code":"invalid_api_key","type":"invalid_request_error","message":"Synthetic credential rejected"}}`
 
 func newCompatStreamSideEffectsService(sse string) (*OpenAIGatewayService, *compatStreamSideEffectsRepo, *Account) {
 	account := compatStreamSideEffectsAccount()

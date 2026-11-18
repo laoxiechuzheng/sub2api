@@ -1515,9 +1515,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if err == nil && result != nil && result.FirstTokenMs != nil {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
-		// Forward 与错误一起返回的部分结果：流中断/客户端断开排水前上游已计量的
-		// usage 照常入账，避免上游已产生消耗的请求完全漏记（#5148，对齐 anthropic
-		// 网关同名修复）。failover 错误恒定 result=nil，不会重复计费。
+		// Forward 与错误一起返回的已观测用量仍须入账（#5148）；已消费的请求不能重放。
 		submitMessagesUsage := func(res *service.OpenAIForwardResult) {
 			if res == nil {
 				return
@@ -1573,7 +1571,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			}
 			return
 		}
-		if err != nil && result.HasObservedUsage() {
+		var failoverErr *service.UpstreamFailoverError
+		// 新恢复的 buffered typed failure 沿用下方的错误映射，而不是通用 502。
+		settleBufferedFailover := err != nil && result.IsRecoveredMessagesBufferedUsage() && errors.As(err, &failoverErr)
+		if err != nil && result.HasObservedUsage() && !settleBufferedFailover {
 			submitMessagesUsage(result)
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, currentRoutingModel, false, result), false, nil, err)
 			if !result.ClientDisconnect && !failoverClientGone(c) {
@@ -1590,8 +1591,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					zap.Error(err),
 				)
 			} else {
-				var failoverErr *service.UpstreamFailoverError
-				if errors.As(err, &failoverErr) {
+				if settleBufferedFailover || errors.As(err, &failoverErr) {
+					if settleBufferedFailover {
+						submitMessagesUsage(result)
+					}
 					if failoverClientGone(c) {
 						reqLog.Info("openai_messages.failover_aborted_client_disconnected",
 							zap.Int64("account_id", account.ID),
@@ -1612,7 +1615,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					if failoverErr.ShouldReportAccountScheduleFailure() {
 						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, currentRoutingModel, false, nil), false, nil, err)
 					}
-					if !failoverErr.ShouldRetryNextAccount() {
+					if settleBufferedFailover || !failoverErr.ShouldRetryNextAccount() {
 						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}

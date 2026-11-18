@@ -754,10 +754,9 @@ func partialStreamUsageResult(c *gin.Context, resp *http.Response, streamResult 
 // SSE fast-path predicates. Package-level byte slices keep the per-event
 // checks allocation-free.
 var (
-	sseUsageFieldBytes       = []byte(`"usage"`)
-	sseMessageFieldBytes     = []byte(`"message"`)
-	sseModelFieldBytes       = []byte(`"model"`)
-	sseMessageStopValueBytes = []byte(`"message_stop"`)
+	sseUsageFieldBytes   = []byte(`"usage"`)
+	sseMessageFieldBytes = []byte(`"message"`)
+	sseModelFieldBytes   = []byte(`"model"`)
 )
 
 // sseEventNeedsJSONParse reports whether an Anthropic SSE data line must be
@@ -851,6 +850,10 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
 	go func(scanBuf *sseScannerBuf64K) {
 		defer close(events)
+		// 私有生命周期通知必须在 buffer 归还后、events 关闭前发布。
+		if observer, ok := resp.Body.(interface{ sseReaderCompleted(*sseQueueBudget) }); ok {
+			defer observer.sseReaderCompleted(queueBudget)
+		}
 		defer putSSEScannerBuf64K(scanBuf)
 		for scanner.Scan() {
 			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
@@ -880,7 +883,8 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		// 避免终态/超时返回后仍读取上游，或与调用方的取消和 Close 并发。
 		close(done)
 		_ = resp.Body.Close()
-		for range events {
+		for ev := range events {
+			queueBudget.release(len(ev.line))
 		}
 	}()
 
@@ -1035,16 +1039,17 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 
 		dataLineBytes := []byte(dataLine)
-		if !sseEventNeedsJSONParse(eventName, dataLineBytes, useNoopDeltaKeepalive, needModelReplace) {
-			// Fast path: the event is forwarded verbatim. Skip the map decode and
-			// only do the cheap observations that still need the raw payload.
+		if visibleOutput.visible && !sseEventNeedsJSONParse(eventName, dataLineBytes, useNoopDeltaKeepalive, needModelReplace) {
+			// Once client-visible output has committed the attempt, content events
+			// no longer need the visibility tracker. Before that point, named events
+			// must take the same observation path as data-only events.
 			if bytes.Contains(dataLineBytes, sseModelFieldBytes) {
 				observer.ObserveAnthropic(dataLineBytes)
 			}
-			if strings.EqualFold(eventName, "message_stop") || bytes.Contains(dataLineBytes, sseMessageStopValueBytes) {
-				if anthropicStreamEventIsTerminal(eventName, dataLine) {
-					sawTerminalEvent = true
-				}
+			// Match the decoded path: only a valid message_stop payload starts
+			// the immutable usage tail; the event header alone is not terminal.
+			if gjson.GetBytes(dataLineBytes, "type").String() == "message_stop" && gjson.ValidBytes(dataLineBytes) {
+				markTerminal()
 			}
 			block := ""
 			if eventName != "" {

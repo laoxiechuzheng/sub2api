@@ -174,7 +174,34 @@ describe('admin UsageTable tooltip', () => {
     expect(wrapper.get('[data-request-id="not-routed"]').find('[data-testid="composite-route-badges"]').exists()).toBe(false)
   })
 
-  it('shows the two OpenAI cache-write buckets without Anthropic lifetime labels', async () => {
+    it('keeps token details inside the viewport near the right and bottom edges', async () => {
+      const width = window.innerWidth
+      const height = window.innerHeight
+      const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+        return this.classList.contains('fixed')
+          ? { width: 260, height: 200 } as DOMRect
+          : { right: width - 4, top: height - 10, height: 20 } as DOMRect
+      })
+      const row = { ...baseImageRow, image_count: 0, billing_mode: 'token', cache_creation_tokens: 2399, cache_creation_30m_tokens: 9, cache_creation_12h_tokens: 2390 }
+      const wrapper = mount(UsageTable, {
+        props: { data: [row], loading: false, columns: [] },
+        global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+      })
+      try {
+        await wrapper.find('.group.relative').trigger('mouseenter')
+        await nextTick()
+        const tooltip = wrapper.get<HTMLElement>('.fixed').element
+        expect(parseFloat(tooltip.style.left)).toBeLessThanOrEqual(width - 268)
+        expect(parseFloat(tooltip.style.left)).toBeGreaterThanOrEqual(8)
+        expect(parseFloat(tooltip.style.top)).toBeLessThanOrEqual(height - 108)
+        expect(tooltip.textContent).toContain('12h')
+      } finally {
+        wrapper.unmount()
+        bounds.mockRestore()
+      }
+    })
+
+    it('shows the two OpenAI cache-write buckets without Anthropic lifetime labels', async () => {
     const row = { ...baseImageRow, image_count: 0, billing_mode: 'token', cache_creation_tokens: 2399, cache_creation_30m_tokens: 9, cache_creation_12h_tokens: 2390 }
     const wrapper = mount(UsageTable, {
       props: { data: [row], loading: false, columns: [] },

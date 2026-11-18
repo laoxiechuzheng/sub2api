@@ -331,6 +331,9 @@ func TestOpenAIInputTokensEncodingForModel(t *testing.T) {
 }
 
 func TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI(t *testing.T) {
+	if os.Getenv("OPENAI_INPUT_TOKENS_LIVE_TEST") != "1" {
+		t.Skip("OPENAI_INPUT_TOKENS_LIVE_TEST=1 is required for the optional live comparison")
+	}
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		t.Skip("OPENAI_API_KEY not set")
@@ -374,13 +377,10 @@ func TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI(t *testing.T) {
 
 			actual, err := callOpenAIInputTokensAPIForTest(client, apiKey, prepared.Request)
 			if err != nil {
-				// This is an optional live-API comparison. Credential and transient
-				// network failures must not make the deterministic unit suite fail.
-				var netErr net.Error
-				if strings.Contains(err.Error(), "status=401") ||
-					strings.Contains(err.Error(), "invalid_api_key") ||
-					errors.As(err, &netErr) {
-					t.Skipf("OpenAI live comparison unavailable: %v", err)
+				var liveErr *inputTokensLiveTestError
+				if errors.As(err, &liveErr) && (liveErr.category == "network" ||
+					liveErr.statusCode == http.StatusUnauthorized || liveErr.statusCode == http.StatusForbidden) {
+					t.Skipf("optional live comparison unavailable: %s", liveErr.Error())
 				}
 				require.NoError(t, err)
 			}
@@ -395,14 +395,26 @@ func TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI(t *testing.T) {
 	}
 }
 
+type inputTokensLiveTestError struct {
+	category   string
+	statusCode int
+}
+
+func (e *inputTokensLiveTestError) Error() string {
+	if e.statusCode != 0 {
+		return fmt.Sprintf("input tokens comparison: %s (HTTP %d)", e.category, e.statusCode)
+	}
+	return "input tokens comparison: " + e.category
+}
+
 func callOpenAIInputTokensAPIForTest(client *http.Client, apiKey string, reqBody openAIInputTokensCountRequest) (int, error) {
 	body, err := marshalOpenAIUpstreamJSON(reqBody)
 	if err != nil {
-		return 0, err
+		return 0, &inputTokensLiveTestError{category: "request_marshal"}
 	}
 	req, err := http.NewRequest(http.MethodPost, openaiPlatformAPIInputTokensURL, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return 0, &inputTokensLiveTestError{category: "request_build"}
 	}
 	req.Header.Set("authorization", "Bearer "+apiKey)
 	req.Header.Set("content-type", "application/json")
@@ -410,21 +422,24 @@ func callOpenAIInputTokensAPIForTest(client *http.Client, apiKey string, reqBody
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		var netErr net.Error
+		if errors.As(err, &netErr) {
+			return 0, &inputTokensLiveTestError{category: "network"}
+		}
+		return 0, &inputTokensLiveTestError{category: "request_failed"}
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return 0, &inputTokensLiveTestError{category: "http_status", statusCode: resp.StatusCode}
+	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, err
+		return 0, &inputTokensLiveTestError{category: "response_read"}
 	}
-	if resp.StatusCode >= 400 {
-		return 0, fmt.Errorf("openai input_tokens api error: status=%d body=%s", resp.StatusCode, string(respBody))
-	}
-
 	value := gjson.GetBytes(respBody, "input_tokens")
 	if !value.Exists() {
-		return 0, fmt.Errorf("openai input_tokens api missing input_tokens: %s", string(respBody))
+		return 0, &inputTokensLiveTestError{category: "response_format"}
 	}
 	return int(value.Int()), nil
 }

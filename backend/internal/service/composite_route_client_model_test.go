@@ -79,6 +79,9 @@ func TestCompositeRouteRestoresPublicModelOnAnthropicForward(t *testing.T) {
 						`event: message_start`,
 						`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5-20260901","content":[],"usage":{"input_tokens":1}}}`,
 						"",
+						`event: content_block_delta`,
+						`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+						"",
 						`event: message_delta`,
 						`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
 						"",
@@ -108,6 +111,7 @@ func TestCompositeRouteRestoresPublicModelOnAnthropicForward(t *testing.T) {
 				require.Equal(t, "claude-opus-5-5", gjson.GetBytes(upstream.lastBody, "model").String())
 				if stream {
 					require.Equal(t, "public-model", anthropicMessageStartModel(t, rec.Body.String()))
+					require.Contains(t, rec.Body.String(), `"text":"hi"`, "model restoration must accompany real visible output")
 				} else {
 					require.Equal(t, "public-model", gjson.GetBytes(rec.Body.Bytes(), "model").String())
 					require.Equal(t, "hi", gjson.GetBytes(rec.Body.Bytes(), "content.0.text").String())
@@ -268,6 +272,9 @@ func TestCompositeRouteStreamRewritesOnlyMessageStartModel(t *testing.T) {
 				"",
 				`event: ping`,
 				`data: {"type":"ping","message":{"model":"other-model"}}`,
+				"",
+				`event: content_block_delta`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
 				"",
 				`event: message_delta`,
 				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,

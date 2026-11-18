@@ -26,25 +26,135 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      CI: 'true'
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      - name: CI helper contract fixtures
+        run: python3 -I -B tools/ci/v0222_test_helpers.py
       - name: Backend unit regression tests
         working-directory: backend
         run: go test -mod=readonly -p 2 -tags=unit ./... -count=1 -timeout=10m
       - name: Race regression tests
         working-directory: backend
-        run: >-
-          go test -mod=readonly -p 2 -race -tags=unit
-          ./internal/requestdiagnostic ./internal/service ./internal/repository
-          ./internal/handler ./internal/handler/admin ./internal/server/middleware ./internal/server/routes
-          ./internal/config ./internal/pkg/httputil ./internal/pkg/adminaccess
-          ./internal/managementmcp ./internal/pkg/apicompat ./internal/server
-          -run 'Composite|NativeCompaction|DeepSeek|OpenRouter|CacheTTL|CacheControl|UpstreamProtocol|ResponsesChatFallback|ResponsesNativeGuard|Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|AnthropicCompat|ForwardAsCompat|GatewayForwardStreamDrain|CommentOnlySSEOverload|V0218|Gzip|Compressed|PartialUsage|ServerTiming|OpenAIUsage|OpenAICyber|RecordCyberPolicy|ScopedAdmin|ImageCount|MCP|MCPOAuth|ToolCatalog|ToolResult|BodyMemory|RequestBody|ReadTimeout|WriteTimeout|UpstreamDrain|HTTPUpstreamDrain|SSEQueue|SSETransport|BoundedSSE|AnthropicNativePump|AnthropicNativeLinePump|GatewayStreamingUndelimited|GatewayRequestBodyReuse|ThinkingBlocksNeedFiltering|FilterThinkingBlocks|OpenAIRequestPatches|OpenAICompatBufferedReasoning|StreamAccumulation|AccountTestService|AntigravityBuild|AnthropicMessagesURL|MessageStop|TailUsage|PartialCachedUsage|CyberSession|UsageRecordAsync|UsageRecordContext|CCBufferedFromNativeAnthropic|CCStreamingFromNativeAnthropic|ResponsesBufferedFromNativeAnthropic|ResponsesStreamingFromNativeAnthropic'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../v0222-publish-race-evidence
+          set +e
+          python3 -I -B ../tools/ci/v0222_capture.py \
+            --events ../v0222-publish-race-evidence/race.jsonl --stderr ../v0222-publish-race-evidence/race.stderr \
+            --execution ../v0222-publish-race-evidence/race-execution.json -- \
+          go test -json -mod=readonly -p 2 -race -tags=unit \
+          ./internal/requestdiagnostic ./internal/service ./internal/repository \
+          ./internal/handler ./internal/handler/admin ./internal/server/middleware ./internal/server/routes \
+          ./internal/config ./internal/pkg/httputil ./internal/pkg/adminaccess \
+          ./internal/managementmcp ./internal/pkg/apicompat ./internal/server \
+          -run 'Composite|NativeCompaction|DeepSeek|OpenRouter|CacheTTL|CacheControl|UpstreamProtocol|ResponsesChatFallback|ResponsesNativeGuard|Diagnostic|Diagnostics|Capture|AnthropicVisibleOutput|AnthropicCompat|ForwardAsCompat|GatewayForwardStreamDrain|CommentOnlySSEOverload|V0218|Gzip|Compressed|PartialUsage|ServerTiming|OpenAIUsage|OpenAICyber|RecordCyberPolicy|ScopedAdmin|ImageCount|MCP|MCPOAuth|ToolCatalog|ToolResult|BodyMemory|RequestBody|ReadTimeout|WriteTimeout|UpstreamDrain|HTTPUpstreamDrain|SSEQueue|SSETransport|BoundedSSE|AnthropicNativePump|AnthropicNativeLinePump|GatewayStreamingUndelimited|GatewayRequestBodyReuse|ThinkingBlocksNeedFiltering|FilterThinkingBlocks|OpenAIRequestPatches|OpenAICompatBufferedReasoning|StreamAccumulation|AccountTestService|AntigravityBuild|AnthropicMessagesURL|MessageStop|TailUsage|PartialCachedUsage|CyberSession|UsageRecordAsync|UsageRecordContext|CCBufferedFromNativeAnthropic|CCStreamingFromNativeAnthropic|ResponsesBufferedFromNativeAnthropic|ResponsesStreamingFromNativeAnthropic|V0222SSEFastPath|V0222GatewayRetry|V8OpenAI|UsageLogV0222Persistence|UsageBillingV0222Apply|V10Cache|SessionMemory|SSEStreamReaderLifecycle|OpenAIInputTokensLiveBoundary|OpenAIWSPassthroughFirstTokenFollowsTTFTMode|OpenAIWSPassthroughTTFTOriginIncludesAdmission|OpenAIWSTTFTModeConn' \
           -count=1 -timeout=10m
+          race_exit=$?
+          set -e
+          python3 ../tools/ci/v0222_test_receipt.py --mode sse \
+            --events ../v0222-publish-race-evidence/race.jsonl --exit-code "$race_exit" \
+            --execution ../v0222-publish-race-evidence/race-execution.json \
+            --receipt ../v0222-publish-race-evidence/race-receipt.json
+          python3 -I -B ../tools/ci/v0222_test_receipt.py --mode retry \
+            --events ../v0222-publish-race-evidence/race.jsonl --exit-code "$race_exit" \
+            --execution ../v0222-publish-race-evidence/race-execution.json \
+            --receipt ../v0222-publish-race-evidence/retry-race-receipt.json
+          python3 -I -B ../tools/ci/v0222_test_receipt.py --mode session-memory \
+            --events ../v0222-publish-race-evidence/race.jsonl --exit-code "$race_exit" \
+            --execution ../v0222-publish-race-evidence/race-execution.json \
+            --receipt ../v0222-publish-race-evidence/session-memory-race-receipt.json
+          python3 -I -B ../tools/ci/v0222_test_receipt.py --mode sse-lifecycle \
+            --events ../v0222-publish-race-evidence/race.jsonl --stderr ../v0222-publish-race-evidence/race.stderr \
+            --exit-code "$race_exit" --execution ../v0222-publish-race-evidence/race-execution.json \
+            --receipt ../v0222-publish-race-evidence/sse-lifecycle-race-receipt.json
+      - name: Isolated live-boundary race, exact outer cases and same-scenario evidence
+        working-directory: backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../v0222-publish-race-evidence
+          set +e
+          python3 -I -B ../tools/ci/v0222_capture.py \
+            --events ../v0222-publish-race-evidence/live-boundary-race.jsonl --stderr ../v0222-publish-race-evidence/live-boundary-race.stderr \
+            --execution ../v0222-publish-race-evidence/live-boundary-race-execution.json -- \
+            go test -json -mod=readonly -p=2 -race -tags=unit ./internal/service \
+            -run '^TestOpenAIInputTokensLiveBoundary$' -count=1 -timeout=180s
+          race_exit=$?
+          set -e
+          python3 -I -B ../tools/ci/v0222_test_receipt.py --mode live-boundary \
+            --events ../v0222-publish-race-evidence/live-boundary-race.jsonl --stderr ../v0222-publish-race-evidence/live-boundary-race.stderr \
+            --exit-code "$race_exit" --execution ../v0222-publish-race-evidence/live-boundary-race-execution.json \
+            --receipt ../v0222-publish-race-evidence/live-boundary-race-receipt.json
+      - name: WS TTFT mode and admission origin race, exact three tops and seven leaves
+        working-directory: backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../v0222-publish-race-evidence
+          set +e
+          python3 -I -B ../tools/ci/v0222_capture.py \
+            --events ../v0222-publish-race-evidence/ws-ttft-race.jsonl --stderr ../v0222-publish-race-evidence/ws-ttft-race.stderr \
+            --execution ../v0222-publish-race-evidence/ws-ttft-race-execution.json -- \
+            go test -json -mod=readonly -p=2 -race -tags=unit ./internal/service \
+            -run '^(TestOpenAIWSPassthroughFirstTokenFollowsTTFTMode|TestOpenAIWSPassthroughTTFTOriginIncludesAdmission|TestOpenAIWSTTFTModeConn)$' -count=1 -timeout=180s
+          race_exit=$?
+          set -e
+          python3 -I -B ../tools/ci/v0222_test_receipt.py --mode ws-ttft \
+            --events ../v0222-publish-race-evidence/ws-ttft-race.jsonl --stderr ../v0222-publish-race-evidence/ws-ttft-race.stderr \
+            --exit-code "$race_exit" --execution ../v0222-publish-race-evidence/ws-ttft-race-execution.json \
+            --receipt ../v0222-publish-race-evidence/ws-ttft-race-receipt.json
+      - name: Cache proof and accounting two-package race, fixed cases and no skips
+        working-directory: backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../v0222-publish-race-evidence
+          set +e
+          python3 -I -B ../tools/ci/v0222_capture.py \
+            --events ../v0222-publish-race-evidence/cache-race.jsonl --stderr ../v0222-publish-race-evidence/cache-race.stderr \
+            --execution ../v0222-publish-race-evidence/cache-race-execution.json -- \
+            go test -json -mod=readonly -p=2 -race -tags=unit ./internal/service ./internal/pkg/apicompat \
+            -run '^Test(V10Cache|V8OpenAICache)' -count=1 -timeout=180s
+          race_exit=$?
+          set -e
+          python3 -I -B ../tools/ci/v0222_test_receipt.py --mode cache-race \
+            --events ../v0222-publish-race-evidence/cache-race.jsonl --exit-code "$race_exit" \
+            --execution ../v0222-publish-race-evidence/cache-race-execution.json \
+            --receipt ../v0222-publish-race-evidence/cache-race-receipt.json
+      - name: Same-request billing repository and lane integration race, no skipped leaves
+        working-directory: backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../v0222-publish-race-evidence
+          set +e
+          python3 -I -B ../tools/ci/v0222_capture.py \
+            --events ../v0222-publish-race-evidence/billing-race.jsonl --stderr ../v0222-publish-race-evidence/billing-race.stderr \
+            --execution ../v0222-publish-race-evidence/billing-race-execution.json -- \
+            go test -json -mod=readonly -p=2 -race -tags=integration ./internal/repository \
+            -run '^TestCompositeUsageV0222BillingSameRequestConcurrentApplyOnce$' -count=1 -timeout=5m
+          race_exit=$?
+          set -e
+          python3 -I -B ../tools/ci/v0222_test_receipt.py --mode billing-race \
+            --events ../v0222-publish-race-evidence/billing-race.jsonl --exit-code "$race_exit" \
+            --execution ../v0222-publish-race-evidence/billing-race-execution.json \
+            --receipt ../v0222-publish-race-evidence/billing-race-receipt.json
+      - name: Upload race contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v0222-publish-race-evidence
+          path: v0222-publish-race-evidence/
+          if-no-files-found: error
       - name: PostgreSQL diagnostic and precise routing integration tests
         working-directory: backend
         run: go test -v -mod=readonly -tags=integration ./internal/repository -run '^Test(RequestDiagnosticRepositoryIntegration|CompositeRoutePreciseConditions|Migration242DropsPlatformCheckConstraints|UserPlatformQuotaRepository_RejectsUnregisteredPlatform|CompositeModelRouteRepository_RejectsUnregisteredTargetPlatform)|^TestCompositeUsage|^TestCompositeRouteFallback|MCPOAuth' -count=1 -timeout=5m
@@ -109,6 +219,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build linux/amd64 image locally
+        id: runtime_build
         uses: docker/build-push-action@v6
         with:
           builder: ${{ steps.buildx.outputs.name }}
@@ -183,6 +294,7 @@ jobs:
           RELEASE_VERSION: ${{ steps.source.outputs.version }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           EXPECTED_OCI_SOURCE: https://github.com/laoxiechuzheng/sub2api
+          BUILD_METADATA: ${{ steps.runtime_build.outputs.metadata }}
         run: |
           set -euo pipefail
           version_ref="${IMAGE_NAME}:${RELEASE_VERSION}"
@@ -253,12 +365,22 @@ jobs:
             exit 1
           }
 
+          canonical_config_digest="$(python3 tools/ci/v0222_oci_identity.py local \
+            --metadata-env BUILD_METADATA --local-id "$runtime_image_id" \
+            --platform "$actual_platform" --source "$actual_source" \
+            --revision "$actual_revision" --version "$actual_version" \
+            --expected-source "$EXPECTED_OCI_SOURCE" --expected-revision "$SOURCE_SHA" \
+            --expected-version "$RELEASE_VERSION" --binary-sha256 "$runtime_sha" \
+            --receipt "${PROVENANCE_WORK_DIR}/build-identity.json")"
           {
             echo "BINARY_SHA256=${runtime_sha}"
-            echo "OCI_LOCAL_IMAGE_ID=${runtime_image_id}"
+            # Historical artifact field means canonical config C, never Docker store-dependent .Id.
+            echo "OCI_LOCAL_IMAGE_ID=${canonical_config_digest}"
+            echo "OCI_DOCKER_LOCAL_IMAGE_ID=${runtime_image_id}"
           } >> "$GITHUB_ENV"
           echo "Verified builder/runtime binary SHA: ${runtime_sha}"
-          echo "Verified local OCI image ID: ${runtime_image_id}"
+          echo "Verified local OCI continuity ID: ${runtime_image_id}"
+          echo "Verified BuildKit canonical config: ${canonical_config_digest}"
 
       - name: Generate and validate asset manifest
         shell: bash
@@ -367,6 +489,7 @@ jobs:
       - name: Resolve registry digest and write release manifest
         shell: bash
         env:
+          BUILD_METADATA: ${{ steps.runtime_build.outputs.metadata }}
           BUILDX_BUILDER_NAME: ${{ steps.buildx.outputs.name }}
           RELEASE_VERSION: ${{ steps.source.outputs.version }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
@@ -392,11 +515,11 @@ jobs:
 
           current_image_id="$(docker image inspect --format '{{.Id}}' "$version_ref")"
           current_latest_image_id="$(docker image inspect --format '{{.Id}}' "$latest_ref")"
-          [[ "$current_image_id" == "$OCI_LOCAL_IMAGE_ID" ]] || {
+          [[ "$current_image_id" == "$OCI_DOCKER_LOCAL_IMAGE_ID" ]] || {
             echo "local image ID changed after push: $current_image_id" >&2
             exit 1
           }
-          [[ "$current_latest_image_id" == "$OCI_LOCAL_IMAGE_ID" ]] || {
+          [[ "$current_latest_image_id" == "$OCI_DOCKER_LOCAL_IMAGE_ID" ]] || {
             echo "local latest image ID changed after push: $current_latest_image_id" >&2
             exit 1
           }
@@ -424,6 +547,25 @@ jobs:
             echo "local runtime binary changed after push" >&2
             exit 1
           fi
+
+          identity_dir="${GITHUB_WORKSPACE}/release-image-identity"
+          mkdir -p "$identity_dir"
+          # CI must authenticate exact raw bytes; do not trim a newline or reserialize on mismatch.
+          docker buildx imagetools inspect --builder "$BUILDX_BUILDER_NAME" --raw \
+            "${IMAGE_NAME}@${version_digest}" > "${identity_dir}/registry-manifest.json"
+          python3 -I -B tools/ci/v0222_oci_identity.py registry --metadata-env BUILD_METADATA \
+            --manifest "${identity_dir}/registry-manifest.json" \
+            --expected-digest "$version_digest" \
+            --expected-source https://github.com/laoxiechuzheng/sub2api \
+            --expected-revision "$SOURCE_SHA" --expected-version "$RELEASE_VERSION" \
+            --local-id "$current_image_id" --latest-id "$current_latest_image_id" \
+            --binary-sha256 "$after_push_sha" \
+            --asset-manifest "${PROVENANCE_DIR}/asset-manifest.json" \
+            --asset-manifest-sha256 "$ASSET_MANIFEST_SHA256" --asset-count "$ASSET_COUNT" \
+            --asset-directory "${PROVENANCE_WORK_DIR}/builder/dist" \
+            --build-receipt "${PROVENANCE_WORK_DIR}/build-identity.json" \
+            --receipt "${identity_dir}/image-identity.json"
+          cp "${PROVENANCE_WORK_DIR}/build-identity.json" "${identity_dir}/build-identity.json"
 
           release_manifest="${PROVENANCE_DIR}/release-manifest.json"
           jq -n \
@@ -470,4 +612,11 @@ jobs:
           path: |
             release-provenance/release-manifest.json
             release-provenance/asset-manifest.json
+          if-no-files-found: error
+      - name: Upload independent image identity proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-image-identity
+          path: release-image-identity/
           if-no-files-found: error

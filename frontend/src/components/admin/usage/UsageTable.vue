@@ -361,13 +361,14 @@
   <Teleport to="body">
     <div
       v-if="tokenTooltipVisible"
-      class="fixed z-[9999] pointer-events-none -translate-y-1/2"
+      ref="tokenTooltipElement"
+      class="fixed z-[9999] pointer-events-none w-max max-w-[calc(100vw-16px)] -translate-y-1/2"
       :style="{
         left: tokenTooltipPosition.x + 'px',
         top: tokenTooltipPosition.y + 'px'
       }"
     >
-      <div class="whitespace-nowrap rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-xs text-white shadow-xl dark:border-gray-600 dark:bg-gray-800">
+      <div class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-xs text-white shadow-xl dark:border-gray-600 dark:bg-gray-800">
         <div class="space-y-1.5">
           <div>
             <div class="text-xs font-semibold text-gray-300 mb-1">{{ t('usage.tokenDetails') }}</div>
@@ -589,7 +590,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { formatDateTime, formatReasoningEffort, reasoningEffortValuesEqual } from '@/utils/format'
@@ -763,6 +764,7 @@ const tooltipData = ref<AdminUsageLog | null>(null)
 
 // Tooltip state - token
 const tokenTooltipVisible = ref(false)
+const tokenTooltipElement = ref<HTMLElement | null>(null)
 const tokenTooltipPosition = ref({ x: 0, y: 0 })
 const tokenTooltipData = ref<AdminUsageLog | null>(null)
 
@@ -818,13 +820,18 @@ const hideTooltip = () => {
 }
 
 // Token tooltip functions
-const showTokenTooltip = (event: MouseEvent, row: AdminUsageLog) => {
+const showTokenTooltip = async (event: MouseEvent, row: AdminUsageLog) => {
   const target = event.currentTarget as HTMLElement
   const rect = target.getBoundingClientRect()
   tokenTooltipData.value = row
   tokenTooltipPosition.value.x = rect.right + 8
   tokenTooltipPosition.value.y = rect.top + rect.height / 2
   tokenTooltipVisible.value = true
+  await nextTick()
+  if (!tokenTooltipVisible.value || tokenTooltipData.value !== row || !tokenTooltipElement.value) return
+  const tooltip = tokenTooltipElement.value.getBoundingClientRect()
+  tokenTooltipPosition.value.x = Math.max(8, Math.min(rect.right + 8, window.innerWidth - tooltip.width - 8))
+  tokenTooltipPosition.value.y = Math.max(tooltip.height / 2 + 8, Math.min(rect.top + rect.height / 2, window.innerHeight - tooltip.height / 2 - 8))
 }
 
 const hideTokenTooltip = () => {

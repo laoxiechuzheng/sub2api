@@ -170,37 +170,58 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	if resp.StatusCode >= 400 {
 		respBody, _ := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(respBody))
-
-		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
-		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-
-		// Apply account policies even for statuses outside the default failover list.
-		shouldDisable := false
-		if s.rateLimitService != nil {
-			shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
-		}
-		if shouldDisable || s.shouldFailoverUpstreamError(resp.StatusCode) {
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				ProxyID:            opsUpstreamProxyID(account),
-				ProxyName:          opsUpstreamProxyName(account),
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: resp.StatusCode,
-				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				Kind:               "failover",
-				Message:            upstreamMsg,
-			})
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+		// Rectify the same Anthropic thinking errors as the Responses bridge,
+		// before applying account policy to the final response.
+		if resp.StatusCode == http.StatusBadRequest &&
+			(s.shouldRectifyThinkingTailError(respBody, mappedModel) ||
+				s.shouldRectifySignatureError(ctx, account, respBody, mappedModel)) {
+			if retryResp, retryWireBody := s.retryAnthropicBodyAfterThinkingError(
+				ctx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode, proxyURL,
+			); retryResp != nil {
+				resp = retryResp
+				if resp.StatusCode < 400 {
+					forwardedBody = retryWireBody
+					reasoningEffort = NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
+					reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, mappedModel)
+				} else {
+					respBody, _ = s.readUpstreamErrorBody(resp)
+					_ = resp.Body.Close()
+				}
 			}
 		}
+		if resp.StatusCode >= 400 {
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-		writeGatewayCCError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", upstreamMsg)
-		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+
+			// Apply account policies even for statuses outside the default failover list.
+			shouldDisable := false
+			if s.rateLimitService != nil {
+				shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
+			}
+			if shouldDisable || s.shouldFailoverUpstreamError(resp.StatusCode) {
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: resp.StatusCode,
+					UpstreamRequestID:  resp.Header.Get("x-request-id"),
+					Kind:               "failover",
+					Message:            upstreamMsg,
+				})
+				return nil, &UpstreamFailoverError{
+					StatusCode:             resp.StatusCode,
+					ResponseBody:           respBody,
+					RetryableOnSameAccount: !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				}
+			}
+
+			writeGatewayCCError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", upstreamMsg)
+			return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+		}
 	}
 
 	// 13. Handle normal response

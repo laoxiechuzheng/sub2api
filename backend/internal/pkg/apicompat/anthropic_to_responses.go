@@ -369,6 +369,16 @@ func anthropicAssistantToResponses(raw json.RawMessage) ([]ResponsesInputItem, e
 	return items, nil
 }
 
+// AnthropicAssistantBlocksToResponsesInputItems 复用请求侧 assistant 转换，供已发送
+// 内容的续接证明使用；一次传完整 blocks，保持 text/tool/thinking 原有合并语义。
+func AnthropicAssistantBlocksToResponsesInputItems(blocks []AnthropicContentBlock) ([]ResponsesInputItem, error) {
+	content, err := json.Marshal(blocks)
+	if err != nil {
+		return nil, err
+	}
+	return anthropicAssistantToResponses(content)
+}
+
 // toResponsesCallID preserves Anthropic tool IDs as Responses call_id values.
 // Claude Code sends tool_result.tool_use_id back verbatim, and ChatGPT Codex
 // continuation expects that call_id to match the original tool_use id.

@@ -22,18 +22,29 @@ func (b openAICompatAnthropicDigestBinding) cloneSessionValue() sessionMemoryVal
 }
 
 func buildOpenAICompatAnthropicDigestChain(req *apicompat.AnthropicRequest) string {
+	return buildAnthropicDigestChain(req, true)
+}
+
+func buildAnthropicDigestChain(req *apicompat.AnthropicRequest, stripCache bool) string {
 	if req == nil {
 		return ""
 	}
 
 	parts := make([]string, 0, len(req.Messages)+1)
 	if len(req.System) > 0 && strings.TrimSpace(string(req.System)) != "" && strings.TrimSpace(string(req.System)) != "null" {
-		parts = append(parts, "s:"+shortHash(req.System))
+		system := req.System
+		if stripCache {
+			system = stripAnthropicBlockCacheControl(system)
+		}
+		parts = append(parts, "s:"+shortHash(system))
 	}
 	for _, msg := range req.Messages {
 		content := msg.Content
 		if len(content) == 0 || strings.TrimSpace(string(content)) == "" {
 			continue
+		}
+		if stripCache {
+			content = stripAnthropicBlockCacheControl(content)
 		}
 		prefix := "u"
 		if strings.TrimSpace(msg.Role) == "assistant" {
@@ -42,6 +53,32 @@ func buildOpenAICompatAnthropicDigestChain(req *apicompat.AnthropicRequest) stri
 		parts = append(parts, prefix+":"+shortHash(content))
 	}
 	return strings.Join(parts, "-")
+}
+
+// 只剥已知内容块上的控制字段，不能递归进入工具 input 或未知对象。
+func stripAnthropicBlockCacheControl(raw json.RawMessage) json.RawMessage {
+	var blocks []map[string]json.RawMessage
+	if json.Unmarshal(raw, &blocks) != nil {
+		return raw
+	}
+	for _, block := range blocks {
+		var kind string
+		_ = json.Unmarshal(block["type"], &kind)
+		switch kind {
+		case "text", "thinking", "redacted_thinking", "image", "tool_use", "tool_result":
+			delete(block, "cache_control")
+		}
+		if kind == "tool_result" {
+			if nested := block["content"]; len(nested) > 0 {
+				block["content"] = stripAnthropicBlockCacheControl(nested)
+			}
+		}
+	}
+	normalized, err := json.Marshal(blocks)
+	if err != nil {
+		return raw
+	}
+	return normalized
 }
 
 func openAICompatAnthropicDigestNamespace(account *Account, cAPIKeyID int64) string {

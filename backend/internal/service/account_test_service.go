@@ -907,6 +907,18 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
+	// 仅普通官方 APIKey 文本探测采用原生身份；兼容上游、OAuth 和特殊模式保留原合同。
+	// 按最终目标判定，不能把自定义端口、userinfo、路径或查询参数当作官方 Responses。
+	nativeAPIKeyProbe := false
+	if credentialAccount.IsOpenAIApiKey() && mode == AccountTestModeDefault {
+		if target, err := url.Parse(apiURL); err == nil {
+			nativeAPIKeyProbe = strings.EqualFold(target.Scheme, "https") &&
+				(strings.EqualFold(target.Host, "api.openai.com") || strings.EqualFold(target.Host, "api.openai.com:443")) &&
+				target.User == nil && target.EscapedPath() == "/v1/responses" &&
+				target.RawQuery == "" && !target.ForceQuery
+		}
+	}
+
 	// Create OpenAI Responses API payload. OAuth accounts use ChatGPT Codex
 	// upstream and must apply the same model normalization as real forwarding.
 	upstreamTestModelID := testModelID
@@ -914,6 +926,10 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		upstreamTestModelID = normalizeOpenAIModelForUpstream(credentialAccount, testModelID)
 	}
 	payload := createOpenAITestPayload(upstreamTestModelID, isOAuth)
+	if nativeAPIKeyProbe {
+		// 只调整本调用点，不影响共享 payload 的 CN adaptive 与 OAuth usage 调用方。
+		delete(payload, "instructions")
+	}
 	payloadBytes, _ := json.Marshal(payload)
 
 	// Send test_start event once. A task-invalid Agent Identity response may
@@ -930,7 +946,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 	// Set common headers
 	req.Header.Set("Content-Type", "application/json")
-	if !isOAuth {
+	if !isOAuth && !nativeAPIKeyProbe {
 		applyOpenAICodexProbeHeaders(req.Header)
 	}
 	if credentialAccount.IsOpenAIAgentIdentity() {

@@ -45,6 +45,9 @@ type OpenAIRecordUsageInput struct {
 	// the request payload and does not replace the transport request type.
 	NativeCompactionV2 bool
 	ChannelUsageFields
+
+	// 仅新恢复的 Messages Cyber 结算使用旧标量模型口径；审计仍读取完整 Result。
+	messagesCyberBillingModel string
 }
 
 // CyberPolicyUsageInput 是 cyber 拒绝、未走正常 RecordUsage 的请求记录用量的入参。
@@ -101,6 +104,12 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 			result.Model = in.Model
 		}
 	}
+	legacyBillingModel := ""
+	if result.messagesResponsesRecoveredUsage {
+		legacyBillingModel = in.Model
+		// 使用与旧标量账相同的下游标识，包括空值；上游标识独立由审计头记录。
+		result.RequestID = in.RequestID
+	}
 	if err := s.RecordUsage(ctx, &OpenAIRecordUsageInput{
 		Result:             &result,
 		APIKey:             in.APIKey,
@@ -117,6 +126,8 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		ChannelUsageFields: in.ChannelUsageFields,
 		CyberBlocked:       true,
 		NativeCompactionV2: in.NativeCompactionV2,
+
+		messagesCyberBillingModel: legacyBillingModel,
 	}); err != nil {
 		logger.LegacyPrintf("service.openai_gateway", "cyber usage record failed: request_id=%s err=%v", in.RequestID, err)
 	}
@@ -170,7 +181,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result == nil {
 		return errors.New("openai usage result is nil")
 	}
-	if s.rateLimitService != nil && input.Account != nil && input.Account.Platform == PlatformOpenAI {
+	if s.rateLimitService != nil && input.Account != nil && input.Account.Platform == PlatformOpenAI &&
+		(!result.IsRecoveredMessagesBufferedUsage() || input.CyberBlocked) {
 		s.rateLimitService.ResetOpenAI403Counter(ctx, input.Account.ID)
 	}
 
@@ -225,9 +237,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	videoMultiplier := resolveVideoRateMultiplier(apiKey, baseMultiplier)
 
 	var cost *CostBreakdown
-	billingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
-	if result.BillingModel != "" {
-		billingModel = strings.TrimSpace(result.BillingModel)
+	pricingResult := result
+	if input.messagesCyberBillingModel != "" {
+		// 模型候选、缺价回退及长上下文豁免共同沿用旧标量视图。
+		pricingResult = &OpenAIForwardResult{Model: input.messagesCyberBillingModel}
+	}
+	billingModel := forwardResultBillingModel(pricingResult.Model, pricingResult.UpstreamModel)
+	if pricingResult.BillingModel != "" {
+		billingModel = strings.TrimSpace(pricingResult.BillingModel)
 	}
 	if input.BillingModelSource == BillingModelSourceChannelMapped && input.ChannelMappedModel != "" && input.ChannelMappedModel != input.OriginalModel {
 		billingModel = input.ChannelMappedModel
@@ -237,22 +254,22 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	billingModels := usageBillingModelCandidates(
 		billingModel,
-		result.BillingModel,
+		pricingResult.BillingModel,
 		input.ChannelMappedModel,
 		input.OriginalModel,
-		result.UpstreamModel,
-		result.Model,
+		pricingResult.UpstreamModel,
+		pricingResult.Model,
 	)
 	billingModels = s.filterCNProviderBillingModelCandidates(ctx, account, apiKey, billingModels)
 	serviceTier := ""
-	if result.ServiceTier != nil {
-		serviceTier = strings.TrimSpace(*result.ServiceTier)
+	if pricingResult.ServiceTier != nil {
+		serviceTier = strings.TrimSpace(*pricingResult.ServiceTier)
 	}
 	longContextBillingGate := openAILongContextBillingGate(billingAccount)
-	modelLongContextExempt := openAISubscriptionLongContextExempt(billingAccount, result)
+	modelLongContextExempt := openAISubscriptionLongContextExempt(billingAccount, pricingResult)
 	cost, err = s.calculateOpenAIRecordUsageCost(
 		ctx,
-		result,
+		pricingResult,
 		apiKey,
 		billingModels,
 		multiplier,
@@ -291,7 +308,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		result.UpstreamResponseModelConflict,
 		result.ImageCount > 0 || result.VideoCount > 0 || result.WebSearchCalls > 0 ||
 			result.AudioUsage != nil || result.SearchCount > 0,
-	); responseModel != "" && !strings.EqualFold(responseModel, baselineBillingModel) {
+	); !result.messagesResponsesRecoveredUsage && responseModel != "" && !strings.EqualFold(responseModel, baselineBillingModel) {
 		if identified, responseChannelPriced := s.hasIdentifiedOpenAIResponsePricing(ctx, responseModel, apiKey); identified {
 			responseModels := s.filterCNProviderBillingModelCandidates(ctx, account, apiKey, usageBillingModelCandidates(responseModel))
 			responseCost, responseErr := s.calculateOpenAIRecordUsageCost(
@@ -317,7 +334,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if groupBillsOpenAIFastAtStandard(apiKey, billingAccount, serviceTier) {
 		standardCost, standardErr := s.calculateOpenAIRecordUsageCost(
 			ctx,
-			result,
+			pricingResult,
 			apiKey,
 			billingModels,
 			multiplier,
@@ -500,7 +517,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
 	if apiKey.GroupID != nil {
 		applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
-			account.ID, *apiKey.GroupID, result.UpstreamModel, result.Model,
+			account.ID, *apiKey.GroupID, pricingResult.UpstreamModel, pricingResult.Model,
 			tokens, cost.TotalCost, pricingAt,
 			accountStatsLongContextPricingEnabled(longContextBillingGate) && !modelLongContextExempt, 1,
 		)
