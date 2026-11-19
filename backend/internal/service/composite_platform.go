@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,7 +79,10 @@ func compositeAccountModelEligible(ctx context.Context, account *Account) bool {
 		return true
 	}
 	if target, ok := ctx.Value(compositeAccountTargetKey{}).(CompositeAccountTarget); ok {
-		if account.Platform != target.Platform || account.Priority != target.Priority {
+		// The account roster and scheduler snapshot may refresh separately
+		// after a panel priority edit. Keep the chosen IDs eligible while
+		// retaining the ordering captured at the start of this request.
+		if _, inTier := slices.BinarySearch(target.accountIDs, account.ID); account.Platform != target.Platform || !inTier {
 			return false
 		}
 	}

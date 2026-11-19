@@ -60,8 +60,9 @@ type CompositeModelOwnership struct {
 // Keeping tiers separate lets a priority-2 channel run before priority-3
 // accounts on a provider that already attempted priority 1.
 type CompositeAccountTarget struct {
-	Platform string
-	Priority int
+	Platform   string
+	Priority   int
+	accountIDs []int64
 }
 
 type CompositeModelOwnershipResolver func(context.Context, int64, string) (CompositeModelOwnership, error)

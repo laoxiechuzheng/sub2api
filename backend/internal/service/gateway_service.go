@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1750,7 +1751,11 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 	}
 
 	platforms := make(map[string]struct{})
-	targets := make(map[CompositeAccountTarget]int64)
+	type accountTier struct {
+		platform string
+		priority int
+	}
+	targets := make(map[accountTier][]int64)
 	targetPlatforms := make(map[string]struct{})
 	ownership := CompositeModelOwnership{}
 	for i := range accounts {
@@ -1759,10 +1764,8 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 		if account.Platform != PlatformTypeSafe &&
 			(explicitClaim || (account.Platform == PlatformKiro && compositeAccountClaimsModel(account, model))) {
 			targetPlatforms[account.Platform] = struct{}{}
-			target := CompositeAccountTarget{Platform: account.Platform, Priority: account.Priority}
-			if id, exists := targets[target]; !exists || account.ID < id {
-				targets[target] = account.ID
-			}
+			tier := accountTier{platform: account.Platform, priority: account.Priority}
+			targets[tier] = append(targets[tier], account.ID)
 		}
 		if explicitClaim {
 			platforms[account.Platform] = struct{}{}
@@ -1783,16 +1786,19 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 		ownership.KiroDefaultClaimed = true
 	}
 	if len(targetPlatforms) > 1 || (ownership.Ambiguous && len(targetPlatforms) > 0) {
-		for target := range targets {
-			ownership.AccountTargets = append(ownership.AccountTargets, target)
+		for tier, ids := range targets {
+			slices.Sort(ids)
+			ownership.AccountTargets = append(ownership.AccountTargets, CompositeAccountTarget{
+				Platform: tier.platform, Priority: tier.priority, accountIDs: ids,
+			})
 		}
 		sort.Slice(ownership.AccountTargets, func(i, j int) bool {
 			a, b := ownership.AccountTargets[i], ownership.AccountTargets[j]
 			if a.Priority != b.Priority {
 				return a.Priority < b.Priority
 			}
-			if targets[a] != targets[b] {
-				return targets[a] < targets[b]
+			if a.accountIDs[0] != b.accountIDs[0] {
+				return a.accountIDs[0] < b.accountIDs[0]
 			}
 			return a.Platform < b.Platform
 		})

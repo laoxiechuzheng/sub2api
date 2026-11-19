@@ -100,7 +100,7 @@ func TestResolveCompositeModelOwnershipAllowsSamePlatformAndRejectsCrossPlatform
 
 	ambiguous, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "ambiguous")
 	require.NoError(t, err)
-	require.Equal(t, CompositeModelOwnership{Ambiguous: true, AccountTargets: []CompositeAccountTarget{{Platform: PlatformOpenAI}, {Platform: PlatformDeepseek}}}, ambiguous)
+	require.Equal(t, CompositeModelOwnership{Ambiguous: true, AccountTargets: []CompositeAccountTarget{{Platform: PlatformOpenAI, accountIDs: []int64{1}}, {Platform: PlatformDeepseek, accountIDs: []int64{3}}}}, ambiguous)
 }
 
 // Scenario: 只有 OpenAI 网关族的 OAuth 声明方会被标记（API Key 上游可能兼容多协议，
@@ -121,15 +121,15 @@ func TestResolveCompositeModelOwnershipFlagsOpenAIGatewayOAuthClaimants(t *testi
 
 	withOAuth, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "gpt-6-astra")
 	require.NoError(t, err)
-	require.Equal(t, CompositeModelOwnership{Ambiguous: true, OpenAIGatewayOAuthClaimed: true, AccountTargets: []CompositeAccountTarget{{Platform: PlatformOpenAI}, {Platform: PlatformDeepseek}}}, withOAuth)
+	require.Equal(t, CompositeModelOwnership{Ambiguous: true, OpenAIGatewayOAuthClaimed: true, AccountTargets: []CompositeAccountTarget{{Platform: PlatformOpenAI, accountIDs: []int64{1}}, {Platform: PlatformDeepseek, accountIDs: []int64{2}}}}, withOAuth)
 
 	apiKeyOnly, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "apikey-only")
 	require.NoError(t, err)
-	require.Equal(t, CompositeModelOwnership{Ambiguous: true, AccountTargets: []CompositeAccountTarget{{Platform: PlatformDeepseek}, {Platform: PlatformOpenAI}}}, apiKeyOnly)
+	require.Equal(t, CompositeModelOwnership{Ambiguous: true, AccountTargets: []CompositeAccountTarget{{Platform: PlatformDeepseek, accountIDs: []int64{2}}, {Platform: PlatformOpenAI, accountIDs: []int64{3}}}}, apiKeyOnly)
 
 	anthropicFamily, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "claude-opus-4-8")
 	require.NoError(t, err)
-	require.Equal(t, CompositeModelOwnership{Ambiguous: true, AccountTargets: []CompositeAccountTarget{{Platform: PlatformAntigravity}, {Platform: PlatformAnthropic}}}, anthropicFamily)
+	require.Equal(t, CompositeModelOwnership{Ambiguous: true, AccountTargets: []CompositeAccountTarget{{Platform: PlatformAntigravity, accountIDs: []int64{4}}, {Platform: PlatformAnthropic, accountIDs: []int64{5}}}}, anthropicFamily)
 }
 
 func TestCompositeAccountPriorityKeepsLowerPriorityAccountsForLaterAttempts(t *testing.T) {
@@ -147,15 +147,18 @@ func TestCompositeAccountPriorityKeepsLowerPriorityAccountsForLaterAttempts(t *t
 	decision, err := resolver.ResolveWithMatch(context.Background(), 7, model, CompositeRouteEndpointMessages, CompositeRouteRequestMatch{AllowAccountFallback: true})
 	require.NoError(t, err)
 	require.Equal(t, []CompositeAccountTarget{
-		{Platform: PlatformKiro, Priority: 1},
-		{Platform: PlatformOpenAI, Priority: 2},
-		{Platform: PlatformKiro, Priority: 3},
+		{Platform: PlatformKiro, Priority: 1, accountIDs: []int64{3, 4}},
+		{Platform: PlatformOpenAI, Priority: 2, accountIDs: []int64{2}},
+		{Platform: PlatformKiro, Priority: 3, accountIDs: []int64{1}},
 	}, decision.AccountTargets)
 	ctx := WithCompositeAccountTarget(WithCompositeRouteDecision(context.Background(), decision), decision.AccountTargets[0])
 	require.False(t, compositeAccountModelEligible(ctx, &accounts[0]))
 	require.False(t, compositeAccountModelEligible(ctx, &accounts[1]))
 	require.True(t, compositeAccountModelEligible(ctx, &accounts[2]))
 	require.True(t, compositeAccountModelEligible(ctx, &accounts[3]))
+	reprioritized := accounts[2]
+	reprioritized.Priority = 8
+	require.True(t, compositeAccountModelEligible(ctx, &reprioritized))
 }
 
 func TestCompositeKiroDefaultCatalogResolvesForTextWithoutAffectingOtherProtocols(t *testing.T) {
