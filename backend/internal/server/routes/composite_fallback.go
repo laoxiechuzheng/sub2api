@@ -16,11 +16,15 @@ import (
 )
 
 type compositeRouteTarget struct {
-	platform string
-	model    string
+	platform      string
+	model         string
+	accountTarget *service.CompositeAccountTarget
 }
 
 func (t compositeRouteTarget) label(routePlatform string) string {
+	if t.accountTarget != nil {
+		return fmt.Sprintf("%s/%s [priority %d]", t.platform, t.model, t.accountTarget.Priority)
+	}
 	if t.platform != "" && t.platform != routePlatform {
 		return t.platform + "/" + t.model
 	}
@@ -30,6 +34,16 @@ func (t compositeRouteTarget) label(routePlatform string) string {
 // compositeRouteTargets lists the primary target followed by the route's
 // ordered fallbacks; an empty fallback platform inherits the route platform.
 func compositeRouteTargets(decision service.CompositeRouteDecision) []compositeRouteTarget {
+	if len(decision.AccountTargets) > 0 {
+		targets := make([]compositeRouteTarget, 0, len(decision.AccountTargets))
+		for i := range decision.AccountTargets {
+			accountTarget := &decision.AccountTargets[i]
+			targets = append(targets, compositeRouteTarget{
+				platform: accountTarget.Platform, model: decision.UpstreamModel, accountTarget: accountTarget,
+			})
+		}
+		return targets
+	}
 	targets := []compositeRouteTarget{{platform: decision.TargetPlatform, model: decision.UpstreamModel}}
 	if decision.Route == nil {
 		return targets
@@ -129,8 +143,8 @@ func compositeStreamProtocol(routePath string) compositeSSEProtocol {
 	return compositeSSEProtocolGeneric
 }
 
-// runCompositeRouteWithFallback serves a request through an explicit composite
-// route. Without fallbacks it is the plain c.Next() path. With fallbacks every
+// runCompositeRouteWithFallback serves an explicit route or ordered account
+// tiers. Without fallbacks it is the plain c.Next() path. With fallbacks every
 // target gets one full handler run (which keeps the handler's own account
 // failover); a failure that has not reached the client is discarded and the
 // request is replayed with the next target's platform and model.
@@ -147,6 +161,9 @@ func runCompositeRouteWithFallback(c *gin.Context, base *http.Request, routePath
 		routeID = decision.Route.ID
 	}
 	targets := compositeRouteTargets(decision)
+	if len(decision.AccountTargets) > 1 {
+		base = base.WithContext(service.WithCompositeAccountFallbackState(base.Context(), decision.GroupID))
+	}
 	// Classify before any handler rewrites the original request path or body.
 	needsNativeResponses := service.IsOpenAICompactionRequest(c, originalBody)
 	serveTarget := func(target compositeRouteTarget, first bool) {
@@ -168,12 +185,17 @@ func runCompositeRouteWithFallback(c *gin.Context, base *http.Request, routePath
 	// (handlers may edit headers, e.g. Bedrock beta filtering) and the body
 	// rewritten from the original bytes.
 	prepare := func(target compositeRouteTarget, chain string) *service.CompositeRouteTrace {
-		trace := &service.CompositeRouteTrace{RouteID: routeID, RequestKind: decision.RequestKind}
+		trace := &service.CompositeRouteTrace{
+			RouteID: routeID, RequestKind: decision.RequestKind, AccountFallback: target.accountTarget != nil,
+		}
 		trace.SetFallbackChain(chain)
 		attempt := decision
 		attempt.TargetPlatform = target.platform
 		attempt.UpstreamModel = target.model
 		ctx := service.WithCompositeRouteDecision(base.Context(), attempt)
+		if target.accountTarget != nil {
+			ctx = service.WithCompositeAccountTarget(ctx, *target.accountTarget)
+		}
 		ctx = service.WithCompositeRouteTrace(ctx, trace)
 		req := base.Clone(ctx)
 		requestmodel.ResetRequestBody(req, compositeRewriteModel(routePath, originalBody, publicModel, target.model))

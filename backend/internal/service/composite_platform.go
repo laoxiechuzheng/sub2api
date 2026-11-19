@@ -53,6 +53,43 @@ func WithCompositeRouteDecision(ctx context.Context, decision CompositeRouteDeci
 	return ctx
 }
 
+type compositeAccountTargetKey struct{}
+type compositeAccountRPMKey struct{}
+
+type compositeAccountRPMAdmission struct {
+	groupID  int64
+	admitted atomic.Bool
+}
+
+// WithCompositeAccountFallbackState shares successful RPM admission across
+// automatic attempts in the request's original group.
+func WithCompositeAccountFallbackState(ctx context.Context, groupID int64) context.Context {
+	return context.WithValue(ctx, compositeAccountRPMKey{}, &compositeAccountRPMAdmission{groupID: groupID})
+}
+
+// WithCompositeAccountTarget limits one HTTP fallback attempt to the given
+// provider and panel priority, including sticky and load-aware selection.
+func WithCompositeAccountTarget(ctx context.Context, target CompositeAccountTarget) context.Context {
+	return context.WithValue(ctx, compositeAccountTargetKey{}, target)
+}
+
+func compositeAccountModelEligible(ctx context.Context, account *Account) bool {
+	if ctx == nil {
+		return true
+	}
+	if target, ok := ctx.Value(compositeAccountTargetKey{}).(CompositeAccountTarget); ok {
+		if account.Platform != target.Platform || account.Priority != target.Priority {
+			return false
+		}
+	}
+	if source, ok := CompositeRouteSourceFromContext(ctx); ok && source == CompositeRouteSourceAccount {
+		if model, modelOK := RequestedPublicModelFromContext(ctx); modelOK {
+			return compositeAccountClaimsModel(account, model)
+		}
+	}
+	return true
+}
+
 func ResolvedUpstreamModelFromContext(ctx context.Context) (string, bool) {
 	if ctx == nil {
 		return "", false
@@ -122,8 +159,9 @@ func CompositeRouteSourceFromContext(ctx context.Context) (string, bool) {
 // writer stamps each row with the attempt that produced it, and the runner can
 // tell whether a failed attempt already handed usage to billing.
 type CompositeRouteTrace struct {
-	RouteID     int64
-	RequestKind string
+	RouteID         int64
+	RequestKind     string
+	AccountFallback bool
 
 	mu             sync.Mutex
 	fallbackChain  string
@@ -134,7 +172,7 @@ type CompositeRouteTrace struct {
 type compositeRouteTraceKey struct{}
 
 func WithCompositeRouteTrace(ctx context.Context, trace *CompositeRouteTrace) context.Context {
-	if ctx == nil || trace == nil || trace.RouteID <= 0 {
+	if ctx == nil || trace == nil || (trace.RouteID <= 0 && !trace.AccountFallback) {
 		return ctx
 	}
 	return context.WithValue(ctx, compositeRouteTraceKey{}, trace)
@@ -195,8 +233,9 @@ func applyCompositeRouteTrace(ctx context.Context, usage *UsageLog) {
 		return
 	}
 	trace.usageRecorded.Store(true)
-	routeID := trace.RouteID
-	usage.CompositeRouteID = &routeID
+	if routeID := trace.RouteID; routeID > 0 {
+		usage.CompositeRouteID = &routeID
+	}
 	if kind := strings.TrimSpace(trace.RequestKind); kind != "" {
 		usage.CompositeRouteKind = &kind
 	}
@@ -327,8 +366,8 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 // isConcreteRequestPlatform 判定平台是否可作为 composite 的具体请求目标。
 // 与迁移 227 + 229 重建的 composite_model_routes_target_platform_check 终态一致。
 //
-// kiro 只能通过显式 composite_model_routes 路由行命中：DetectModelPlatform
-// 推断不出 kiro，因为 kiro 的模型名是 claude-* / gpt-*，与 anthropic/openai 冲突。
+// Kiro is selected from account model mappings or explicit routes. Its model
+// names overlap with other providers, so name detection cannot select it.
 func isConcreteRequestPlatform(platform string) bool {
 	return domain.IsConcretePlatform(platform)
 }

@@ -44,14 +44,24 @@ const (
 // CompositeModelOwnership identifies the concrete provider that exposes a
 // public model through an account-level exact mapping.
 type CompositeModelOwnership struct {
-	TargetPlatform string
-	Matched        bool
-	Ambiguous      bool
+	TargetPlatform     string
+	Matched            bool
+	Ambiguous          bool
+	AccountTargets     []CompositeAccountTarget
+	KiroDefaultClaimed bool
 	// OpenAIGatewayOAuthClaimed 表示声明方中含 OpenAI 网关族平台的 OAuth /
 	// setup-token 凭据。歧义请求无法解析平台，会落到默认的 Anthropic 网关
 	// handler：Anthropic / Gemini / Antigravity 的 OAuth 在那里有原生或兼容
 	// 转发，API Key 上游可能兼容多种格式，唯独这类凭据只能走 OpenAI 网关。
 	OpenAIGatewayOAuthClaimed bool
+}
+
+// CompositeAccountTarget identifies a priority tier served by one provider.
+// Keeping tiers separate lets a priority-2 channel run before priority-3
+// accounts on a provider that already attempted priority 1.
+type CompositeAccountTarget struct {
+	Platform string
+	Priority int
 }
 
 type CompositeModelOwnershipResolver func(context.Context, int64, string) (CompositeModelOwnership, error)
@@ -112,17 +122,20 @@ type CompositeRouteRequestMatch struct {
 	// asks whether a model is routable at all rather than resolving one live
 	// request.
 	IgnoreRequestConditions bool
+	// AllowAccountFallback is set by HTTP handlers that can switch gateway protocols.
+	AllowAccountFallback bool
 }
 
 type CompositeRouteDecision struct {
-	Matched        bool                 `json:"matched"`
-	Source         string               `json:"source"`
-	GroupID        int64                `json:"group_id"`
-	PublicModel    string               `json:"public_model"`
-	TargetPlatform string               `json:"target_platform"`
-	UpstreamModel  string               `json:"upstream_model"`
-	Endpoint       string               `json:"endpoint"`
-	Route          *CompositeModelRoute `json:"route,omitempty"`
+	Matched        bool                     `json:"matched"`
+	Source         string                   `json:"source"`
+	GroupID        int64                    `json:"group_id"`
+	PublicModel    string                   `json:"public_model"`
+	TargetPlatform string                   `json:"target_platform"`
+	UpstreamModel  string                   `json:"upstream_model"`
+	Endpoint       string                   `json:"endpoint"`
+	Route          *CompositeModelRoute     `json:"route,omitempty"`
+	AccountTargets []CompositeAccountTarget `json:"-"`
 	// RequestKind is set for live explicit matches: compaction, conversation or unknown.
 	RequestKind           string                              `json:"request_kind,omitempty"`
 	Reason                string                              `json:"reason,omitempty"`

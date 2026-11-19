@@ -107,6 +107,32 @@ func newGatewayModelsHandlerForTest(repo service.AccountRepository, routeRepo ..
 	}
 }
 
+func TestGatewayCompositeModelsExposeKiroMappings(t *testing.T) {
+	const groupID int64 = 7785
+	const uniqueModel = "team-kiro-sonnet"
+	const sharedModel = "claude-haiku-5-5"
+	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{
+		groupID: {
+			{ID: 1, Platform: service.PlatformOpenAI, Credentials: map[string]any{
+				"model_mapping": map[string]any{sharedModel: "anthropic/claude-haiku-5.5"},
+			}},
+			{ID: 2, Platform: service.PlatformKiro, Credentials: map[string]any{
+				"model_mapping": map[string]any{uniqueModel: "claude-sonnet-5.5", sharedModel: "claude-haiku-5.5"},
+			}},
+		},
+	}}
+	handler := newGatewayModelsHandlerForTest(repo)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{ID: groupID, Platform: service.PlatformComposite}})
+	handler.Models(c)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.ElementsMatch(t, []string{uniqueModel, sharedModel}, modelIDsForTest(response.Data))
+}
+
 func TestGatewayCompositeRouteModelsAppearInBothCatalogs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const groupID int64 = 7784
@@ -240,9 +266,7 @@ func TestDefaultModelIDsForCompositeIncludesAntigravityDefaults(t *testing.T) {
 func TestDefaultModelIDsForCompositeOmitsKiro(t *testing.T) {
 	compositeIDs := defaultModelIDsForPlatform(service.PlatformComposite)
 
-	// Kiro is deliberately omitted from the composite static fallback: its
-	// claude-*/gpt-* model names collide with Anthropic/OpenAI. claude-opus-4-8-thinking
-	// only exists in the kiro catalog, so its absence proves the omission.
+	// Kiro-specific variants require a configured source.
 	require.NotContains(t, compositeIDs, "claude-opus-4-8-thinking")
 }
 

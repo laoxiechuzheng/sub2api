@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,63 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+type compositeFallbackAccountRepo struct {
+	service.AccountRepository
+	accounts []service.Account
+}
+
+func (r compositeFallbackAccountRepo) ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]service.Account, error) {
+	return r.accounts, nil
+}
+
+func TestCompositeMappedHaikuFollowsAccountPriority(t *testing.T) {
+	const model = "claude-haiku-5-5"
+	gin.SetMode(gin.TestMode)
+	for _, committed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fallback", true: "usage submitted"}[committed], func(t *testing.T) {
+			repo := compositeFallbackAccountRepo{accounts: []service.Account{
+				{ID: 31, Priority: 1, Platform: service.PlatformAnthropic, Credentials: map[string]any{"model_mapping": map[string]any{model: "claude-haiku-5-5"}}},
+				{ID: 58, Priority: 2, Platform: service.PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{model: "anthropic/claude-haiku-5.5"}}},
+				{ID: 69, Priority: 0, Platform: service.PlatformKiro, Credentials: map[string]any{"model_mapping": map[string]any{model: "claude-haiku-5.5"}}},
+			}}
+			resolver := service.NewCompositeRouteResolver(nil)
+			service.NewGatewayService(repo,
+				nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+				nil, nil, nil, nil,
+				nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, resolver, nil, nil)
+			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{ID: 6, Platform: service.PlatformComposite}})
+				c.Next()
+			}, compositeTargetPlatformMiddleware(resolver))
+			var platforms []string
+			router.POST("/v1/messages", func(c *gin.Context) {
+				platform, _ := service.ResolvedTargetPlatformFromContext(c.Request.Context())
+				platforms = append(platforms, platform)
+				body, err := io.ReadAll(c.Request.Body)
+				require.NoError(t, err)
+				require.Equal(t, model, gjson.GetBytes(body, "model").String())
+				if platform == service.PlatformOpenAI {
+					c.JSON(http.StatusOK, gin.H{"model": model})
+					return
+				}
+				if committed {
+					service.CompositeRouteTraceFromContext(c.Request.Context()).MarkUsageSubmitted()
+				}
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "unavailable"})
+			})
+			recorder := serveCompositeFallback(router, "/v1/messages", `{"model":"claude-haiku-5-5"}`)
+			if committed {
+				require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+				require.Equal(t, []string{service.PlatformKiro}, platforms)
+			} else {
+				require.Equal(t, http.StatusOK, recorder.Code)
+				require.Equal(t, []string{service.PlatformKiro, service.PlatformAnthropic, service.PlatformOpenAI}, platforms)
+			}
+		})
+	}
+}
 
 type compositeFallbackCall struct {
 	platform string

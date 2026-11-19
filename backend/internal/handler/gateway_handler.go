@@ -1349,12 +1349,6 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 		if platform == service.PlatformTypeSafe && !includeSystemOne {
 			continue
 		}
-		// Kiro is omitted on purpose: its model names collide with Anthropic/OpenAI
-		// and cannot be inferred by DetectModelPlatform. Explicit composite_model_routes
-		// rows still surface kiro models via GetCompositeRouteModels below.
-		if platform == service.PlatformKiro {
-			continue
-		}
 		platformModels := h.gatewayService.GetAvailableModels(ctx, groupID, platform)
 		if len(platformModels) == 0 && (platform != service.PlatformOpenAI || platformModels == nil) {
 			// CN 供应商没有静态默认模型列表（defaultModelIDsForPlatform 的
@@ -1576,12 +1570,9 @@ func defaultModelIDsForPlatform(platform string) []string {
 			// TypeSafe is deliberately skipped: jev-latest only works through
 			// /v1/systemone, so the static fallback never advertises it to LLM
 			// clients. compositeAvailableModels lists it when the group can serve it.
-			if concretePlatform == service.PlatformTypeSafe {
-				continue
-			}
-			// Kiro is deliberately skipped as well: its claude-*/gpt-* model names
-			// collide with Anthropic/OpenAI and cannot be inferred by DetectModelPlatform.
-			if concretePlatform == service.PlatformKiro {
+			// Kiro variants are listed from configured accounts, not the empty-group
+			// fallback, which has no evidence of a Kiro upstream.
+			if concretePlatform == service.PlatformTypeSafe || concretePlatform == service.PlatformKiro {
 				continue
 			}
 			for _, id := range defaultModelIDsForPlatform(concretePlatform) {

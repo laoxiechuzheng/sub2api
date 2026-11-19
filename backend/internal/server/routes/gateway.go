@@ -585,6 +585,7 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 				Body:                 body,
 				NativeCompaction:     service.IsOpenAICompactionRequest(c, body),
 				ClaudeCompactionHint: service.ClaudeCompactionHintFromHeaders(c.Request.Header),
+				AllowAccountFallback: compositeTextAccountFallback(routePath),
 			})
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"type": "server_error", "message": "Failed to resolve composite model route"}})
@@ -597,6 +598,10 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 			if decision.OAuthAmbiguous() {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalModelConfiguration)
 				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": decision.AmbiguousMessage()}})
+				return
+			}
+			if len(decision.AccountTargets) > 0 {
+				runCompositeRouteWithFallback(c, c.Request, routePath, model, body, decision)
 				return
 			}
 			if decision.Matched && decision.Source == service.CompositeRouteSourceExplicit && decision.Route != nil {
@@ -680,6 +685,14 @@ func compositeGeminiModelFromParams(c *gin.Context) string {
 		return strings.TrimSpace(modelAction[:idx])
 	}
 	return modelAction
+}
+
+// Only these HTTP handlers dispatch on the resolved provider for each attempt.
+func compositeTextAccountFallback(path string) bool {
+	return strings.HasSuffix(path, "/messages") ||
+		strings.HasSuffix(path, "/chat/completions") ||
+		strings.HasSuffix(path, "/responses") ||
+		strings.HasSuffix(path, "/responses/*subpath")
 }
 
 func compositeRouteEndpointForPath(path string) string {

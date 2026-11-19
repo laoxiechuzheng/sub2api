@@ -168,6 +168,13 @@ func (r *CompositeRouteResolver) ResolveWithMatch(ctx context.Context, groupID i
 			if _, detectable := DetectModelPlatform(model); !detectable {
 				return decision, fmt.Errorf("resolve account model ownership: %w", err)
 			}
+		} else if match.AllowAccountFallback && len(ownership.AccountTargets) > 0 {
+			decision.Matched = true
+			decision.Source = CompositeRouteSourceAccount
+			decision.TargetPlatform = ownership.AccountTargets[0].Platform
+			decision.UpstreamModel = model
+			decision.AccountTargets = append([]CompositeAccountTarget(nil), ownership.AccountTargets...)
+			return decision, nil
 		} else if ownership.Ambiguous {
 			decision.Reason = CompositeRouteReasonAmbiguous
 			// 未解析的请求由下游 handler 按模型名前缀兜底选平台；只有兜底落在
@@ -176,8 +183,11 @@ func (r *CompositeRouteResolver) ResolveWithMatch(ctx context.Context, groupID i
 				decision.Reason = CompositeRouteReasonOAuthAmbiguous
 			}
 			return decision, nil
-		} else if ownership.Matched {
+		} else if ownership.Matched || (match.AllowAccountFallback && ownership.KiroDefaultClaimed) {
 			platform := strings.TrimSpace(ownership.TargetPlatform)
+			if !ownership.Matched {
+				platform = PlatformKiro
+			}
 			if !isConcreteRequestPlatform(platform) {
 				decision.Reason = "account model ownership has no concrete target platform"
 				return decision, nil

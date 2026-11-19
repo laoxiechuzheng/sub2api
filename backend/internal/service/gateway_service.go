@@ -1750,9 +1750,21 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 	}
 
 	platforms := make(map[string]struct{})
+	targets := make(map[CompositeAccountTarget]int64)
+	targetPlatforms := make(map[string]struct{})
 	ownership := CompositeModelOwnership{}
-	for _, account := range accounts {
-		if explicitModelMappingClaims(account, model) {
+	for i := range accounts {
+		account := &accounts[i]
+		explicitClaim := explicitModelMappingClaims(*account, model)
+		if account.Platform != PlatformTypeSafe &&
+			(explicitClaim || (account.Platform == PlatformKiro && compositeAccountClaimsModel(account, model))) {
+			targetPlatforms[account.Platform] = struct{}{}
+			target := CompositeAccountTarget{Platform: account.Platform, Priority: account.Priority}
+			if id, exists := targets[target]; !exists || account.ID < id {
+				targets[target] = account.ID
+			}
+		}
+		if explicitClaim {
 			platforms[account.Platform] = struct{}{}
 			ownership.OpenAIGatewayOAuthClaimed = ownership.OpenAIGatewayOAuthClaimed ||
 				(account.IsOAuth() && domain.UsesOpenAIGateway(account.Platform))
@@ -1767,11 +1779,38 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 	} else if len(platforms) > 1 {
 		ownership.Ambiguous = true
 	}
+	if _, kiroClaimed := targetPlatforms[PlatformKiro]; kiroClaimed && len(platforms) == 0 {
+		ownership.KiroDefaultClaimed = true
+	}
+	if len(targetPlatforms) > 1 || (ownership.Ambiguous && len(targetPlatforms) > 0) {
+		for target := range targets {
+			ownership.AccountTargets = append(ownership.AccountTargets, target)
+		}
+		sort.Slice(ownership.AccountTargets, func(i, j int) bool {
+			a, b := ownership.AccountTargets[i], ownership.AccountTargets[j]
+			if a.Priority != b.Priority {
+				return a.Priority < b.Priority
+			}
+			if targets[a] != targets[b] {
+				return targets[a] < targets[b]
+			}
+			return a.Platform < b.Platform
+		})
+	}
 
 	if s.modelsListCache != nil {
 		s.modelsListCache.Set(cacheKey, ownership, s.modelsListCacheTTL)
 	}
 	return ownership, nil
+}
+
+// Kiro has a concrete built-in catalog when no mapping is configured. Honor
+// that effective mapping just as the model catalog and Kiro forwarder do.
+func compositeAccountClaimsModel(account *Account, model string) bool {
+	if account.Platform == PlatformKiro {
+		return strings.TrimSpace(account.GetModelMapping()[model]) != ""
+	}
+	return explicitModelMappingClaims(*account, model)
 }
 
 func explicitModelMappingClaims(account Account, model string) bool {

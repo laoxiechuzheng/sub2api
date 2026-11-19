@@ -80,6 +80,19 @@ func newBillingServiceForRPM(t *testing.T, cache UserRPMCache, rateRepo UserGrou
 	return svc
 }
 
+func TestCompositeAccountFallbackChargesRPMOnceInOriginalGroup(t *testing.T) {
+	rpm := &userRPMCacheStub{userGroupCounts: []int{1, 2}}
+	svc := NewBillingCacheService(&balanceEligibilityCacheStub{balance: 1}, nil, nil, nil, rpm, nil, &config.Config{}, nil)
+	t.Cleanup(svc.Stop)
+	user := &User{ID: 1}
+	group := &Group{ID: 6, RPMLimit: 1}
+	ctx := WithCompositeAccountFallbackState(context.Background(), group.ID)
+	require.NoError(t, svc.CheckBillingEligibility(ctx, user, nil, group, nil, PlatformKiro))
+	require.NoError(t, svc.CheckBillingEligibility(ctx, user, nil, group, nil, PlatformOpenAI))
+	require.EqualValues(t, 1, atomic.LoadInt32(&rpm.userGroupCalls))
+	require.ErrorIs(t, svc.CheckBillingEligibility(ctx, user, nil, &Group{ID: 7, RPMLimit: 1}, nil, PlatformAnthropic), ErrGroupRPMExceeded)
+}
+
 func TestBillingCacheService_CheckRPM_OverrideTakesPrecedenceOverGroup(t *testing.T) {
 	override := 2
 	// user-group 计数: 1, 2, 3；user 计数: 默认返回 1（远小于 RPMLimit=100，不干扰）

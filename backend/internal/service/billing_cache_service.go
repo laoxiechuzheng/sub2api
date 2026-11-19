@@ -783,10 +783,17 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 	}
 
 	// RPM 限流：级联回落（Override → Group → User），放在最后以避免为注定失败的请求增加计数。
+	admission, _ := ctx.Value(compositeAccountRPMKey{}).(*compositeAccountRPMAdmission)
+	if admission == nil || group == nil || group.ID != admission.groupID {
+		return s.checkRPM(ctx, user, group)
+	}
+	if admission.admitted.Load() {
+		return nil
+	}
 	if err := s.checkRPM(ctx, user, group); err != nil {
 		return err
 	}
-
+	admission.admitted.Store(true)
 	return nil
 }
 
