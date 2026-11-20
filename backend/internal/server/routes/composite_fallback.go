@@ -11,7 +11,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -72,9 +71,10 @@ func compositeRewriteModel(routePath string, body []byte, publicModel, targetMod
 		return body
 	}
 	if _, modelPath := requestmodel.JSONModelPathForRoute(routePath, body); modelPath != "" {
-		if rewritten, err := sjson.SetBytes(body, modelPath, targetModel); err == nil {
-			return rewritten
-		}
+		// Adapt thinking to the target model the same way explicit single-target
+		// routes do (upstream v0.2.24 f42dad9b7); every attempt rebuilds from
+		// the original body, so each target gets its own adaptation.
+		return service.RewriteCompositeRequestModel(body, modelPath, targetModel)
 	}
 	return body
 }

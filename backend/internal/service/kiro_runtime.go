@@ -489,10 +489,14 @@ func (s *GatewayService) executeKiroUpstreamWithParsed(ctx context.Context, acco
 			if resp.StatusCode == http.StatusTooManyRequests {
 				dumpKiro429ResponseForDebug(resp, account.ID, endpoint.URL, endpoint.Name)
 
-				cooldown, err := s.markKiro429(ctx, account.ID, stateKey)
-				if err != nil {
-					_ = resp.Body.Close()
-					return nil, requestCtx, err
+				// 池模式不记账号级 429 冷却：交给 handler 在同一账号上按池模式次数重试。
+				var cooldown time.Duration
+				if !account.IsPoolMode() {
+					cooldown, err = s.markKiro429(ctx, account.ID, stateKey)
+					if err != nil {
+						_ = resp.Body.Close()
+						return nil, requestCtx, err
+					}
 				}
 				if idx+1 < len(endpoints) {
 					_ = resp.Body.Close()
@@ -501,7 +505,9 @@ func (s *GatewayService) executeKiroUpstreamWithParsed(ctx context.Context, acco
 					}
 					break
 				}
-				resp.Header.Set("x-kiro-cooldown", cooldown.String())
+				if cooldown > 0 {
+					resp.Header.Set("x-kiro-cooldown", cooldown.String())
+				}
 				return resp, requestCtx, nil
 			}
 
@@ -1013,6 +1019,9 @@ func (s *GatewayService) handleKiroHTTPErrorWith(ctx context.Context, resp *http
 			StatusCode:      resp.StatusCode,
 			ResponseBody:    respBody,
 			ResponseHeaders: resp.Header.Clone(),
+			// 402 额度用尽是月度硬上限，重试同账号无意义，始终换号。
+			RetryableOnSameAccount: resp.StatusCode != http.StatusPaymentRequired &&
+				account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 		}
 	}
 

@@ -1843,6 +1843,35 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.kiro_credit_unit_price_usd).toBe(0.08)
   })
 
+  it('hydrates and submits pool mode for Kiro OAuth accounts', async () => {
+    const account = buildKiroOAuthAccount()
+    account.credentials = { ...(account.credentials || {}), pool_mode: true, pool_mode_retry_count: 5 }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const section = wrapper.get('[data-testid="kiro-oauth-pool-mode-section"]')
+    const retryInput = section.get<HTMLInputElement>('input[type="number"]')
+    expect(retryInput.element.value).toBe('5')
+
+    await retryInput.setValue('4')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials?.pool_mode).toBe(true)
+    expect(credentials?.pool_mode_retry_count).toBe(4)
+
+    updateAccountMock.mockClear()
+    await section.get('button').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const disabled = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(disabled).not.toHaveProperty('pool_mode')
+    expect(disabled).not.toHaveProperty('pool_mode_retry_count')
+  })
+
   it('allows saving apikey account when backend redacted api_key but credentials_status reports it exists', async () => {
     // 新前端 + 新后端：响应已脱敏，credentials 里没有 api_key，credentials_status.has_api_key=true
     const account = buildAccount()

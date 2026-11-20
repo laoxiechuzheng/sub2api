@@ -993,6 +993,12 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			ResponseHeaders:          resp.Header.Clone(),
 			RetryableOnSameAccount:   true,
 			SafeToFailoverAfterWrite: true, // 此前最多只写过传输注释，可以安全重试。
+			// Kiro 收尾却零可见输出：若近期只有这一条请求在空回复，说明是请求内容触发的，
+			// 同账号其他请求照常成功。按请求级处理，不对账号做一分钟临时封禁，否则该账号
+			// 若是分组里某模型唯一的来源，这一条坏请求会让所有用户在冷却期内 503。
+			// 不同请求都空回复时（账号级故障）仍保留冷却，见 kiroEmptyReplyTracker。
+			RequestScopedTransient: reason == "empty_visible_output" && sawTerminalEvent && account != nil && account.IsKiro() &&
+				defaultKiroEmptyReplyTracker.recordAndIsRequestScoped(account.ID, mappedModel, usage.InputTokens),
 		}
 	}
 	useNoopDeltaKeepalive := c != nil && c.Request != nil && shouldUseClaudeCodeNoopDeltaKeepalive(c.GetHeader("User-Agent"))

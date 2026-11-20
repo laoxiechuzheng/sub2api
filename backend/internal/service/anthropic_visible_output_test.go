@@ -17,6 +17,11 @@ import (
 
 func runAnthropicVisibleOutputStream(t *testing.T, payload string) (*streamingResult, *httptest.ResponseRecorder, error) {
 	t.Helper()
+	return runAnthropicVisibleOutputStreamForAccount(t, payload, &Account{ID: 1})
+}
+
+func runAnthropicVisibleOutputStreamForAccount(t *testing.T, payload string, account *Account) (*streamingResult, *httptest.ResponseRecorder, error) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -31,7 +36,7 @@ func runAnthropicVisibleOutputStream(t *testing.T, payload string) (*streamingRe
 		Body:       io.NopCloser(strings.NewReader(payload)),
 	}
 	defer func() { _ = resp.Body.Close() }()
-	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "public-model", "upstream-model", false)
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, account, time.Now(), "public-model", "upstream-model", false)
 	return result, recorder, err
 }
 
@@ -403,5 +408,41 @@ func TestAnthropicVisibleOutput_UnterminatedLineFailsBeforeEOF(t *testing.T) {
 		require.False(t, c.Writer.Written())
 	case <-time.After(3 * time.Second):
 		t.Fatal("first-visible-output guard waited for an upstream newline or EOF")
+	}
+}
+
+// Kiro 正常收尾却零可见输出由请求内容触发（生产实测：同一条 72795 token 的请求
+// 反复空回复，同账号其他请求成功）。它只能让这条请求失败，不能把账号冷却一分钟，
+// 否则该账号是分组里某模型唯一来源时，所有用户都会 503 no available accounts。
+func TestAnthropicVisibleOutput_KiroEmptyEndTurnIsRequestScoped(t *testing.T) {
+	payload := "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":72795}}}\n\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}\n\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+
+	for _, tc := range []struct {
+		name          string
+		account       *Account
+		requestScoped bool
+	}{
+		{name: "kiro", account: &Account{ID: 69, Platform: PlatformKiro}, requestScoped: true},
+		{name: "anthropic keeps account cooldown", account: &Account{ID: 1, Platform: PlatformAnthropic}, requestScoped: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prevTracker := defaultKiroEmptyReplyTracker
+			defaultKiroEmptyReplyTracker = newKiroEmptyReplyTracker(time.Now)
+			t.Cleanup(func() { defaultKiroEmptyReplyTracker = prevTracker })
+
+			result, _, err := runAnthropicVisibleOutputStreamForAccount(t, payload, tc.account)
+			var failover *UpstreamFailoverError
+			require.ErrorAs(t, err, &failover)
+			require.Nil(t, result)
+			require.Contains(t, string(failover.ResponseBody), "empty_visible_output")
+			require.True(t, failover.RetryableOnSameAccount)
+			require.Equal(t, tc.requestScoped, failover.RequestScopedTransient)
+
+			repo := &capacityShedAccountRepoStub{}
+			(&GatewayService{accountRepo: repo}).TempUnscheduleRetryableError(context.Background(), tc.account.ID, failover)
+			require.Equal(t, !tc.requestScoped, repo.tempUnschedCalls > 0)
+		})
 	}
 }

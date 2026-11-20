@@ -1118,6 +1118,70 @@
             </div>
           </div>
         </template>
+
+        <!-- Pool Mode Section for Kiro OAuth -->
+        <div v-if="account.platform === 'kiro'" class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-600" data-testid="kiro-oauth-pool-mode-section">
+          <div class="mb-3 flex items-center justify-between">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.poolMode') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.poolModeHint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="poolModeEnabled = !poolModeEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                poolModeEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  poolModeEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+          <div v-if="poolModeEnabled" class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
+            <p class="text-xs text-blue-700 dark:text-blue-400">
+              <Icon name="exclamationCircle" size="sm" class="mr-1 inline" :stroke-width="2" />
+              {{ t('admin.accounts.poolModeInfo') }}
+            </p>
+          </div>
+          <div v-if="poolModeEnabled" class="mt-3">
+            <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
+            <input
+              v-model.number="poolModeRetryCount"
+              type="number"
+              min="0"
+              :max="MAX_POOL_MODE_RETRY_COUNT"
+              step="1"
+              class="input"
+            />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{
+                t('admin.accounts.poolModeRetryCountHint', {
+                  default: DEFAULT_POOL_MODE_RETRY_COUNT,
+                  max: MAX_POOL_MODE_RETRY_COUNT
+                })
+              }}
+            </p>
+          </div>
+          <div v-if="poolModeEnabled" class="mt-3">
+            <label class="input-label">{{ t('admin.accounts.poolModeRetryStatusCodes') }}</label>
+            <input
+              v-model="poolModeRetryStatusCodesInput"
+              type="text"
+              class="input"
+              :placeholder="DEFAULT_POOL_MODE_RETRY_STATUS_CODES.join(', ')"
+            />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.poolModeRetryStatusCodesHint', { default: DEFAULT_POOL_MODE_RETRY_STATUS_CODES.join(', ') }) }}
+            </p>
+          </div>
+        </div>
       </div>
 
       <div v-if="isKiroAccount && !isKiroRelay" class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -5151,9 +5215,14 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       modelMappings.value = []
       allowedModels.value = []
     }
-    poolModeEnabled.value = false
-    poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
-    poolModeRetryStatusCodesInput.value = ''
+    // Kiro OAuth 账号同样支持池模式；其他 OAuth 账号清空。
+    const oauthPoolCredentials =
+      newAccount.platform === 'kiro' ? ((newAccount.credentials as Record<string, unknown>) || {}) : {}
+    poolModeEnabled.value = oauthPoolCredentials.pool_mode === true
+    poolModeRetryCount.value = normalizePoolModeRetryCount(
+      Number(oauthPoolCredentials.pool_mode_retry_count ?? DEFAULT_POOL_MODE_RETRY_COUNT)
+    )
+    poolModeRetryStatusCodesInput.value = formatPoolModeRetryStatusCodes(oauthPoolCredentials.pool_mode_retry_status_codes)
     explicitCacheUpstreamEnabled.value = false
     explicitCacheUpstreamMaxTTL.value = ''
     customErrorCodesEnabled.value = false
@@ -5765,6 +5834,23 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
   }
 }
 
+const applyPoolModeCredentials = (credentials: Record<string, unknown>) => {
+  if (poolModeEnabled.value) {
+    credentials.pool_mode = true
+    credentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
+    const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
+    if (parsedRetryStatusCodes.length > 0) {
+      credentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
+    } else {
+      delete credentials.pool_mode_retry_status_codes
+    }
+  } else {
+    delete credentials.pool_mode
+    delete credentials.pool_mode_retry_count
+    delete credentials.pool_mode_retry_status_codes
+  }
+}
+
 const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
@@ -5896,20 +5982,7 @@ const handleSubmit = async () => {
       }
 
       // Add pool mode if enabled
-      if (poolModeEnabled.value) {
-        newCredentials.pool_mode = true
-        newCredentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
-        const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
-        if (parsedRetryStatusCodes.length > 0) {
-          newCredentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
-        } else {
-          delete newCredentials.pool_mode_retry_status_codes
-        }
-      } else {
-        delete newCredentials.pool_mode
-        delete newCredentials.pool_mode_retry_count
-        delete newCredentials.pool_mode_retry_status_codes
-      }
+      applyPoolModeCredentials(newCredentials)
 
       applyExplicitCacheUpstreamCredentials(
         newCredentials,
@@ -6145,6 +6218,7 @@ const handleSubmit = async () => {
       } else {
         delete newCredentials.model_mapping
       }
+      applyPoolModeCredentials(newCredentials)
 
       updatePayload.credentials = newCredentials
     }
