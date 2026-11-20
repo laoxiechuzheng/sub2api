@@ -255,3 +255,30 @@ func TestOutputFromCreditsFallsBackToLocalCount(t *testing.T) {
 	require.Less(t, res.Usage.OutputTokens, 100)
 	require.Equal(t, "no_rates", res.OutputEstimate.Reason)
 }
+
+func TestCacheFollowsUpstreamUsesKiroHit(t *testing.T) {
+	credits, pct, ctx := creditScenario(t)
+	ctx.CacheFollowsUpstream = true
+
+	res, err := ParseNonStreamingEventStreamWithContext(buildCreditFrames(t, "short visible answer", credits, pct), "claude-opus-5-5", ctx)
+	require.NoError(t, err)
+	require.InDelta(t, 90000, res.Usage.CacheReadInputTokens, 1)
+	require.InDelta(t, 7000, res.Usage.InputTokens, 1)
+	require.Zero(t, res.Usage.CacheCreationInputTokens)
+	require.InDelta(t, 90000, gjson.GetBytes(res.ResponseBody, "usage.cache_read_input_tokens").Int(), 1)
+
+	out := bytes.NewBuffer(nil)
+	sres, err := StreamEventStreamAsAnthropicWithContext(context.Background(), buildCreditFrames(t, "short visible answer", credits, pct), out, "claude-opus-5-5", 50, ctx)
+	require.NoError(t, err)
+	require.InDelta(t, 90000, sres.Usage.CacheReadInputTokens, 1)
+	require.InDelta(t, 7000, sres.Usage.InputTokens, 1)
+	var delta gjson.Result
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "data: ") && gjson.Get(line[6:], "type").String() == "message_delta" {
+			delta = gjson.Get(line[6:], "usage")
+		}
+	}
+	require.InDelta(t, 90000, delta.Get("cache_read_input_tokens").Int(), 1)
+	require.InDelta(t, 7000, delta.Get("input_tokens").Int(), 1)
+	require.False(t, delta.Get("cache_creation_input_tokens").Exists())
+}

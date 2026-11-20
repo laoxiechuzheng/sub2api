@@ -181,3 +181,20 @@ func kiroCacheSharedSystemBody(turns ...string) []byte {
 	})
 	return out
 }
+
+func TestKiroCacheModeKiroOnCompositeGroup(t *testing.T) {
+	g := &Group{Platform: PlatformComposite, KiroCacheEmulationEnabled: true, KiroCacheEmulationMode: KiroCacheEmulationModeKiro, KiroAutoStickyEnabled: true}
+	NormalizeGroupRuntimeFields(g)
+	if !g.FollowsKiroUpstreamCache() || g.KiroAutoStickyEnabled {
+		t.Fatalf("composite kiro mode: follows=%v sticky=%v", g.FollowsKiroUpstreamCache(), g.KiroAutoStickyEnabled)
+	}
+	other := &Group{Platform: PlatformAnthropic, KiroCacheEmulationEnabled: true, KiroCacheEmulationMode: KiroCacheEmulationModeKiro}
+	NormalizeGroupRuntimeFields(other)
+	if other.FollowsKiroUpstreamCache() || other.KiroCacheEmulationEnabled {
+		t.Fatal("non-kiro platform must not enable kiro cache billing")
+	}
+	off := &Group{Platform: PlatformComposite, KiroCacheEmulationMode: KiroCacheEmulationModeKiro}
+	if off.FollowsKiroUpstreamCache() {
+		t.Fatal("disabled switch must not follow upstream cache")
+	}
+}

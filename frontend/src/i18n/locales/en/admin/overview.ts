@@ -1058,7 +1058,7 @@ export default {
         composite: 'Composite',
       },
       kiroCache: {
-        description: 'Simulate Anthropic prompt cache usage for this Kiro group only.',
+        description: 'Simulate Anthropic prompt cache usage for Kiro groups and for composite-group requests routed to Kiro accounts.',
         enabled: 'Enable cache emulation',
         endpointMode: 'Kiro inference endpoint',
         endpointModeAuto: 'Auto (switch Q/KRS on 429)',
@@ -1073,6 +1073,8 @@ export default {
         creationRatio: 'Cache creation ratio',
         readRatio: 'Cache read ratio',
         independentRatioHint: 'Creation and read ratios apply separately; excluded cache tokens are counted as regular input.',
+        kiroMode: 'Follow Kiro hits',
+        kiroModeHint: 'Bill by Kiro upstream cache hits: hit tokens count as cache reads, the rest as regular input, with no cache creation. Ratios do not apply. Kiro caches last about 5 minutes.',
         stickyRouting: 'Enable Kiro account sticky routing',
         stickyRoutingHint: 'When enabled, multi-turn conversations are pinned to the same account when possible. X-Session-ID still takes precedence for explicit session binding.',
         stickyTTL: 'Sticky binding TTL (seconds)',

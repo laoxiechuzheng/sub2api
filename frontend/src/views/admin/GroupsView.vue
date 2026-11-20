@@ -751,8 +751,9 @@
         </div>
 
         <!-- Kiro 模拟缓存配置 -->
-        <div v-if="createForm.platform === 'kiro'" class="border-t pt-4">
+        <div v-if="createForm.platform === 'kiro' || createForm.platform === 'composite'" class="border-t pt-4">
           <!-- 粘性路由说明 -->
+          <template v-if="createForm.platform === 'kiro'">
           <label class="mb-4 flex items-start gap-3 rounded-md bg-blue-50 p-3 text-sm text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
             <input
               v-model="createForm.kiro_auto_sticky_enabled"
@@ -781,6 +782,7 @@
             />
             <p class="input-hint">{{ t("admin.groups.kiroCache.stickyTTLHint") }}</p>
           </div>
+          </template>
           <label class="block mb-2 font-medium text-gray-700 dark:text-gray-300">
             {{ t("admin.groups.kiroCache.title") }}
           </label>
@@ -797,7 +799,7 @@
           </label>
           <div v-if="createForm.kiro_cache_emulation_enabled">
             <label class="input-label">{{ t("admin.groups.kiroCache.ratioMode") }}</label>
-            <div class="grid grid-cols-2 gap-1 rounded border border-gray-200 bg-gray-50 p-1 dark:border-dark-600 dark:bg-dark-800">
+            <div class="grid grid-cols-3 gap-1 rounded border border-gray-200 bg-gray-50 p-1 dark:border-dark-600 dark:bg-dark-800">
               <button
                 type="button"
                 :aria-pressed="createForm.kiro_cache_emulation_mode === 'uniform'"
@@ -820,6 +822,18 @@
               >
                 {{ t("admin.groups.kiroCache.independentMode") }}
               </button>
+              <button
+                type="button"
+                :aria-pressed="createForm.kiro_cache_emulation_mode === 'kiro'"
+                class="h-9 rounded px-3 text-sm font-medium transition-colors"
+                :class="createForm.kiro_cache_emulation_mode === 'kiro'
+                  ? 'bg-white text-primary-600 shadow-sm dark:bg-dark-700 dark:text-primary-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-dark-300 dark:hover:text-dark-100'"
+                data-testid="create-kiro-cache-mode-kiro"
+                @click="setCreateKiroCacheMode('kiro')"
+              >
+                {{ t("admin.groups.kiroCache.kiroMode") }}
+              </button>
             </div>
             <div v-if="createForm.kiro_cache_emulation_mode === 'uniform'" class="mt-3">
               <KiroCacheRatioField
@@ -829,7 +843,7 @@
                 :hint="t('admin.groups.kiroCache.ratioHint')"
               />
             </div>
-            <div v-else class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div v-else-if="createForm.kiro_cache_emulation_mode === 'independent'" class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <KiroCacheRatioField
                 id-prefix="create-kiro-cache-creation-ratio"
                 v-model="createForm.kiro_cache_creation_emulation_ratio"
@@ -842,8 +856,9 @@
               />
               <p class="input-hint sm:col-span-2">{{ t("admin.groups.kiroCache.independentRatioHint") }}</p>
             </div>
+            <p v-else class="input-hint mt-3">{{ t("admin.groups.kiroCache.kiroModeHint") }}</p>
           </div>
-          <div class="mt-3">
+          <div v-if="createForm.platform === 'kiro'" class="mt-3">
             <label class="input-label">{{ t("admin.groups.kiroCache.endpointMode") }}</label>
             <Select
               v-model="createForm.kiro_endpoint_mode"
@@ -2521,8 +2536,9 @@
         </div>
 
         <!-- Kiro 模拟缓存配置 -->
-        <div v-if="editForm.platform === 'kiro'" class="border-t pt-4">
+        <div v-if="editForm.platform === 'kiro' || editForm.platform === 'composite'" class="border-t pt-4">
           <!-- 粘性路由说明 -->
+          <template v-if="editForm.platform === 'kiro'">
           <label class="mb-4 flex items-start gap-3 rounded-md bg-blue-50 p-3 text-sm text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
             <input
               v-model="editForm.kiro_auto_sticky_enabled"
@@ -2551,6 +2567,7 @@
             />
             <p class="input-hint">{{ t("admin.groups.kiroCache.stickyTTLHint") }}</p>
           </div>
+          </template>
           <label class="block mb-2 font-medium text-gray-700 dark:text-gray-300">
             {{ t("admin.groups.kiroCache.title") }}
           </label>
@@ -2567,7 +2584,7 @@
           </label>
           <div v-if="editForm.kiro_cache_emulation_enabled">
             <label class="input-label">{{ t("admin.groups.kiroCache.ratioMode") }}</label>
-            <div class="grid grid-cols-2 gap-1 rounded border border-gray-200 bg-gray-50 p-1 dark:border-dark-600 dark:bg-dark-800">
+            <div class="grid grid-cols-3 gap-1 rounded border border-gray-200 bg-gray-50 p-1 dark:border-dark-600 dark:bg-dark-800">
               <button
                 type="button"
                 :aria-pressed="editForm.kiro_cache_emulation_mode === 'uniform'"
@@ -2590,6 +2607,18 @@
               >
                 {{ t("admin.groups.kiroCache.independentMode") }}
               </button>
+              <button
+                type="button"
+                :aria-pressed="editForm.kiro_cache_emulation_mode === 'kiro'"
+                class="h-9 rounded px-3 text-sm font-medium transition-colors"
+                :class="editForm.kiro_cache_emulation_mode === 'kiro'
+                  ? 'bg-white text-primary-600 shadow-sm dark:bg-dark-700 dark:text-primary-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-dark-300 dark:hover:text-dark-100'"
+                data-testid="edit-kiro-cache-mode-kiro"
+                @click="setEditKiroCacheMode('kiro')"
+              >
+                {{ t("admin.groups.kiroCache.kiroMode") }}
+              </button>
             </div>
             <div v-if="editForm.kiro_cache_emulation_mode === 'uniform'" class="mt-3">
               <KiroCacheRatioField
@@ -2599,7 +2628,7 @@
                 :hint="t('admin.groups.kiroCache.ratioHint')"
               />
             </div>
-            <div v-else class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div v-else-if="editForm.kiro_cache_emulation_mode === 'independent'" class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <KiroCacheRatioField
                 id-prefix="edit-kiro-cache-creation-ratio"
                 v-model="editForm.kiro_cache_creation_emulation_ratio"
@@ -2612,8 +2641,9 @@
               />
               <p class="input-hint sm:col-span-2">{{ t("admin.groups.kiroCache.independentRatioHint") }}</p>
             </div>
+            <p v-else class="input-hint mt-3">{{ t("admin.groups.kiroCache.kiroModeHint") }}</p>
           </div>
-          <div class="mt-3">
+          <div v-if="editForm.platform === 'kiro'" class="mt-3">
             <label class="input-label">{{ t("admin.groups.kiroCache.endpointMode") }}</label>
             <Select
               v-model="editForm.kiro_endpoint_mode"
@@ -5653,7 +5683,7 @@ const createForm = reactive({
   kiro_auto_sticky_enabled: true,
   kiro_sticky_session_ttl_seconds: 3600,
   kiro_cache_emulation_ratio: 1,
-  kiro_cache_emulation_mode: "uniform" as "uniform" | "independent",
+  kiro_cache_emulation_mode: "uniform" as "uniform" | "independent" | "kiro",
   kiro_cache_creation_emulation_ratio: 1,
   kiro_cache_read_emulation_ratio: 1,
   kiro_endpoint_mode: "q" as "q" | "krs" | "auto",
@@ -6031,7 +6061,7 @@ const editForm = reactive({
   kiro_auto_sticky_enabled: true,
   kiro_sticky_session_ttl_seconds: 3600,
   kiro_cache_emulation_ratio: 1,
-  kiro_cache_emulation_mode: "uniform" as "uniform" | "independent",
+  kiro_cache_emulation_mode: "uniform" as "uniform" | "independent" | "kiro",
   kiro_cache_creation_emulation_ratio: 1,
   kiro_cache_read_emulation_ratio: 1,
   kiro_endpoint_mode: "q" as "q" | "krs" | "auto",
@@ -6545,7 +6575,7 @@ const normalizeKiroStickySessionTTL = (
   return Math.min(86400, Math.max(60, Math.trunc(seconds)));
 };
 
-const setCreateKiroCacheMode = (mode: "uniform" | "independent") => {
+const setCreateKiroCacheMode = (mode: "uniform" | "independent" | "kiro") => {
   if (mode === "independent" && createForm.kiro_cache_emulation_mode !== "independent") {
     createForm.kiro_cache_creation_emulation_ratio = createForm.kiro_cache_emulation_ratio;
     createForm.kiro_cache_read_emulation_ratio = createForm.kiro_cache_emulation_ratio;
@@ -6553,7 +6583,7 @@ const setCreateKiroCacheMode = (mode: "uniform" | "independent") => {
   createForm.kiro_cache_emulation_mode = mode;
 };
 
-const setEditKiroCacheMode = (mode: "uniform" | "independent") => {
+const setEditKiroCacheMode = (mode: "uniform" | "independent" | "kiro") => {
   if (mode === "independent" && editForm.kiro_cache_emulation_mode !== "independent") {
     editForm.kiro_cache_creation_emulation_ratio = editForm.kiro_cache_emulation_ratio;
     editForm.kiro_cache_read_emulation_ratio = editForm.kiro_cache_emulation_ratio;
@@ -6694,16 +6724,19 @@ const handleCreateGroup = async () => {
     if (requestData.platform !== "kiro") {
       requestData.kiro_auto_sticky_enabled = false;
       requestData.kiro_sticky_session_ttl_seconds = 0;
-      requestData.kiro_cache_emulation_enabled = false;
-      requestData.kiro_cache_emulation_ratio = 0;
-      requestData.kiro_cache_emulation_mode = "uniform";
-      requestData.kiro_cache_creation_emulation_ratio = 0;
-      requestData.kiro_cache_read_emulation_ratio = 0;
       requestData.kiro_endpoint_mode = "q";
     } else {
       requestData.kiro_sticky_session_ttl_seconds = normalizeKiroStickySessionTTL(
         requestData.kiro_sticky_session_ttl_seconds,
       );
+    }
+    // 组合分组可把请求路由到 Kiro 账号，缓存计费设置对它也有效。
+    if (requestData.platform !== "kiro" && requestData.platform !== "composite") {
+      requestData.kiro_cache_emulation_enabled = false;
+      requestData.kiro_cache_emulation_ratio = 0;
+      requestData.kiro_cache_emulation_mode = "uniform";
+      requestData.kiro_cache_creation_emulation_ratio = 0;
+      requestData.kiro_cache_read_emulation_ratio = 0;
     }
     resetDisabledBatchImagePricing(requestData);
     requestData.batch_image_discount_multiplier = normalizeRateMultiplier(
@@ -6875,9 +6908,10 @@ const handleEdit = async (group: AdminGroup) => {
     group.kiro_sticky_session_ttl_seconds ?? 3600;
   editForm.kiro_cache_emulation_enabled = group.kiro_cache_emulation_enabled ?? false;
   editForm.kiro_cache_emulation_ratio = group.kiro_cache_emulation_ratio ?? 1;
-  editForm.kiro_cache_emulation_mode = group.kiro_cache_emulation_mode === "independent"
-    ? "independent"
-    : "uniform";
+  editForm.kiro_cache_emulation_mode =
+    group.kiro_cache_emulation_mode === "independent" || group.kiro_cache_emulation_mode === "kiro"
+      ? group.kiro_cache_emulation_mode
+      : "uniform";
   editForm.kiro_cache_creation_emulation_ratio =
     group.kiro_cache_creation_emulation_ratio ?? group.kiro_cache_emulation_ratio ?? 1;
   editForm.kiro_cache_read_emulation_ratio =
@@ -7086,16 +7120,19 @@ const handleUpdateGroup = async () => {
     if (payload.platform !== "kiro") {
       payload.kiro_auto_sticky_enabled = false;
       payload.kiro_sticky_session_ttl_seconds = 0;
-      payload.kiro_cache_emulation_enabled = false;
-      payload.kiro_cache_emulation_ratio = 0;
-      payload.kiro_cache_emulation_mode = "uniform";
-      payload.kiro_cache_creation_emulation_ratio = 0;
-      payload.kiro_cache_read_emulation_ratio = 0;
       payload.kiro_endpoint_mode = "q";
     } else {
       payload.kiro_sticky_session_ttl_seconds = normalizeKiroStickySessionTTL(
         payload.kiro_sticky_session_ttl_seconds,
       );
+    }
+    // 组合分组可把请求路由到 Kiro 账号，缓存计费设置对它也有效。
+    if (payload.platform !== "kiro" && payload.platform !== "composite") {
+      payload.kiro_cache_emulation_enabled = false;
+      payload.kiro_cache_emulation_ratio = 0;
+      payload.kiro_cache_emulation_mode = "uniform";
+      payload.kiro_cache_creation_emulation_ratio = 0;
+      payload.kiro_cache_read_emulation_ratio = 0;
     }
     resetDisabledBatchImagePricing(payload);
     payload.batch_image_discount_multiplier = normalizeRateMultiplier(

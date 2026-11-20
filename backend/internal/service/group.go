@@ -164,9 +164,19 @@ func IsGroupBindableInSimpleMode(group *Group) bool {
 	return group != nil && group.Platform != PlatformComposite
 }
 
+// supportsKiroCacheEmulation 报告分组平台能否配置 Kiro 缓存计费：Kiro 分组，以及
+// 会把请求路由到 Kiro 账号的组合分组。缓存计费只在 Kiro 转发路径里生效，组合分组
+// 路由到其他平台的请求不受影响。
+func (g *Group) supportsKiroCacheEmulation() bool {
+	return g != nil && (g.Platform == PlatformKiro || g.Platform == PlatformComposite)
+}
+
 func (g *Group) EffectiveKiroCacheEmulationEnabled() bool {
-	if g == nil || g.Platform != PlatformKiro || !g.KiroCacheEmulationEnabled {
+	if !g.supportsKiroCacheEmulation() || !g.KiroCacheEmulationEnabled {
 		return false
+	}
+	if g.EffectiveKiroCacheEmulationMode() == KiroCacheEmulationModeKiro {
+		return true
 	}
 	creationRatio, readRatio := g.EffectiveKiroCacheEmulationRatios()
 	return creationRatio > 0 || readRatio > 0
@@ -198,7 +208,7 @@ func (g *Group) EffectiveKiroStickySessionTTL() time.Duration {
 }
 
 func (g *Group) EffectiveKiroCacheEmulationRatio() float64 {
-	if g == nil || g.Platform != PlatformKiro || !g.KiroCacheEmulationEnabled {
+	if !g.supportsKiroCacheEmulation() || !g.KiroCacheEmulationEnabled {
 		return 0
 	}
 	return normalizeKiroCacheEmulationRatio(g.KiroCacheEmulationRatio)
@@ -207,17 +217,27 @@ func (g *Group) EffectiveKiroCacheEmulationRatio() float64 {
 const (
 	KiroCacheEmulationModeUniform     = "uniform"
 	KiroCacheEmulationModeIndependent = "independent"
+	// KiroCacheEmulationModeKiro 让计费直接采用 Kiro 上游的实际缓存命中量（由
+	// kiro_prompt_cache.go 按 Kiro 实测规则推断，经 credits 校验）：命中部分记
+	// cache_read，其余记普通 input，不记 cache_creation（Kiro 没有缓存写入加价）。
+	// 此模式不用比例，也不走 kiro_cache_emulation.go 的断点模拟。
+	KiroCacheEmulationModeKiro = "kiro"
 )
 
 func (g *Group) EffectiveKiroCacheEmulationMode() string {
-	if g == nil || g.Platform != PlatformKiro {
+	if !g.supportsKiroCacheEmulation() {
 		return KiroCacheEmulationModeUniform
 	}
 	return normalizeKiroCacheEmulationMode(g.KiroCacheEmulationMode)
 }
 
+// FollowsKiroUpstreamCache 报告该分组的缓存计费是否直接采用 Kiro 实际命中量。
+func (g *Group) FollowsKiroUpstreamCache() bool {
+	return g.EffectiveKiroCacheEmulationEnabled() && g.EffectiveKiroCacheEmulationMode() == KiroCacheEmulationModeKiro
+}
+
 func (g *Group) EffectiveKiroCacheCreationEmulationRatio() float64 {
-	if g == nil || g.Platform != PlatformKiro || !g.KiroCacheEmulationEnabled {
+	if !g.supportsKiroCacheEmulation() || !g.KiroCacheEmulationEnabled {
 		return 0
 	}
 	if g.EffectiveKiroCacheEmulationMode() == KiroCacheEmulationModeUniform {
@@ -227,7 +247,7 @@ func (g *Group) EffectiveKiroCacheCreationEmulationRatio() float64 {
 }
 
 func (g *Group) EffectiveKiroCacheReadEmulationRatio() float64 {
-	if g == nil || g.Platform != PlatformKiro || !g.KiroCacheEmulationEnabled {
+	if !g.supportsKiroCacheEmulation() || !g.KiroCacheEmulationEnabled {
 		return 0
 	}
 	if g.EffectiveKiroCacheEmulationMode() == KiroCacheEmulationModeUniform {
@@ -273,6 +293,8 @@ func normalizeKiroCacheEmulationMode(mode string) string {
 	switch mode {
 	case KiroCacheEmulationModeIndependent:
 		return KiroCacheEmulationModeIndependent
+	case KiroCacheEmulationModeKiro:
+		return KiroCacheEmulationModeKiro
 	default:
 		return KiroCacheEmulationModeUniform
 	}
@@ -285,6 +307,8 @@ func normalizeKiroCacheEmulationFields(g *Group) {
 	if g.Platform != PlatformKiro {
 		g.KiroAutoStickyEnabled = false
 		g.KiroStickySessionTTLSeconds = 0
+	}
+	if !g.supportsKiroCacheEmulation() {
 		g.KiroCacheEmulationEnabled = false
 		g.KiroCacheEmulationRatio = 0
 		g.KiroCacheEmulationMode = KiroCacheEmulationModeUniform
@@ -292,7 +316,9 @@ func normalizeKiroCacheEmulationFields(g *Group) {
 		g.KiroCacheReadEmulationRatio = 0
 		return
 	}
-	g.KiroStickySessionTTLSeconds = normalizeKiroStickySessionTTLSeconds(g.KiroStickySessionTTLSeconds)
+	if g.Platform == PlatformKiro {
+		g.KiroStickySessionTTLSeconds = normalizeKiroStickySessionTTLSeconds(g.KiroStickySessionTTLSeconds)
+	}
 	g.KiroCacheEmulationMode = normalizeKiroCacheEmulationMode(g.KiroCacheEmulationMode)
 	g.KiroCacheEmulationRatio = normalizeKiroCacheEmulationRatio(g.KiroCacheEmulationRatio)
 	if g.KiroCacheEmulationMode == KiroCacheEmulationModeUniform {

@@ -261,7 +261,7 @@ type CreateGroupRequest struct {
 	KiroAutoStickyEnabled           *bool    `json:"kiro_auto_sticky_enabled"`
 	KiroStickySessionTTLSeconds     *int     `json:"kiro_sticky_session_ttl_seconds"`
 	KiroCacheEmulationRatio         *float64 `json:"kiro_cache_emulation_ratio" binding:"omitempty,gte=0,lte=1"`
-	KiroCacheEmulationMode          *string  `json:"kiro_cache_emulation_mode" binding:"omitempty,oneof=uniform independent"`
+	KiroCacheEmulationMode          *string  `json:"kiro_cache_emulation_mode" binding:"omitempty,oneof=uniform independent kiro"`
 	KiroCacheCreationEmulationRatio *float64 `json:"kiro_cache_creation_emulation_ratio" binding:"omitempty,gte=0,lte=1"`
 	KiroCacheReadEmulationRatio     *float64 `json:"kiro_cache_read_emulation_ratio" binding:"omitempty,gte=0,lte=1"`
 	KiroEndpointMode                *string  `json:"kiro_endpoint_mode"`
@@ -348,7 +348,7 @@ type UpdateGroupRequest struct {
 	KiroAutoStickyEnabled           *bool    `json:"kiro_auto_sticky_enabled"`
 	KiroStickySessionTTLSeconds     *int     `json:"kiro_sticky_session_ttl_seconds"`
 	KiroCacheEmulationRatio         *float64 `json:"kiro_cache_emulation_ratio" binding:"omitempty,gte=0,lte=1"`
-	KiroCacheEmulationMode          *string  `json:"kiro_cache_emulation_mode" binding:"omitempty,oneof=uniform independent"`
+	KiroCacheEmulationMode          *string  `json:"kiro_cache_emulation_mode" binding:"omitempty,oneof=uniform independent kiro"`
 	KiroCacheCreationEmulationRatio *float64 `json:"kiro_cache_creation_emulation_ratio" binding:"omitempty,gte=0,lte=1"`
 	KiroCacheReadEmulationRatio     *float64 `json:"kiro_cache_read_emulation_ratio" binding:"omitempty,gte=0,lte=1"`
 	KiroEndpointMode                *string  `json:"kiro_endpoint_mode"`

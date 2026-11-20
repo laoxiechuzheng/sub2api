@@ -134,6 +134,34 @@ type KiroRequestContext struct {
 	PromptCache KiroPromptCacheHint
 	// UpstreamSentAt 是本次请求实际发往 Kiro 的时刻，Kiro 缓存 5 分钟有效期从这里算。
 	UpstreamSentAt time.Time
+	// CacheFollowsUpstream 为 true 时，usage 的缓存字段直接采用 Kiro 实际命中量
+	// （credits 校验过的 CachedPromptTokens，否则用 PromptCache 推断值）：命中记
+	// cache_read，其余记 input，cache_creation 为 0。此时 CacheEmulationUsage 应为 nil。
+	CacheFollowsUpstream bool
+}
+
+// applyKiroUpstreamCacheUsage 把提示词基数 base 按 Kiro 实际命中量拆成 cache_read 与 input。
+// est 为 credits 反推结果（Method 为 credits 时其 CachedPromptTokens 已与 credits 对上）；
+// 否则退回调用方推断的命中量。命中量不超过 base。
+func applyKiroUpstreamCacheUsage(usage Usage, requestCtx KiroRequestContext, est KiroOutputEstimate, base int) Usage {
+	if base < 0 {
+		base = 0
+	}
+	cached := 0
+	switch {
+	case est.Method == KiroOutputMethodCredits:
+		cached = est.CachedPromptTokens
+	case requestCtx.PromptCache.Resolved:
+		cached = requestCtx.PromptCache.CachedTokens
+	}
+	cached = min(max(cached, 0), base)
+	usage.CacheReadInputTokens = cached
+	usage.CacheCreationInputTokens = 0
+	usage.CacheCreation5mInputTokens = 0
+	usage.CacheCreation1hInputTokens = 0
+	usage.InputTokens = base - cached
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.CacheReadInputTokens
+	return usage
 }
 
 type KiroBuildResult struct {
@@ -689,14 +717,24 @@ func ParseNonStreamingEventStreamWithContext(body io.Reader, model string, reque
 			usage.OutputTokens = creditOutput
 			base = prompt
 		}
-		if requestCtx.CacheEmulationUsage != nil {
+		switch {
+		case requestCtx.CacheFollowsUpstream:
+			usage = applyKiroUpstreamCacheUsage(usage, requestCtx, outputEstimate, base)
+		case requestCtx.CacheEmulationUsage != nil:
 			usage = rescaleKiroCacheUsageAgainstTotal(usage, requestCtx.CacheEmulationUsage, base, requestCtx.EstimatedInputTokens)
-		} else {
+		default:
 			usage.InputTokens = base
 			// parseEventStream 已按旧 input 填过 TotalTokens，这里要重算。
 			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
 	} else {
+		if requestCtx.CacheFollowsUpstream && !signals.ProviderInputTokens {
+			base := usage.InputTokens
+			if base == 0 {
+				base = requestCtx.EstimatedInputTokens
+			}
+			usage = applyKiroUpstreamCacheUsage(usage, requestCtx, outputEstimate, base)
+		}
 		if requestCtx.CacheEmulationUsage != nil {
 			usage = mergeKiroCacheEmulationUsage(usage, requestCtx.CacheEmulationUsage)
 		}
@@ -704,7 +742,7 @@ func ParseNonStreamingEventStreamWithContext(body io.Reader, model string, reque
 		// 未生效且上游没有 tokenUsage.uncachedInputTokens 时用调用方预估值兜底,
 		// 避免响应体 usage.input_tokens 输出 0。放在 merge 之后,让缓存模拟的
 		// 更精确取值优先。
-		if usage.InputTokens == 0 && requestCtx.EstimatedInputTokens > 0 {
+		if usage.InputTokens == 0 && usage.CacheReadInputTokens == 0 && usage.CacheCreationInputTokens == 0 && requestCtx.EstimatedInputTokens > 0 {
 			usage.InputTokens = requestCtx.EstimatedInputTokens
 			usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens
 		}
@@ -770,7 +808,10 @@ func StreamEventStreamAsAnthropicWithContext(ctx context.Context, body io.Reader
 		}
 		useMsgID := newClaudeMessageID()
 		startUsage := usage
-		if requestCtx.CacheEmulationUsage != nil {
+		if requestCtx.CacheFollowsUpstream {
+			// message_start 时还没有 credits，先按推断命中量拆分；终值在 message_delta 里给出。
+			startUsage = applyKiroUpstreamCacheUsage(startUsage, requestCtx, KiroOutputEstimate{}, startUsage.InputTokens)
+		} else if requestCtx.CacheEmulationUsage != nil {
 			startUsage = mergeKiroCacheEmulationUsage(startUsage, requestCtx.CacheEmulationUsage)
 		}
 		usageMap := map[string]any{
@@ -1408,7 +1449,9 @@ func StreamEventStreamAsAnthropicWithContext(ctx context.Context, body io.Reader
 				if est := requestCtx.TokenizerAlgorithm.CountTokens(outputTextBuf.String()); est > partial.OutputTokens {
 					partial.OutputTokens = est
 				}
-				if requestCtx.CacheEmulationUsage != nil {
+				if requestCtx.CacheFollowsUpstream && !providerInputTokens {
+					partial = applyKiroUpstreamCacheUsage(partial, requestCtx, KiroOutputEstimate{}, partial.InputTokens)
+				} else if requestCtx.CacheEmulationUsage != nil {
 					partial = mergeKiroCacheEmulationUsage(partial, requestCtx.CacheEmulationUsage)
 				}
 				partial.TotalTokens = partial.InputTokens + partial.OutputTokens + partial.CacheReadInputTokens + partial.CacheCreationInputTokens
@@ -1506,12 +1549,17 @@ func StreamEventStreamAsAnthropicWithContext(ctx context.Context, body io.Reader
 			usage.OutputTokens = creditOutput
 			base = prompt
 		}
-		if requestCtx.CacheEmulationUsage != nil {
+		switch {
+		case requestCtx.CacheFollowsUpstream:
+			usage = applyKiroUpstreamCacheUsage(usage, requestCtx, outputEstimate, base)
+		case requestCtx.CacheEmulationUsage != nil:
 			usage = rescaleKiroCacheUsageAgainstTotal(usage, requestCtx.CacheEmulationUsage, base, inputTokens)
-		} else {
+		default:
 			usage.InputTokens = base
 			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
+	} else if requestCtx.CacheFollowsUpstream && !providerInputTokens {
+		usage = applyKiroUpstreamCacheUsage(usage, requestCtx, outputEstimate, usage.InputTokens)
 	} else if requestCtx.CacheEmulationUsage != nil {
 		usage = mergeKiroCacheEmulationUsage(usage, requestCtx.CacheEmulationUsage)
 	}

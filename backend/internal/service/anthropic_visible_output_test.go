@@ -446,3 +446,33 @@ func TestAnthropicVisibleOutput_KiroEmptyEndTurnIsRequestScoped(t *testing.T) {
 		})
 	}
 }
+
+func TestAnthropicVisibleOutput_KiroTruncatedEmptyStreamAfterSuccessIsRequestScoped(t *testing.T) {
+	prevTracker := defaultKiroEmptyReplyTracker
+	defaultKiroEmptyReplyTracker = newKiroEmptyReplyTracker(time.Now)
+	t.Cleanup(func() { defaultKiroEmptyReplyTracker = prevTracker })
+
+	account := &Account{ID: 69, Platform: PlatformKiro}
+	// 先有一次正常出字的回复。
+	ok := "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1000}}}\n\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+	result, _, err := runAnthropicVisibleOutputStreamForAccount(t, ok, account)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// 另一条请求上游直接断流：没有 message_stop，也没有输出。
+	truncated := "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":177107}}}\n\n"
+	result, _, err = runAnthropicVisibleOutputStreamForAccount(t, truncated, account)
+	var failover *UpstreamFailoverError
+	require.ErrorAs(t, err, &failover)
+	require.Nil(t, result)
+	require.True(t, failover.RequestScopedTransient)
+
+	repo := &capacityShedAccountRepoStub{}
+	(&GatewayService{accountRepo: repo}).TempUnscheduleRetryableError(context.Background(), account.ID, failover)
+	require.Zero(t, repo.tempUnschedCalls)
+}

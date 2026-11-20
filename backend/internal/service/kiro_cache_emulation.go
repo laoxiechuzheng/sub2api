@@ -100,6 +100,10 @@ func (s *GatewayService) prepareKiroCacheEmulationUsage(ctx context.Context, acc
 	if group == nil || !group.EffectiveKiroCacheEmulationEnabled() || account == nil || account.ID <= 0 || len(body) == 0 {
 		return nil
 	}
+	if group.FollowsKiroUpstreamCache() {
+		// 计费直接采用 Kiro 实际命中量（translator 里按 CacheFollowsUpstream 处理），不做断点模拟。
+		return nil
+	}
 	profile, ok := buildKiroCacheProfile(ctx, s.kiroMeteringAlgorithm(ctx), body, model, inputTokens)
 	if !ok {
 		return nil
@@ -118,6 +122,10 @@ func (s *GatewayService) prepareKiroResponsesCacheEmulationUsage(ctx context.Con
 	if group == nil || !group.EffectiveKiroCacheEmulationEnabled() || account == nil || account.ID <= 0 || len(body) == 0 {
 		return nil
 	}
+	if group.FollowsKiroUpstreamCache() {
+		// 计费直接采用 Kiro 实际命中量（translator 里按 CacheFollowsUpstream 处理），不做断点模拟。
+		return nil
+	}
 	profile, ok := buildKiroResponsesCacheProfile(ctx, s.kiroMeteringAlgorithm(ctx), body, model, inputTokens)
 	if !ok {
 		return nil
@@ -134,6 +142,10 @@ func (s *GatewayService) buildKiroChatCompletionsCacheEmulationUsage(ctx context
 func (s *GatewayService) prepareKiroChatCompletionsCacheEmulationUsage(ctx context.Context, account *Account, group *Group, body []byte, model string, inputTokens int) *kiroCacheEmulationPlan {
 	NormalizeGroupRuntimeFields(group)
 	if group == nil || !group.EffectiveKiroCacheEmulationEnabled() || account == nil || account.ID <= 0 || len(body) == 0 {
+		return nil
+	}
+	if group.FollowsKiroUpstreamCache() {
+		// 计费直接采用 Kiro 实际命中量（translator 里按 CacheFollowsUpstream 处理），不做断点模拟。
 		return nil
 	}
 	profile, ok := buildKiroChatCompletionsCacheProfile(ctx, s.kiroMeteringAlgorithm(ctx), body, model, inputTokens)

@@ -52,3 +52,28 @@ func TestKiroEmptyReplyTrackerPrunesIdleAccounts(t *testing.T) {
 	_, stale := tr.byAccount[1]
 	require.False(t, stale)
 }
+
+func TestKiroEmptyReplyTrackerRecentSuccessKeepsAccountSchedulable(t *testing.T) {
+	now := time.Date(2026, 11, 21, 4, 34, 0, 0, time.UTC)
+	tr := newKiroEmptyReplyTracker(func() time.Time { return now })
+
+	// 生产 2026-11-21 04:34–04:39：一个长会话反复空回复（各次提示词大小不同），
+	// 同期账号仍在为其他请求正常出字 → 账号是好的，不冷却。
+	tr.recordSuccess(69)
+	for i, prompt := range []int{177107, 177194, 0, 176980} {
+		now = now.Add(20 * time.Second)
+		require.True(t, tr.recordAndIsRequestScoped(69, "claude-opus-5-5", prompt), "attempt %d", i)
+		if i == 1 {
+			tr.recordSuccess(69)
+		}
+	}
+
+	// 成功记录过期后，不同请求的空回复又按账号级处理。
+	now = now.Add(kiroEmptyReplyWindow + time.Second)
+	require.True(t, tr.recordAndIsRequestScoped(69, "claude-opus-5-5", 1000))
+	require.False(t, tr.recordAndIsRequestScoped(69, "claude-opus-5-5", 2000))
+
+	// 成功只算本账号。
+	tr.recordSuccess(70)
+	require.False(t, tr.recordAndIsRequestScoped(69, "claude-opus-5-5", 3000))
+}

@@ -270,6 +270,7 @@ func (s *GatewayService) forwardKiroMessages(ctx context.Context, c *gin.Context
 
 	cacheUsage := s.buildKiroCacheEmulationUsage(ctx, account, parsed.Group, body, mappedModel, inputTokens)
 	requestCtx.CacheEmulationUsage = cacheUsage.toKiroUsage()
+	requestCtx.CacheFollowsUpstream = parsed.Group.FollowsKiroUpstreamCache()
 	requestCtx.EstimatedInputTokens = inputTokens
 	requestCtx.TokenizerAlgorithm = s.kiroMeteringAlgorithm(ctx)
 	s.resolveKiroPromptCache(ctx, account, &requestCtx)
@@ -294,6 +295,8 @@ func (s *GatewayService) forwardKiroMessages(ctx context.Context, c *gin.Context
 	logKiroOutputEstimate(ctx, account, mappedModel, requestCtx, parseResult.OutputEstimate)
 	if parseResult.NoOutput {
 		logKiroEmptyResponse(ctx, account, mappedModel, parseResult.Usage, parseResult.StopReason)
+	} else {
+		defaultKiroEmptyReplyTracker.recordSuccess(account.ID)
 	}
 
 	c.Header("Content-Type", "application/json")
@@ -380,6 +383,7 @@ func (s *GatewayService) openKiroAnthropicStreamResponse(ctx context.Context, ac
 	// 请求已确认成功(2xx)，此时提交缓存前缀落盘才是安全的。
 	plan.commit()
 	requestCtx.CacheEmulationUsage = plan.result().toKiroUsage()
+	requestCtx.CacheFollowsUpstream = group.FollowsKiroUpstreamCache()
 	requestCtx.TokenizerAlgorithm = s.kiroMeteringAlgorithm(ctx)
 	s.resolveKiroPromptCache(ctx, account, &requestCtx)
 

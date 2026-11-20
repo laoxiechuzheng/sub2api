@@ -985,7 +985,7 @@ export default {
         composite: 'Composite',
       },
       kiroCache: {
-        description: '仅对当前 Kiro 分组模拟 Anthropic Prompt Cache 用量。',
+        description: '对 Kiro 分组，以及组合分组里路由到 Kiro 账号的请求，模拟 Anthropic Prompt Cache 用量。',
         enabled: '启用模拟缓存',
         endpointMode: 'Kiro 推理 endpoint',
         endpointModeAuto: '自动切换（429 自动切换 Q/KRS）',
@@ -1000,6 +1000,8 @@ export default {
         creationRatio: '缓存创建比例',
         readRatio: '缓存读取比例',
         independentRatioHint: '创建和读取比例分别作用于对应缓存 token，未计入缓存的部分归入普通输入。',
+        kiroMode: '跟随 Kiro 实际命中',
+        kiroModeHint: '按 Kiro 上游实际缓存命中计费：命中部分记缓存读取，其余记普通输入，不计缓存创建；比例不生效。Kiro 缓存约 5 分钟有效。',
         stickyRouting: '启用 Kiro 账号粘性路由',
         stickyRoutingHint: '开启后，同一会话的多轮对话会尽量固定到同一账号；请求头传 X-Session-ID 时仍优先使用显式会话绑定。',
         stickyTTL: '粘性绑定时长（秒）',

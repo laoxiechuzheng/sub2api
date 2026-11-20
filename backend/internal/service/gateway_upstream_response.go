@@ -997,8 +997,11 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			// 同账号其他请求照常成功。按请求级处理，不对账号做一分钟临时封禁，否则该账号
 			// 若是分组里某模型唯一的来源，这一条坏请求会让所有用户在冷却期内 503。
 			// 不同请求都空回复时（账号级故障）仍保留冷却，见 kiroEmptyReplyTracker。
-			RequestScopedTransient: reason == "empty_visible_output" && sawTerminalEvent && account != nil && account.IsKiro() &&
-				defaultKiroEmptyReplyTracker.recordAndIsRequestScoped(account.ID, mappedModel, usage.InputTokens),
+			// 不要求已见终态：上游直接断流（无 message_stop）时同样只说明这条请求出了问题，
+			// 是否账号级由近期成功与指纹判断。指纹用提示词总量，同一请求各次重试一致。
+			RequestScopedTransient: reason == "empty_visible_output" && account != nil && account.IsKiro() &&
+				defaultKiroEmptyReplyTracker.recordAndIsRequestScoped(account.ID, mappedModel,
+					usage.InputTokens+usage.CacheReadInputTokens+usage.CacheCreationInputTokens),
 		}
 	}
 	useNoopDeltaKeepalive := c != nil && c.Request != nil && shouldUseClaudeCodeNoopDeltaKeepalive(c.GetHeader("User-Agent"))
@@ -1322,6 +1325,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				if firstTokenMs == nil && visibleOutput.visible {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
+					if account != nil && account.IsKiro() {
+						defaultKiroEmptyReplyTracker.recordSuccess(account.ID)
+					}
 				}
 				for _, block := range outputBlocks {
 					if clientDisconnected {
