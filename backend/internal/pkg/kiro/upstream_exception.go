@@ -29,6 +29,10 @@ func (e *KiroUpstreamException) Error() string {
 // KiroContentLengthExceededException 表示输出达到上限：按 stop_reason max_tokens 正常收尾，不当失败。
 const KiroContentLengthExceededException = "ContentLengthExceededException"
 
+// KiroContentFilteredException 表示上游以正常事件帧下发的"内容审核拒绝"：帧里带
+// stopReason=CONTENT_FILTERED 与 stopDetails.refusal.explanation，且没有任何正文。
+const KiroContentFilteredException = "ContentFilteredException"
+
 const kiroUpstreamExceptionPayloadLimit = 4096
 
 // upstreamExceptionFromFrame 返回帧携带的上游失败；普通事件帧返回 nil。
@@ -43,7 +47,7 @@ func upstreamExceptionFromFrame(msg *eventStreamMessage) *KiroUpstreamException 
 	case "error":
 		typ = msg.ErrorCode
 	default:
-		return nil
+		return contentFilteredExceptionFromFrame(msg)
 	}
 	payload := msg.Payload
 	if len(payload) > kiroUpstreamExceptionPayloadLimit {
@@ -70,6 +74,46 @@ func upstreamExceptionFromFrame(msg *eventStreamMessage) *KiroUpstreamException 
 	}
 	return &KiroUpstreamException{
 		Type:    typ,
+		Message: message,
+		Payload: append([]byte(nil), payload...),
+	}
+}
+
+// contentFilteredExceptionFromFrame 识别上游在正常事件帧里下发的"内容审核拒绝"：
+// {"stopReason":"CONTENT_FILTERED","stopDetails":{"refusal":{"explanation":"..."}}}。
+// 这类帧不带 :message-type=exception，以前被当作 metadataEvent 忽略，整条流只剩用量帧，
+// 网关按"上游无可见输出"重试三次并临时停调度账号，客户端最终只拿到 502。
+// 只认没有正文的元数据/结束帧：assistantResponseEvent 里的 refusal 是正常回复内容。
+func contentFilteredExceptionFromFrame(msg *eventStreamMessage) *KiroUpstreamException {
+	switch msg.EventType {
+	case "metadataEvent", "messageMetadataEvent", "usageEvent", "messageStopEvent", "meteringEvent":
+	default:
+		return nil
+	}
+	var body struct {
+		StopReason  string `json:"stopReason"`
+		StopDetails struct {
+			Refusal struct {
+				Explanation string `json:"explanation"`
+			} `json:"refusal"`
+		} `json:"stopDetails"`
+	}
+	if err := json.Unmarshal(msg.Payload, &body); err != nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(body.StopReason), "CONTENT_FILTERED") {
+		return nil
+	}
+	message := strings.TrimSpace(body.StopDetails.Refusal.Explanation)
+	if message == "" {
+		message = "Kiro refused this request (content filter)"
+	}
+	payload := msg.Payload
+	if len(payload) > kiroUpstreamExceptionPayloadLimit {
+		payload = payload[:kiroUpstreamExceptionPayloadLimit]
+	}
+	return &KiroUpstreamException{
+		Type:    KiroContentFilteredException,
 		Message: message,
 		Payload: append([]byte(nil), payload...),
 	}

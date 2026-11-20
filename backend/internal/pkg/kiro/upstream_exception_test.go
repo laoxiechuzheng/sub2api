@@ -174,3 +174,55 @@ func TestNonStreamNoOutputFlag(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.NoOutput)
 }
+
+// 上游对内容审核拒绝下发的是普通 metadataEvent（无正文），旧逻辑当成空回复：
+// 网关重试三次后把账号临时停调度，客户端只看到 502。
+func TestContentFilteredMetadataEventBecomesUpstreamException(t *testing.T) {
+	refusal := map[string]any{
+		"stopDetails": map[string]any{
+			"refusal": map[string]any{
+				"explanation": "Your access to this model has been temporarily restricted due to excessive content refusals.",
+			},
+		},
+		"stopReason": "CONTENT_FILTERED",
+	}
+	stream := bytes.NewBuffer(nil)
+	_, _ = stream.Write(buildEventStreamFrame(t, "metadataEvent", refusal))
+
+	var out bytes.Buffer
+	result, err := StreamEventStreamAsAnthropicWithContext(context.Background(), stream, &out, "claude-opus-5-5", 100, KiroRequestContext{})
+	require.Nil(t, result)
+	var exc *KiroUpstreamException
+	require.ErrorAs(t, err, &exc)
+	require.Equal(t, KiroContentFilteredException, exc.Type)
+	require.Contains(t, exc.Message, "excessive content refusals")
+}
+
+func TestNonStreamContentFilteredMetadataEventReturnsException(t *testing.T) {
+	stream := bytes.NewBuffer(nil)
+	_, _ = stream.Write(buildEventStreamFrame(t, "metadataEvent", map[string]any{
+		"stopDetails": map[string]any{"refusal": map[string]any{"explanation": "blocked"}},
+		"stopReason":  "CONTENT_FILTERED",
+	}))
+
+	result, err := ParseNonStreamingEventStreamWithContext(stream, "claude-opus-5-5", KiroRequestContext{})
+	require.Nil(t, result)
+	var exc *KiroUpstreamException
+	require.ErrorAs(t, err, &exc)
+	require.Equal(t, KiroContentFilteredException, exc.Type)
+}
+
+// assistantResponseEvent 里的 refusal 是正常可见回复，不能当成异常吃掉正文。
+func TestAssistantRefusalContentIsNotAnUpstreamException(t *testing.T) {
+	stream := bytes.NewBuffer(nil)
+	_, _ = stream.Write(buildEventStreamFrame(t, "assistantResponseEvent", map[string]any{
+		"assistantResponseEvent": map[string]any{"content": "I can't help with that."},
+		"stopDetails":            map[string]any{"refusal": map[string]any{"explanation": "policy"}},
+		"stopReason":             "CONTENT_FILTERED",
+	}))
+
+	var out bytes.Buffer
+	_, err := StreamEventStreamAsAnthropicWithContext(context.Background(), stream, &out, "claude-opus-5-5", 100, KiroRequestContext{})
+	require.NoError(t, err)
+	require.Contains(t, out.String(), "I can't help with that.")
+}

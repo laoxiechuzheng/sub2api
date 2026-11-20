@@ -33,6 +33,7 @@ func TestKiroUpstreamExceptionStatus(t *testing.T) {
 		{"service quota without code only cools down", kiropkg.KiroUpstreamException{Type: "ServiceQuotaExceededException", Message: "Quota exceeded for this request"}, http.StatusTooManyRequests},
 		{"usage limit wording only cools down", kiropkg.KiroUpstreamException{Type: "ValidationException", Message: "You have reached your usage limit for this month."}, http.StatusTooManyRequests},
 		{"access denied stays account-safe", kiropkg.KiroUpstreamException{Type: "AccessDeniedException", Message: "denied"}, http.StatusInternalServerError},
+		{"content filtered", kiropkg.KiroUpstreamException{Type: "ContentFilteredException", Message: "Your access to this model has been temporarily restricted due to excessive content refusals."}, http.StatusBadRequest},
 		{"internal", kiropkg.KiroUpstreamException{Type: "InternalServerException"}, http.StatusInternalServerError},
 		{"unknown", kiropkg.KiroUpstreamException{Type: "UnknownUpstreamError"}, http.StatusInternalServerError},
 	}

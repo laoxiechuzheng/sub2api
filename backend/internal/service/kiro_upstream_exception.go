@@ -47,6 +47,9 @@ func kiroUpstreamExceptionStatus(exc *kiropkg.KiroUpstreamException) int {
 	raw := exc.Type + " " + exc.Message + " " + string(exc.Payload)
 	text := strings.ToLower(raw)
 	switch {
+	case strings.Contains(typ, "contentfiltered"):
+		// 上游内容审核拒绝：请求本身被拒，换号、冷却或重试都不会成功，按 400 直接回给客户端。
+		return http.StatusBadRequest
 	case looksLikeKiroMonthlyRequestCountError(raw) || strings.Contains(raw, kiroOverageLimitExceededCode):
 		return http.StatusPaymentRequired
 	case strings.Contains(typ, "throttl") || strings.Contains(text, "too many requests") || strings.Contains(text, "rate exceeded"):
