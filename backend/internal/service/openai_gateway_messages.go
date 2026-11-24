@@ -1283,7 +1283,18 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 					shouldFailover = openAIStreamErrorEventShouldFailover(payloadBytes, message)
 				}
 				if !clientOutputStarted && shouldFailover {
-					streamFailoverErr = s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payloadBytes, message, upstreamModel, resp.Header)
+					failover := s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payloadBytes, message, upstreamModel, resp.Header)
+					// Some Responses relays fail transiently before emitting any content.
+					// Permit one pool-mode replay of this explicit 502; the handler still
+					// blocks replay once it observes usage or a disconnected client.
+					if eventType == "response.failed" && failover.StatusCode == http.StatusBadGateway &&
+						account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey && account.IsPoolMode() &&
+						openAIStreamFailedEventErrorCode(payloadBytes) == "middleware_failed" &&
+						(account.GetPoolModeRetryStatusCodes() == nil || account.IsPoolModeRetryableStatus(http.StatusBadGateway)) {
+						failover.RetryableOnSameAccount = true
+						failover.SameAccountRetryMax = 1
+					}
+					streamFailoverErr = failover
 					return true
 				}
 				s.handleOpenAIStreamTerminalAccountSideEffects(c, account, payloadBytes, message, resp.Header, upstreamModel)

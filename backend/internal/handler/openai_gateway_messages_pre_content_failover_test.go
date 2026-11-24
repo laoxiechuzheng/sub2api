@@ -75,6 +75,83 @@ func preContentStallThenFail(failed string) *http.Response {
 	return preContentSSEResponse(pr)
 }
 
+const preContentMiddlewareFailure = `data: {"type":"response.failed","error":{"code":"middleware_failed","type":"server_error","message":"Response middleware returned an invalid stream."},"response":{"status":"failed","error":{"code":"middleware_failed","type":"server_error","message":"Response middleware returned an invalid stream."}}}` + "\n\n"
+
+func TestOpenAIMessagesMiddlewareFailedRetriesOnceInPoolBeforeOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		pool  bool
+		cap   int
+		hits  int
+		fail  bool
+		codes []any
+	}{
+		{name: "one transient failure", pool: true, cap: 3, hits: 2},
+		{name: "persistent failure is bounded", pool: true, cap: 3, hits: 2, fail: true},
+		{name: "disabled retry", pool: true, cap: 0, hits: 1, fail: true},
+		{name: "outside pool mode", cap: 3, hits: 1, fail: true},
+		{name: "explicit status list is respected", pool: true, cap: 3, hits: 1, fail: true, codes: []any{429}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accounts := preContentAccounts(1)
+			accounts[0].Credentials["pool_mode"] = tc.pool
+			accounts[0].Credentials["pool_mode_retry_count"] = tc.cap
+			if tc.codes != nil {
+				accounts[0].Credentials["pool_mode_retry_status_codes"] = tc.codes
+			}
+			rec, upstream := serveMessagesScenario(t, preContentFailoverScenario{
+				accounts: accounts,
+				respond: func(call int) (*http.Response, error) {
+					if call == 1 || tc.fail {
+						return preContentSSEResponse(io.NopCloser(strings.NewReader(preContentHandlerCreated + preContentMiddlewareFailure))), nil
+					}
+					return preContentSSEResponse(io.NopCloser(strings.NewReader(preContentHandlerSuccess))), nil
+				},
+			})
+			require.Equal(t, tc.hits, upstream.calls(), rec.Body.String())
+			if tc.fail {
+				require.NotContains(t, rec.Body.String(), "event: message_start")
+			} else {
+				require.Equal(t, 1, strings.Count(rec.Body.String(), "event: message_start"))
+				require.Contains(t, rec.Body.String(), "answer from second account")
+			}
+		})
+	}
+}
+
+func TestOpenAIMessagesMiddlewareFailedDoesNotRetryAfterContentOrUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "text", body: preContentHandlerCreated +
+			`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"part already delivered"}` + "\n\n" + preContentMiddlewareFailure},
+		{name: "tool arguments", body: preContentHandlerCreated +
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"lookup","arguments":""}}` + "\n\n" +
+			`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"}` + "\n\n" + preContentMiddlewareFailure},
+		{name: "reported usage", body: preContentHandlerCreated + strings.Replace(preContentMiddlewareFailure, `"response":{"status":"failed"`, `"response":{"status":"failed","usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}`, 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accounts := preContentAccounts(2)
+			accounts[0].Credentials["pool_mode"] = true
+			rec, upstream := serveMessagesScenario(t, preContentFailoverScenario{
+				accounts: accounts,
+				respond: func(call int) (*http.Response, error) {
+					if call == 1 {
+						return preContentSSEResponse(io.NopCloser(strings.NewReader(tc.body))), nil
+					}
+					return preContentSSEResponse(io.NopCloser(strings.NewReader(preContentHandlerSuccess))), nil
+				},
+			})
+			require.Equal(t, 1, upstream.calls(), rec.Body.String())
+			require.NotContains(t, rec.Body.String(), "answer from second account")
+			if tc.name != "reported usage" {
+				requireEndsWithSSEError(t, rec.Body.String())
+			}
+		})
+	}
+}
+
 type unexpectedEOFReader struct{}
 
 func (unexpectedEOFReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }

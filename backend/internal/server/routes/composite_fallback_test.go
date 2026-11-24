@@ -516,6 +516,31 @@ func TestCompositeFallbackCommittedStreamEndsWithProtocolTerminalEvent(t *testin
 	}
 }
 
+func TestCompositeFallbackCommittedResponsesPreservesStructuredError(t *testing.T) {
+	route := compositeFallbackRoute(service.CompositeRouteFallback{UpstreamModel: "backup"})
+	router, calls := newCompositeFallbackRouter(t, route, func(c *gin.Context, attempt int) {
+		if attempt == 0 {
+			writeSSE(c, ": keepalive\n\n", "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}\n\n")
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"type": "invalid_request_error", "code": "invalid_encrypted_content", "param": "input[0]",
+			"message": "Cannot read encrypted content", "extra": "not a standard error field",
+		}})
+	})
+	recorder := serveCompositeFallback(router, "/v1/responses", `{"model":"gpt-6.1-sol","stream":true}`)
+	require.Len(t, *calls, 2)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	body := strings.TrimPrefix(recorder.Body.String(), ": keepalive\n\n")
+	data, ok := strings.CutPrefix(body, "event: response.failed\ndata: ")
+	require.True(t, ok, body)
+	require.Equal(t, "invalid_encrypted_content", gjson.Get(data, "response.error.code").String())
+	require.Equal(t, "invalid_request_error", gjson.Get(data, "response.error.type").String())
+	require.Equal(t, "input[0]", gjson.Get(data, "response.error.param").String())
+	require.Equal(t, "Cannot read encrypted content", gjson.Get(data, "response.error.message").String())
+	require.False(t, gjson.Get(data, "response.error.extra").Exists())
+}
+
 // If the final attempt writes nothing, a committed stream ends with the last
 // upstream error event — without re-sending the discarded attempt's preamble.
 func TestCompositeFallbackCommittedStreamReusesOnlyErrorEvents(t *testing.T) {

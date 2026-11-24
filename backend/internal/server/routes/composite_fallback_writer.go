@@ -676,6 +676,23 @@ func compositeSSEErrorFrame(protocol compositeSSEProtocol, body []byte, status i
 	switch protocol {
 	case compositeSSEProtocolResponses:
 		event = "response.failed"
+		responseError := map[string]any{"code": errType, "message": message}
+		if gjson.ValidBytes(body) {
+			root := gjson.ParseBytes(body)
+			for _, prefix := range []string{"error.", "response.error."} {
+				code := root.Get(prefix + "code")
+				if code.Type != gjson.String || strings.TrimSpace(code.Str) == "" {
+					continue
+				}
+				responseError["code"] = strings.TrimSpace(code.Str)
+				for _, field := range []string{"type", "param"} {
+					if value := root.Get(prefix + field); value.Type == gjson.String && strings.TrimSpace(value.Str) != "" {
+						responseError[field] = strings.TrimSpace(value.Str)
+					}
+				}
+				break
+			}
+		}
 		payload = map[string]any{
 			"type":            "response.failed",
 			"sequence_number": 0,
@@ -685,7 +702,7 @@ func compositeSSEErrorFrame(protocol compositeSSEProtocol, body []byte, status i
 				"created_at": time.Now().Unix(),
 				"status":     "failed",
 				"output":     []any{},
-				"error":      map[string]any{"code": errType, "message": message},
+				"error":      responseError,
 			},
 		}
 	case compositeSSEProtocolAnthropic:
