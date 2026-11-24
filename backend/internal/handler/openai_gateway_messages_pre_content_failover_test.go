@@ -77,6 +77,46 @@ func preContentStallThenFail(failed string) *http.Response {
 
 const preContentMiddlewareFailure = `data: {"type":"response.failed","error":{"code":"middleware_failed","type":"server_error","message":"Response middleware returned an invalid stream."},"response":{"status":"failed","error":{"code":"middleware_failed","type":"server_error","message":"Response middleware returned an invalid stream."}}}` + "\n\n"
 
+const preContentSignatureOnly = preContentHandlerCreated +
+	`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"reasoning_1","type":"reasoning","summary":[]}}` + "\n\n" +
+	`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"reasoning_1","type":"reasoning","encrypted_content":"opaque-signature","summary":[]}}` + "\n\n"
+
+func TestOpenAIMessagesMiddlewareFailedAfterSignatureOnlyCanRecover(t *testing.T) {
+	accounts := preContentAccounts(1)
+	accounts[0].Credentials["pool_mode"] = true
+	rec, upstream := serveMessagesScenario(t, preContentFailoverScenario{
+		accounts: accounts,
+		respond: func(call int) (*http.Response, error) {
+			if call == 1 {
+				return preContentSSEResponse(io.NopCloser(strings.NewReader(preContentSignatureOnly + preContentMiddlewareFailure))), nil
+			}
+			return preContentSSEResponse(io.NopCloser(strings.NewReader(preContentHandlerSuccess))), nil
+		},
+	})
+	body := rec.Body.String()
+	require.Equal(t, 2, upstream.calls(), body)
+	require.Equal(t, 1, strings.Count(body, "event: message_start"))
+	require.NotContains(t, body, "opaque-signature")
+	require.Contains(t, body, "answer from second account")
+}
+
+func TestOpenAIMessagesSendsSignatureInOrderOnSuccess(t *testing.T) {
+	rec, upstream := serveMessagesScenario(t, preContentFailoverScenario{
+		accounts: preContentAccounts(1),
+		respond: func(int) (*http.Response, error) {
+			body := preContentSignatureOnly + strings.TrimPrefix(preContentHandlerSuccess, preContentHandlerCreated)
+			return preContentSSEResponse(io.NopCloser(strings.NewReader(body))), nil
+		},
+	})
+	body := rec.Body.String()
+	require.Equal(t, 1, upstream.calls(), body)
+	require.Equal(t, 1, strings.Count(body, "opaque-signature"))
+	signature := strings.Index(body, `"type":"signature_delta"`)
+	text := strings.Index(body, "answer from second account")
+	end := strings.Index(body, "event: message_stop")
+	require.True(t, signature >= 0 && signature < text && text < end, body)
+}
+
 func TestOpenAIMessagesMiddlewareFailedRetriesOnceInPoolBeforeOutput(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -129,7 +169,11 @@ func TestOpenAIMessagesMiddlewareFailedDoesNotRetryAfterContentOrUsage(t *testin
 		{name: "tool arguments", body: preContentHandlerCreated +
 			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"lookup","arguments":""}}` + "\n\n" +
 			`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"}` + "\n\n" + preContentMiddlewareFailure},
-		{name: "reported usage", body: preContentHandlerCreated + strings.Replace(preContentMiddlewareFailure, `"response":{"status":"failed"`, `"response":{"status":"failed","usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}`, 1)},
+		{name: "reasoning text", body: preContentHandlerCreated +
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"reasoning_1","type":"reasoning","summary":[]}}` + "\n\n" +
+			`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"partial reasoning"}` + "\n\n" + preContentMiddlewareFailure},
+		{name: "large signature beyond prelude limit", body: strings.Replace(preContentSignatureOnly, "opaque-signature", strings.Repeat("a", 256<<10), 1) + preContentMiddlewareFailure},
+		{name: "reported usage", body: preContentSignatureOnly + strings.Replace(preContentMiddlewareFailure, `"response":{"status":"failed"`, `"response":{"status":"failed","usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}`, 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			accounts := preContentAccounts(2)

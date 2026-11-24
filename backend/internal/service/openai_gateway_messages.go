@@ -1178,12 +1178,14 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		return out
 	}
 
-	// Until the first content_block_delta the translated prelude is held, so a
-	// failure before any content reaches the client still fails over and the
-	// next attempt starts a fresh message.
+	// Hold the translated prelude until content or a terminal event is ready.
+	// OpenAI API-key reasoning signatures alone do not normally commit the
+	// attempt, but large signatures must not extend the replay window unbounded.
+	const signaturePreludeLimit = 256 << 10
+	holdSignatures := account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey
 	var held strings.Builder
 	emit := func(sse string, release bool) error {
-		if !clientOutputStarted && !release {
+		if !clientOutputStarted && !release && (!holdSignatures || len(sse) <= signaturePreludeLimit-held.Len()) {
 			_, _ = held.WriteString(sse)
 			return nil
 		}
@@ -1336,7 +1338,11 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 					)
 					continue
 				}
-				if err := emit(sse, isTerminalEvent || evt.Type == "content_block_delta"); err != nil {
+				release := isTerminalEvent || evt.Type == "content_block_delta"
+				if !isTerminalEvent && holdSignatures && evt.Delta != nil && evt.Delta.Type == "signature_delta" {
+					release = false
+				}
+				if err := emit(sse, release); err != nil {
 					clientDisconnected = true
 					logger.L().Info("openai messages stream: client disconnected, continuing to drain upstream for billing",
 						zap.String("request_id", requestID),
