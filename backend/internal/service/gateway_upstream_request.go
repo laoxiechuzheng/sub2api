@@ -162,6 +162,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// base 取值同源，仅实际上游为 ollama.com 且映射后出站模型
 	// 为 DeepSeek 系时压到 cap，详见 helper 注释。
 	body = clampOllamaCloudAnthropicMessagesMaxTokens(account, baseURL, body)
+	body = applyAnthropicAPIKeyPromptCache5m(account, body)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -258,6 +259,17 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	}
 
 	return req, body, nil
+}
+
+func applyAnthropicAPIKeyPromptCache5m(account *Account, body []byte) []byte {
+	if account == nil || account.Platform != PlatformAnthropic || account.Type != AccountTypeAPIKey {
+		return body
+	}
+	enabled, _ := account.Extra["anthropic_prompt_cache_5m"].(bool)
+	if !enabled {
+		return body
+	}
+	return forceEphemeralCacheControlTTL(body, cacheTTLTarget5m)
 }
 
 func getAnthropicGatewayBaseURL(account *Account) string {

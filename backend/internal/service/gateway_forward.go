@@ -53,6 +53,19 @@ func (s *GatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	}
 }
 
+// newGatewayHTTPFailoverError records that the failure came from an upstream
+// HTTP response, so an Anthropic API-key pool returning 502 is not treated as
+// an empty stream when the handler exhausts its same-account retries.
+func newGatewayHTTPFailoverError(account *Account, statusCode int, body []byte, disableSameAccountRetry bool) *UpstreamFailoverError {
+	retryable := !disableSameAccountRetry && account.IsPoolMode() && account.IsPoolModeRetryableStatus(statusCode)
+	return &UpstreamFailoverError{
+		StatusCode:                statusCode,
+		ResponseBody:              body,
+		RetryableOnSameAccount:    retryable,
+		anthropicPoolHTTPResponse: retryable && account.Platform == PlatformAnthropic && account.Type == AccountTypeAPIKey,
+	}
+}
+
 // rotatedClaudeAccessToken recovers a token rotated while this request was in
 // flight. Compare against the token actually sent, which may have come from the
 // cache rather than the account snapshot. Never refresh or persist credentials
@@ -754,11 +767,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					return ""
 				}(),
 			})
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			return nil, newGatewayHTTPFailoverError(account, resp.StatusCode, respBody, false)
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account, reqModel)
 	}
@@ -790,11 +799,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				return ""
 			}(),
 		})
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-		}
+		return nil, newGatewayHTTPFailoverError(account, resp.StatusCode, respBody, false)
 	}
 	if resp.StatusCode >= 400 {
 		// 可选：对部分 400 触发 failover（默认关闭以保持语义）

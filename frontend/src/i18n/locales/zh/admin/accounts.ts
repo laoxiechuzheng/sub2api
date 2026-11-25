@@ -975,6 +975,9 @@ export default {
         apiKeyAuthSchemeDesc: '选择转发到 Anthropic-compatible 上游时使用的 API Key 认证头。Ollama Cloud 使用 Authorization: Bearer。',
         apiKeyAuthSchemeXApiKey: 'x-api-key',
         apiKeyAuthSchemeBearer: 'Authorization: Bearer',
+        promptCache5m: '5 分钟提示缓存',
+        promptCache5mDesc:
+          '在发给上游的请求中，将已有的临时缓存断点指定为 5 分钟。实际缓存时长由上游决定，计费依据上游返回的用量。',
         webSearchEmulation: 'Web Search 模拟',
         webSearchEmulationDesc:
           '为该 API Key 账号启用 web search 模拟。客户端发送纯 web_search 请求时，由网关调用第三方搜索 API 并构造响应返回。默认跟随渠道配置。',

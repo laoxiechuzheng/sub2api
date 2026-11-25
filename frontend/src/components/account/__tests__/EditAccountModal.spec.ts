@@ -377,6 +377,45 @@ describe('EditAccountModal', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it.each([false, true])('loads and toggles the Anthropic API key 5m prompt cache setting (%s)', async (enabled) => {
+    const account = buildAccount()
+    account.platform = 'anthropic'
+    account.credentials = { api_key: 'sk-test', base_url: 'https://relay.example' }
+    account.extra = {
+      anthropic_passthrough: true,
+      ...(enabled ? { anthropic_prompt_cache_5m: true } : {})
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    const toggle = wrapper.get('[role="switch"][data-testid="anthropic-prompt-cache-5m"]')
+    expect(toggle.attributes('aria-checked')).toBe(String(enabled))
+
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-checked')).toBe(String(!enabled))
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
+    expect(extra?.anthropic_passthrough).toBe(true)
+    if (enabled) {
+      expect(extra).not.toHaveProperty('anthropic_prompt_cache_5m')
+    } else {
+      expect(extra?.anthropic_prompt_cache_5m).toBe(true)
+    }
+  })
+
+  it.each([
+    ['openai', 'apikey'],
+    ['anthropic', 'oauth'],
+    ['anthropic', 'setup-token']
+  ])('hides the Anthropic API key 5m prompt cache setting for %s %s', (platform, type) => {
+    const wrapper = mountModal({ ...buildAccount(), platform, type })
+
+    expect(wrapper.find('[data-testid="anthropic-prompt-cache-5m"]').exists()).toBe(false)
+  })
+
   it('uses the Kiro direct API-key placeholder when base_url is absent', () => {
     const wrapper = mountModal(buildKiroAPIKeyAccount())
 

@@ -795,6 +795,8 @@ type UpstreamFailoverError struct {
 	ClientStatusCode         int
 	ClientMessage            string
 	StreamFailedFrame        *OpenAIStreamFailedFrame // 触发本次 failover 的流内 failed/error 帧；耗尽时用于错误透传规则匹配
+
+	anthropicPoolHTTPResponse bool // A real HTTP response from an Anthropic API-key pool.
 }
 
 func (e *UpstreamFailoverError) Error() string {
@@ -850,6 +852,9 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 	case http.StatusBadRequest:
 		tempUnscheduleGoogleConfigError(ctx, s.accountRepo, accountID, "[handler]")
 	case http.StatusBadGateway:
+		if failoverErr.anthropicPoolHTTPResponse {
+			return
+		}
 		tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
 	}
 }

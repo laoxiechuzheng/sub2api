@@ -216,6 +216,12 @@ func TestGatewayService_Forward_FailoverErrorKeepsNilResult(t *testing.T) {
 	var failoverErr *UpstreamFailoverError
 	require.True(t, errors.As(err, &failoverErr))
 	require.Nil(t, result, "failover 错误必须保持 result=nil，防止重试成功后双重计费")
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	repo := &gatewayForwardErrorPolicyRepoStub{}
+	svc.accountRepo = repo
+	svc.TempUnscheduleRetryableError(context.Background(), account.ID, failoverErr)
+	require.Equal(t, 1, repo.tempCalls, "a genuine empty stream retains its prior cooldown")
 }
 
 func TestGatewayService_Forward_PreOutputSSEOverloadedErrorUsesSemantic529(t *testing.T) {
