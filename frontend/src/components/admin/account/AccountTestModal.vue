@@ -64,10 +64,25 @@
           v-model="selectedModelId"
           :options="modelOptionsForMode"
           :disabled="loadingModels || status === 'connecting'"
+          :searchable="isGeminiGoogleOneAccount ? true : 'auto'"
+          :creatable="isGeminiGoogleOneAccount"
+          :creatable-prefix="isGeminiGoogleOneAccount ? t('admin.accounts.gemini.googleOneTestModelOption') : undefined"
+          :error="invalidGoogleOneTestModel"
+          :aria-describedby="isGeminiGoogleOneAccount ? 'google-one-test-model-hint' : undefined"
           value-key="id"
           label-key="display_name"
           :placeholder="loadingModels ? t('common.loading') + '...' : t('admin.accounts.selectTestModel')"
         />
+        <p
+          v-if="isGeminiGoogleOneAccount"
+          id="google-one-test-model-hint"
+          class="text-xs"
+          :class="invalidGoogleOneTestModel ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'"
+        >
+          {{ invalidGoogleOneTestModel
+            ? t('admin.accounts.gemini.googleOneInvalidTestModel')
+            : t('admin.accounts.gemini.googleOneTestModelHint') }}
+        </p>
       </div>
 
       <div v-if="isOpenAIAccount" class="space-y-1.5">
@@ -424,6 +439,19 @@ const imageFileInput = ref<HTMLInputElement | null>(null)
 const audioFileInput = ref<HTMLInputElement | null>(null)
 const isOpenAIAccount = computed(() => props.account?.platform === 'openai')
 const isGrokAccount = computed(() => props.account?.platform === 'grok')
+const isGeminiGoogleOneAccount = computed(() => {
+  const account = props.account
+  const oauthType = account?.credentials?.oauth_type
+  return account?.platform === 'gemini' && account.type === 'oauth' &&
+    typeof oauthType === 'string' && oauthType.trim() === 'google_one'
+})
+const isGoogleOneManualTestModel = computed(() =>
+  isGeminiGoogleOneAccount.value && Boolean(selectedModelId.value) &&
+  !availableModels.value.some(model => model.id === selectedModelId.value)
+)
+const invalidGoogleOneTestModel = computed(() =>
+  isGoogleOneManualTestModel.value && !/^gemini-[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(selectedModelId.value)
+)
 const openAITestModeOptions = computed(() => [
   { value: 'default', label: t('admin.accounts.openai.testModeDefault') },
   { value: 'compact', label: t('admin.accounts.openai.testModeCompact') }
@@ -674,7 +702,7 @@ const testModeSummary = computed(() => {
 })
 
 const canStartTest = computed(() => {
-  if (status.value === 'connecting') return false
+  if (status.value === 'connecting' || invalidGoogleOneTestModel.value) return false
   if (isGrokAccount.value) {
     if (
       grokTestMode.value === 'search' ||
@@ -848,11 +876,15 @@ const startTest = async () => {
       model_id: string
       prompt: string
       mode?: string
+      google_one_exact_model?: true
       image_data_url?: string
       audio_data_url?: string
     } = {
       model_id: showModelSelect.value ? selectedModelId.value : '',
       prompt: supportsPromptInput.value ? testPrompt.value.trim() : ''
+    }
+    if (isGoogleOneManualTestModel.value) {
+      requestBody.google_one_exact_model = true
     }
     if (isOpenAIAccount.value) {
       requestBody.mode = testMode.value

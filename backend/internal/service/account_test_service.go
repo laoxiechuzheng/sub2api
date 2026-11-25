@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -67,11 +68,12 @@ type TestEvent struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// AccountTestOptions carries optional media for admin connectivity tests.
+// AccountTestOptions carries optional inputs for admin connectivity tests.
 // ImageDataURL / AudioDataURL are full data URLs (data:<mime>;base64,...).
 type AccountTestOptions struct {
-	ImageDataURL string
-	AudioDataURL string
+	ImageDataURL        string
+	AudioDataURL        string
+	GoogleOneExactModel bool
 }
 
 func firstAccountTestOptions(opts []AccountTestOptions) AccountTestOptions {
@@ -365,11 +367,15 @@ func createTestPayload(modelID string) (map[string]any, error) {
 // Accounts are routed to their platform-specific probes.
 // modelID is optional - if empty, defaults to claude.DefaultTestModel
 // mode is optional - "compact" routes OpenAI accounts to the /responses/compact probe path
-// opts is optional media (image/audio data URLs for real generation / STT).
 func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string, opts ...AccountTestOptions) error {
-	initAccountTestLogger(c, accountID, modelID, mode)
-	ctx := c.Request.Context()
 	testOpts := firstAccountTestOptions(opts)
+	modelForLog := modelID
+	if testOpts.GoogleOneExactModel {
+		// This field is free-form input until the exact-probe model is validated.
+		modelForLog = ""
+	}
+	initAccountTestLogger(c, accountID, modelForLog, mode)
+	ctx := c.Request.Context()
 
 	// Get account
 	account, err := s.accountRepo.GetByID(ctx, accountID)
@@ -377,6 +383,21 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.sendErrorAndEnd(c, "Account not found")
 	}
 	bindAccountTestPlatform(c, account)
+
+	if testOpts.GoogleOneExactModel {
+		c.Header("Content-Type", "text/event-stream")
+		if !account.IsGeminiGoogleOne() {
+			return s.sendErrorAndEnd(c, "Exact model testing is only available for Google One OAuth accounts")
+		}
+		suffix, gemini := strings.CutPrefix(modelID, "gemini-")
+		if !gemini || strings.Trim(suffix, "-._") == "" || !isSafeUpstreamPathSegment(modelID) {
+			return s.sendErrorAndEnd(c, "Specify a valid concrete Gemini model ID for the exact test")
+		}
+		if strings.TrimSpace(account.GetCredential("project_id")) == "" {
+			return s.sendErrorAndEnd(c, "Exact model testing requires an existing Google Code Assist project")
+		}
+		return s.testGeminiAccountConnection(c, account, modelID, prompt, true)
+	}
 
 	// Synthetic UI load-test accounts exercise the real SSE parsing and modal
 	// interactions, but intentionally do not send their placeholder credentials
@@ -412,7 +433,7 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	if account.IsGemini() {
-		return s.testGeminiAccountConnection(c, account, modelID, prompt)
+		return s.testGeminiAccountConnection(c, account, modelID, prompt, false)
 	}
 
 	if account.Platform == PlatformGrok {
@@ -2600,16 +2621,46 @@ func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, accoun
 	}
 }
 
-// geminiDefaultTestModel 返回 Gemini 连接测试未指定模型时使用的模型；Google One 账号只能使用其保守模型集。
-func geminiDefaultTestModel(account *Account) string {
-	if account.IsGeminiGoogleOne() {
-		return geminicli.GoogleOneModels[0].ID
+// GeminiGoogleOneAccountTestModels returns concrete request-side model names
+// from the account's effective mapping. Existing presets keep their order when
+// matched, including the legacy default mapping for unconfigured accounts.
+func GeminiGoogleOneAccountTestModels(account *Account) []geminicli.Model {
+	mapping := account.GetModelMapping()
+	models := make([]geminicli.Model, 0, len(mapping))
+	for _, model := range geminicli.GoogleOneModels {
+		if target, matched := account.ResolveMappedModel(model.ID); matched && strings.TrimSpace(target) != "" {
+			models = append(models, model)
+		}
 	}
-	return geminicli.DefaultTestModel
+	aliases := make([]string, 0, len(mapping))
+	for alias, target := range mapping {
+		if strings.TrimSpace(alias) == "" || strings.Contains(alias, "*") || strings.TrimSpace(target) == "" {
+			continue
+		}
+		if !slices.ContainsFunc(models, func(model geminicli.Model) bool { return model.ID == alias }) {
+			aliases = append(aliases, alias)
+		}
+	}
+	slices.Sort(aliases)
+	for _, alias := range aliases {
+		models = append(models, geminicli.Model{ID: alias, Type: "model", DisplayName: alias})
+	}
+	return models
+}
+
+func geminiDefaultTestModel(account *Account) string {
+	if !account.IsGeminiGoogleOne() {
+		return geminicli.DefaultTestModel
+	}
+	models := GeminiGoogleOneAccountTestModels(account)
+	if len(models) == 0 {
+		return ""
+	}
+	return models[0].ID
 }
 
 // testGeminiAccountConnection tests a Gemini account's connection
-func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
+func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, exactModel bool) error {
 	ctx := c.Request.Context()
 
 	// Determine the model to use
@@ -2618,13 +2669,12 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 		testModelID = geminiDefaultTestModel(account)
 	}
 
-	// For static upstream credentials with model mapping, map the model
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
-		mapping := account.GetModelMapping()
-		if len(mapping) > 0 {
-			if mappedModel, exists := mapping[testModelID]; exists {
-				testModelID = mappedModel
-			}
+	if account.IsGeminiGoogleOne() && !exactModel {
+		testModelID = geminiGenerationModel(account, testModelID)
+	} else if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
+		// Preserve the existing exact lookup for other account test modes.
+		if mappedModel, exists := account.GetModelMapping()[testModelID]; exists {
+			testModelID = mappedModel
 		}
 	}
 
@@ -2634,6 +2684,10 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
+
+	if account.IsGeminiGoogleOne() && strings.TrimSpace(testModelID) == "" {
+		return s.sendErrorAndEnd(c, "Select a concrete model matching this account's model mapping")
+	}
 
 	// Create test payload (Gemini format)
 	payload := createGeminiTestPayload(testModelID, prompt)
@@ -2654,6 +2708,9 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 	}
 
 	if err != nil {
+		if exactModel {
+			return s.sendErrorAndEnd(c, "Could not prepare the Google Code Assist request")
+		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build request: %s", err.Error()))
 	}
 
@@ -2668,17 +2725,23 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
+		if exactModel {
+			return s.sendErrorAndEnd(c, "Could not reach Google Code Assist")
+		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		if exactModel {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Gemini returned HTTP %d", resp.StatusCode))
+		}
 		body, _ := io.ReadAll(resp.Body)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
 	// Process SSE stream
-	return s.processGeminiStream(c, resp.Body)
+	return s.processGeminiStream(c, resp.Body, exactModel)
 }
 
 // routeAntigravityTest 路由 Antigravity 账号的测试请求。
@@ -2686,7 +2749,7 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Account, modelID string, prompt string) error {
 	if account.Type == AccountTypeAPIKey {
 		if strings.HasPrefix(modelID, "gemini-") {
-			return s.testGeminiAccountConnection(c, account, modelID, prompt)
+			return s.testGeminiAccountConnection(c, account, modelID, prompt, false)
 		}
 		return s.testClaudeAccountConnection(c, account, modelID)
 	}
@@ -2919,15 +2982,32 @@ func createGeminiTestPayload(modelID string, prompt string) []byte {
 }
 
 // processGeminiStream processes SSE stream from Gemini API
-func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader) error {
+func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader, exactModel bool) error {
 	reader := bufio.NewReader(body)
+	visibleOutput := false
+	complete := func() error {
+		if exactModel {
+			if !visibleOutput {
+				return s.sendErrorAndEnd(c, "Gemini did not return content")
+			}
+			// An exact probe reports evidence of generation without relaying the payload.
+			s.sendEvent(c, TestEvent{Type: "content", Text: "Gemini returned content for this model."})
+		}
+		s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+		return nil
+	}
 
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-				return nil
+				if exactModel && visibleOutput {
+					return s.sendErrorAndEnd(c, "Gemini stream ended before completion")
+				}
+				return complete()
+			}
+			if exactModel {
+				return s.sendErrorAndEnd(c, "Could not read the Gemini stream")
 			}
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
 		}
@@ -2939,8 +3019,7 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 
 		jsonStr := strings.TrimPrefix(line, "data: ")
 		if jsonStr == "[DONE]" {
-			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-			return nil
+			return complete()
 		}
 
 		var data map[string]any
@@ -2951,9 +3030,17 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 		// Support two Gemini response formats:
 		// - AI Studio: {"candidates": [...]}
 		// - Gemini CLI: {"response": {"candidates": [...]}}
-		if resp, ok := data["response"].(map[string]any); ok && resp != nil {
+		outerError, _ := data["error"].(map[string]any)
+		if resp, ok := data["response"].(map[string]any); ok && resp != nil && (!exactModel || outerError == nil) {
 			data = resp
 		}
+		if errData, ok := data["error"].(map[string]any); exactModel && ok {
+			if code, ok := errData["code"].(float64); ok && code >= 400 && code <= 599 && code == float64(int(code)) {
+				return s.sendErrorAndEnd(c, fmt.Sprintf("Gemini returned a streaming error (%d)", int(code)))
+			}
+			return s.sendErrorAndEnd(c, "Gemini returned a streaming error")
+		}
+
 		if candidates, ok := data["candidates"].([]any); ok && len(candidates) > 0 {
 			if candidate, ok := candidates[0].(map[string]any); ok {
 				// Extract content first (before checking completion)
@@ -2962,12 +3049,21 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 						for _, part := range parts {
 							if partMap, ok := part.(map[string]any); ok {
 								if text, ok := partMap["text"].(string); ok && text != "" {
-									s.sendEvent(c, TestEvent{Type: "content", Text: text})
+									if exactModel {
+										thought, _ := partMap["thought"].(bool)
+										visibleOutput = visibleOutput || (!thought && strings.TrimSpace(text) != "")
+									} else {
+										s.sendEvent(c, TestEvent{Type: "content", Text: text})
+									}
 								}
 								if inlineData, ok := partMap["inlineData"].(map[string]any); ok {
 									mimeType, _ := inlineData["mimeType"].(string)
 									data, _ := inlineData["data"].(string)
 									if strings.HasPrefix(strings.ToLower(mimeType), "image/") && data != "" {
+										if exactModel {
+											visibleOutput = true
+											continue
+										}
 										s.sendEvent(c, TestEvent{
 											Type:     "image",
 											ImageURL: fmt.Sprintf("data:%s;base64,%s", mimeType, data),
@@ -2982,8 +3078,7 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 
 				// Check for completion after extracting content
 				if finishReason, ok := candidate["finishReason"].(string); ok && finishReason != "" {
-					s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-					return nil
+					return complete()
 				}
 			}
 		}

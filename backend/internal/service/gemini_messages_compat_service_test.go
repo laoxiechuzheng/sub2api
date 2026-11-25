@@ -1531,3 +1531,86 @@ func parseAnthropicContentBlockEvents(t *testing.T, raw string) []anthropicConte
 	}
 	return events
 }
+
+func TestGeminiGoogleOneSavedMappingUsesCodeAssistAndReturnsContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, entry := range []string{"native", "messages", "chat", "account test"} {
+		for _, tc := range []struct {
+			name      string
+			oauthType string
+			requested string
+			want      string
+		}{
+			{"alias", "google_one", "neon-gemini-alias", "gemini-3.5-flash"},
+			{"identity", "google_one", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview"},
+			{"ordinary OAuth", "code_assist", "neon-gemini-alias", "neon-gemini-alias"},
+		} {
+			t.Run(entry+"/"+tc.name, func(t *testing.T) {
+				const text = "hello from mapped Code Assist model"
+				event := `data: {"response":{"candidates":[{"content":{"parts":[{"text":"` + text + `"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}}` + "\n\n" + "data: [DONE]\n\n"
+				upstream := &geminiCompatHTTPUpstreamStub{response: &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(event)),
+				}}
+				account := &Account{
+					ID: 71, Platform: PlatformGemini, Type: AccountTypeOAuth, Concurrency: 1,
+					Credentials: map[string]any{
+						"oauth_type":   tc.oauthType,
+						"access_token": "synthetic-test-token",
+						"project_id":   "fixture-project",
+						"model_mapping": map[string]any{
+							"neon-gemini-alias":      "gemini-3.5-flash",
+							"gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+						},
+					},
+				}
+				svc := &GeminiMessagesCompatService{
+					cfg: &config.Config{}, httpUpstream: upstream, tokenProvider: &GeminiTokenProvider{},
+				}
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				ctx := context.Background()
+				var err error
+				var result *ForwardResult
+				switch entry {
+				case "native":
+					body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/"+tc.requested+":generateContent", bytes.NewReader(body))
+					result, err = svc.ForwardNative(ctx, c, account, tc.requested, "generateContent", false, body)
+				case "messages":
+					body := []byte(`{"model":"` + tc.requested + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+					result, err = svc.Forward(ctx, c, account, body)
+				case "chat":
+					body := []byte(`{"model":"` + tc.requested + `","messages":[{"role":"user","content":"hi"}]}`)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+					result, err = svc.ForwardAsChatCompletions(ctx, c, account, body)
+				case "account test":
+					svc := &AccountTestService{
+						cfg: &config.Config{}, httpUpstream: upstream, geminiTokenProvider: &GeminiTokenProvider{},
+					}
+					c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/71/test", nil)
+					err = svc.testGeminiAccountConnection(c, account, tc.requested, "hi", false)
+				}
+				require.NoError(t, err)
+				require.Equal(t, http.StatusOK, rec.Code)
+				require.Contains(t, rec.Body.String(), text)
+				if entry != "account test" {
+					require.NotNil(t, result)
+					require.Equal(t, tc.requested, result.Model)
+					require.Equal(t, tc.want, result.UpstreamModel)
+				}
+				require.Equal(t, 1, upstream.calls)
+				require.NotNil(t, upstream.lastReq)
+				require.Equal(t, "/v1internal:streamGenerateContent", upstream.lastReq.URL.Path)
+				require.Equal(t, "sse", upstream.lastReq.URL.Query().Get("alt"))
+				require.Equal(t, "Bearer synthetic-test-token", upstream.lastReq.Header.Get("Authorization"))
+				var outbound map[string]json.RawMessage
+				require.NoError(t, json.NewDecoder(upstream.lastReq.Body).Decode(&outbound))
+				require.JSONEq(t, fmt.Sprintf("%q", tc.want), string(outbound["model"]))
+				require.JSONEq(t, `"fixture-project"`, string(outbound["project"]))
+			})
+		}
+	}
+}

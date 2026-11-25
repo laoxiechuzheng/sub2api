@@ -1612,6 +1612,12 @@ export default {
                 },      // Gemini specific (platform-wide)
       gemini: {
         helpButton: 'Help',
+        googleOneModelSyncHint: 'Read model IDs from this Google One account’s upstream quota. Select models and save to update account mappings. Use the account test to verify generation.',
+        googleOneModelsDiscovered: 'Found {count} upstream models. Select them in the whitelist or model mapping.',
+        googleOneDefaultModels: 'Google One uses its default models when no models are configured.',
+        googleOneTestModelOption: 'Test model',
+        googleOneTestModelHint: 'Type and select a model ID for this test. Starting the test sends a generation request that may use upstream quota.',
+        googleOneInvalidTestModel: 'Enter a valid Gemini model ID, such as gemini-4-neon.',
         helpDialog: {
           title: 'Gemini Usage Guide',
           apiKeySection: 'API Key Links'

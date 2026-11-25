@@ -919,13 +919,28 @@
         </div>
       </div>
 
-      <!-- OpenAI / Kiro / Grok OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立区域) -->
+      <!-- OAuth model restrictions for accounts that support explicit mappings -->
       <div
-        v-if="(account.platform === 'openai' || account.platform === 'kiro' || account.platform === 'grok') && account.type === 'oauth'"
+        v-if="account.type === 'oauth' && (account.platform === 'openai' || account.platform === 'kiro' || account.platform === 'grok' || isGeminiGoogleOneAccount)"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
-        :data-testid="account.platform === 'grok' ? 'grok-model-settings' : 'oauth-model-mapping-section'"
+        :data-testid="isGeminiGoogleOneAccount ? 'google-one-model-settings' : account.platform === 'grok' ? 'grok-model-settings' : 'oauth-model-mapping-section'"
       >
         <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+        <div v-if="isGeminiGoogleOneAccount" class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <p class="max-w-lg text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.gemini.googleOneModelSyncHint') }}
+          </p>
+          <button
+            type="button"
+            class="btn btn-secondary text-sm"
+            :disabled="googleOneModelSyncLoading"
+            data-testid="google-one-sync-models"
+            @click="syncGoogleOneModels"
+          >
+            {{ googleOneModelSyncLoading ? t('admin.accounts.syncUpstreamModelsLoading') : t('admin.accounts.syncUpstreamModels') }}
+          </button>
+        </div>
 
         <div
           v-if="isOpenAIModelRestrictionDisabled"
@@ -1005,7 +1020,9 @@
             :model-mappings="modelMappings"
             :platform="account?.platform || 'anthropic'"
             :account-id="account?.id"
-            :show-sync-button="account.platform !== 'grok' || !account.id"
+            :available-model-ids="isGeminiGoogleOneAccount ? googleOneModelIDs : undefined"
+            :show-sync-button="!isGeminiGoogleOneAccount && (account.platform !== 'grok' || !account.id)"
+            :data-testid="isGeminiGoogleOneAccount ? 'google-one-model-selection' : undefined"
             @upstream-sync-finished="refreshGrokDiagnostics"
             @update:kiroUpstreamIDs="mergeKiroUpstreamIDs"
           />
@@ -1016,6 +1033,9 @@
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0 && modelMappings.length === 0 && account.platform === 'kiro'" data-testid="kiro-default-mapping-hint">{{
                 t('admin.accounts.kiroUsesDefaultMapping')
+              }}</span>
+              <span v-else-if="allowedModels.length === 0 && modelMappings.length === 0 && isGeminiGoogleOneAccount">{{
+                t('admin.accounts.gemini.googleOneDefaultModels')
               }}</span>
               <span v-else-if="allowedModels.length === 0 && modelMappings.length === 0">{{
                 t('admin.accounts.supportsAllModels')
@@ -1078,7 +1098,17 @@
                     d="M14 5l7 7m0 0l-7 7m7-7H3"
                   />
                 </svg>
+                <Select
+                  v-if="isGeminiGoogleOneAccount"
+                  v-model="mapping.to"
+                  :options="googleOneModelOptions"
+                  class="min-w-0 flex-1"
+                  :placeholder="t('admin.accounts.actualModel')"
+                  :aria-label="t('admin.accounts.actualModel')"
+                  data-testid="oauth-model-mapping-to"
+                />
                 <input
+                  v-else
                   v-model="mapping.to"
                   data-testid="oauth-model-mapping-to"
                   type="text"
@@ -1120,7 +1150,7 @@
             </button>
 
             <!-- Quick Add Buttons -->
-            <div class="flex flex-wrap gap-2">
+            <div v-if="!isGeminiGoogleOneAccount" class="flex flex-wrap gap-2">
               <button
                 v-for="preset in presetMappings"
                 :key="'oauth-' + preset.label"
@@ -4026,6 +4056,23 @@ const modelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
+// These defaults match the gateway's Google One scheduling whitelist.
+const googleOneDefaultModels = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash']
+const isGeminiGoogleOneAccount = computed(() => {
+  const account = props.account
+  const oauthType = account?.credentials?.oauth_type
+  return account?.platform === 'gemini' && account.type === 'oauth' &&
+    typeof oauthType === 'string' && oauthType.trim() === 'google_one'
+})
+const googleOneInitialModelMapping = ref<Record<string, string>>({})
+const googleOneSyncedModels = ref<string[]>([])
+const googleOneModelSyncLoading = ref(false)
+let googleOneModelSyncVersion = 0
+const googleOneModelIDs = computed(() => [...new Set([
+  ...Object.values(googleOneInitialModelMapping.value),
+  ...googleOneSyncedModels.value
+])])
+const googleOneModelOptions = computed(() => googleOneModelIDs.value.map(id => ({ value: id, label: id })))
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
@@ -4103,7 +4150,7 @@ function normalizedGrokMapping(value: unknown): Record<string, string> {
   return mapping
 }
 
-function sameGrokMapping(left: Record<string, string>, right: Record<string, string>): boolean {
+function sameAccountModelMapping(left: Record<string, string>, right: Record<string, string>): boolean {
   const leftKeys = Object.keys(left).sort()
   const rightKeys = Object.keys(right).sort()
   return leftKeys.length === rightKeys.length
@@ -4113,7 +4160,7 @@ function sameGrokMapping(left: Record<string, string>, right: Record<string, str
 const grokDiagnosticsDirty = computed(() => {
   if (props.account?.platform !== 'grok') return false
   const credentials = (props.account.credentials as Record<string, unknown> | undefined) || {}
-  if (!sameGrokMapping(normalizedGrokMapping(credentials.model_mapping), normalizedGrokMapping(buildModelRestrictionMapping()))) {
+  if (!sameAccountModelMapping(normalizedGrokMapping(credentials.model_mapping), normalizedGrokMapping(buildModelRestrictionMapping()))) {
     return true
   }
 
@@ -4226,6 +4273,7 @@ watch(
 
 onBeforeUnmount(() => {
   resetGrokDiagnostics()
+  resetGoogleOneModelSync()
 })
 
 // Grok Free OAuth accounts use client-tool prompt caching by default. Keep an
@@ -5268,16 +5316,22 @@ const syncFormFromAccount = (newAccount: Account | null) => {
             : 'https://api.anthropic.com'
     editBaseUrl.value = platformDefaultUrl
 
-    // Load model mappings for OpenAI/Kiro/Grok OAuth accounts
+    // Load an explicit OAuth mapping or show the implicit Google One defaults.
     kiroUpstreamIDs.value = {}
     if (newAccount.platform === 'kiro' && newAccount.credentials) {
       const oauthCredentials = newAccount.credentials as Record<string, unknown>
       loadModelRestrictionFromMapping(oauthCredentials.model_mapping as Record<string, unknown> | undefined, {
         kiroDirect: true
       })
-    } else if ((newAccount.platform === 'openai' || newAccount.platform === 'grok') && newAccount.credentials) {
+    } else if ((newAccount.platform === 'openai' || newAccount.platform === 'grok' || isGeminiGoogleOneAccount.value) && newAccount.credentials) {
       const oauthCredentials = newAccount.credentials as Record<string, unknown>
       loadModelRestrictionFromMapping(oauthCredentials.model_mapping as Record<string, unknown> | undefined)
+      if (isGeminiGoogleOneAccount.value) {
+        if (allowedModels.value.length === 0 && modelMappings.value.length === 0) {
+          allowedModels.value = [...googleOneDefaultModels]
+        }
+        googleOneInitialModelMapping.value = buildModelRestrictionMapping() || {}
+      }
     } else {
       modelRestrictionMode.value = 'whitelist'
       modelMappings.value = []
@@ -5316,15 +5370,55 @@ watch(
   [() => props.show, () => props.account],
   ([show, newAccount], [wasShow, previousAccount]) => {
     if (!show || !newAccount) {
+      resetGoogleOneModelSync()
       return
     }
     if (!wasShow || newAccount !== previousAccount) {
+      resetGoogleOneModelSync()
       syncFormFromAccount(newAccount)
       loadTLSProfiles()
     }
   },
   { immediate: true }
 )
+
+function resetGoogleOneModelSync() {
+  googleOneModelSyncVersion += 1
+  googleOneModelSyncLoading.value = false
+  googleOneSyncedModels.value = []
+  googleOneInitialModelMapping.value = {}
+}
+
+async function syncGoogleOneModels() {
+  const account = props.account
+  if (!account || !isGeminiGoogleOneAccount.value || googleOneModelSyncLoading.value) return
+
+  const syncVersion = googleOneModelSyncVersion
+  googleOneModelSyncLoading.value = true
+  try {
+    const result = await adminAPI.accounts.syncUpstreamModels(account.id)
+    if (syncVersion !== googleOneModelSyncVersion) return
+    if (result.discovery_source !== 'gemini_code_assist_quota') {
+      appStore.showError(t('admin.accounts.syncUpstreamModelsFailed'))
+      return
+    }
+    const models = [...new Set(result.models.map(model => model.trim()).filter(Boolean))]
+    googleOneSyncedModels.value = models
+    if (models.length === 0) {
+      appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
+    } else {
+      appStore.showSuccess(t('admin.accounts.gemini.googleOneModelsDiscovered', { count: models.length }))
+    }
+  } catch (error) {
+    if (syncVersion !== googleOneModelSyncVersion) return
+    const message = extractApiErrorMessage(error, t('admin.accounts.syncUpstreamModelsFailed'))
+    appStore.showError(t('admin.accounts.syncUpstreamModelsError', { message }))
+  } finally {
+    if (syncVersion === googleOneModelSyncVersion) {
+      googleOneModelSyncLoading.value = false
+    }
+  }
+}
 
 // Model mapping helpers
 const addModelMapping = () => {
@@ -6259,8 +6353,8 @@ const handleSubmit = async () => {
       updatePayload.credentials = newCredentials
     }
 
-    // OpenAI/Grok OAuth: persist model mapping to credentials
-    if ((props.account.platform === 'openai' || props.account.platform === 'grok') && props.account.type === 'oauth') {
+    // OpenAI/Grok/Google One OAuth: persist model mapping to credentials.
+    if ((props.account.platform === 'openai' || props.account.platform === 'grok' || isGeminiGoogleOneAccount.value) && props.account.type === 'oauth') {
       const currentCredentials = isSparkShadow.value
         ? {}
         : (updatePayload.credentials as Record<string, unknown>) ||
@@ -6270,10 +6364,12 @@ const handleSubmit = async () => {
         applyOpenAIModelMappingCredentials(newCredentials)
       } else {
         const modelMapping = buildModelRestrictionMapping()
-        if (modelMapping) {
-          newCredentials.model_mapping = modelMapping
-        } else {
-          delete newCredentials.model_mapping
+        if (!isGeminiGoogleOneAccount.value || !sameAccountModelMapping(googleOneInitialModelMapping.value, modelMapping || {})) {
+          if (modelMapping) {
+            newCredentials.model_mapping = modelMapping
+          } else {
+            delete newCredentials.model_mapping
+          }
         }
       }
 

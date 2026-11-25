@@ -1721,6 +1721,12 @@ export default {
       // Gemini specific (platform-wide)
       gemini: {
         helpButton: '使用帮助',
+        googleOneModelSyncHint: '从该 Google One 账号读取上游配额中的模型。选择模型并保存后，账号映射才会更新。实际生成请在账号测试中验证。',
+        googleOneModelsDiscovered: '已读取 {count} 个上游模型，可在白名单或模型映射中选择。',
+        googleOneDefaultModels: '未设置模型时使用 Google One 的默认模型。',
+        googleOneTestModelOption: '测试指定模型',
+        googleOneTestModelHint: '在下拉框里输入并选择模型 ID，仅用于本次测试。开始测试会发出真实生成请求，可能消耗上游额度。',
+        googleOneInvalidTestModel: '请输入有效的 Gemini 模型 ID，例如 gemini-4-neon。',
         helpDialog: {
           title: 'Gemini 使用指南',
           apiKeySection: 'API Key 相关链接'

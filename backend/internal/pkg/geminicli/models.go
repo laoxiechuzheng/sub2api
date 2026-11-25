@@ -31,9 +31,9 @@ var DefaultModels = []Model{
 	{ID: "gemini-4-carbon", Type: "model", DisplayName: "Gemini 4 Carbon", CreatedAt: ""},
 }
 
-// GoogleOneModels is the conservative model set exposed for legacy Google One
-// OAuth accounts. Newer subscription models are served through Antigravity
-// OAuth rather than the retired consumer Gemini CLI / Code Assist channel.
+// GoogleOneModels is the conservative default for legacy Google One accounts.
+// Explicit account mappings can include models discovered for that Code
+// Assist project without expanding the default catalog.
 var GoogleOneModels = []Model{
 	{ID: "gemini-2.5-flash", Type: "model", DisplayName: "Gemini 2.5 Flash", CreatedAt: ""},
 	{ID: "gemini-2.5-pro", Type: "model", DisplayName: "Gemini 2.5 Pro", CreatedAt: ""},

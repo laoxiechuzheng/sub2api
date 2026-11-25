@@ -7,10 +7,11 @@ import {
   setPlatformCatalog
 } from '@/constants/platformCatalog'
 
-const { updateAccountMock, checkMixedChannelRiskMock, previewUpstreamGroup, authIsSimpleMode } = vi.hoisted(() => ({
+const { updateAccountMock, checkMixedChannelRiskMock, previewUpstreamGroup, syncUpstreamModelsMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
   previewUpstreamGroup: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
+  syncUpstreamModelsMock: vi.fn(),
   authIsSimpleMode: { value: true }
 }))
 
@@ -18,7 +19,8 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError: vi.fn(),
     showSuccess: vi.fn(),
-    showInfo: vi.fn()
+    showInfo: vi.fn(),
+    showWarning: vi.fn()
   })
 }))
 
@@ -35,7 +37,8 @@ vi.mock('@/api/admin', () => ({
     accounts: {
       update: updateAccountMock,
       previewUpstreamGroup,
-      checkMixedChannelRisk: checkMixedChannelRiskMock
+      checkMixedChannelRisk: checkMixedChannelRiskMock,
+      syncUpstreamModels: syncUpstreamModelsMock
     },
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
@@ -349,7 +352,7 @@ function buildOpenAIOAuthParentAccount() {
   } as any
 }
 
-function mountModal(account = buildAccount(), renderGroupSelector = false) {
+function mountModal(account = buildAccount(), renderGroupSelector = false, renderModelWhitelistSelector = false) {
   return mount(EditAccountModal, {
     props: {
       show: true,
@@ -364,11 +367,126 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
         Icon: true,
         ProxySelector: true,
         GroupSelector: renderGroupSelector ? false : GroupSelectorStub,
-        ModelWhitelistSelector: ModelWhitelistSelectorStub
+        ModelWhitelistSelector: renderModelWhitelistSelector ? false : ModelWhitelistSelectorStub
       }
     }
   })
 }
+
+describe('EditAccountModal Google One model sync', () => {
+  function googleOneAccount(credentials: Record<string, unknown> = {}) {
+    return {
+      ...buildAccount(),
+      id: 71,
+      platform: 'gemini',
+      type: 'oauth',
+      credentials: { oauth_type: 'google_one', ...credentials }
+    }
+  }
+
+  const section = '[data-testid="google-one-model-settings"]'
+  const syncButton = '[data-testid="google-one-sync-models"]'
+  const savedCredentials = () => updateAccountMock.mock.calls[0]?.[1]?.credentials
+
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    syncUpstreamModelsMock.mockReset()
+    updateAccountMock.mockReset().mockResolvedValue(googleOneAccount())
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+  })
+
+  it('keeps the Google One defaults implicit when saving unchanged', async () => {
+    const wrapper = mountModal(googleOneAccount())
+    const settings = wrapper.get(section)
+
+    expect(settings.get('[data-testid="model-whitelist-value"]').text()).toContain('gemini-2.5-pro')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(savedCredentials()).not.toHaveProperty('model_mapping')
+    expect(syncUpstreamModelsMock).not.toHaveBeenCalled()
+  })
+
+  it('only saves a synced Google One model after it is selected and confirmed', async () => {
+    syncUpstreamModelsMock.mockResolvedValue({
+      models: ['gemini-4-neon', 'gemini-3.8-flash'],
+      discovery_source: 'gemini_code_assist_quota'
+    })
+    const wrapper = mountModal(googleOneAccount(), false, true)
+    const settings = wrapper.get(section)
+
+    await settings.get(syncButton).trigger('click')
+    await flushPromises()
+    expect(syncUpstreamModelsMock).toHaveBeenCalledWith(71)
+    expect(updateAccountMock).not.toHaveBeenCalled()
+
+    const selector = settings.get('[data-testid="google-one-model-selection"]')
+    await selector.get('.cursor-pointer').trigger('click')
+    const modelOptions = selector.findAll('[data-testid="select-model"]')
+    expect(modelOptions.map((option) => option.text())).toContain('gemini-4-neon')
+    expect(modelOptions.map((option) => option.text())).not.toContain('gemini-4-argon')
+    await modelOptions.find((option) => option.text() === 'gemini-4-neon')!.trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(savedCredentials()?.model_mapping).toEqual({
+      'gemini-2.5-flash': 'gemini-2.5-flash',
+      'gemini-2.5-pro': 'gemini-2.5-pro',
+      'gemini-2.0-flash': 'gemini-2.0-flash',
+      'gemini-4-neon': 'gemini-4-neon'
+    })
+  })
+
+  it('preserves existing explicit Google One mappings when upstream sync fails', async () => {
+    syncUpstreamModelsMock.mockRejectedValue(new Error('upstream is unavailable'))
+    const modelMapping = { 'existing-alias': 'gemini-2.5-pro', 'gemini-2.5-flash': 'gemini-2.5-flash' }
+    const wrapper = mountModal(googleOneAccount({ model_mapping: modelMapping }))
+
+    await wrapper.get(`${section} ${syncButton}`).trigger('click')
+    await flushPromises()
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(savedCredentials()?.model_mapping).toEqual(modelMapping)
+  })
+
+  it('discards model results after switching to another Google One account', async () => {
+    let resolveSync!: (result: { models: string[]; discovery_source: string }) => void
+    syncUpstreamModelsMock.mockReturnValue(new Promise(resolve => { resolveSync = resolve }))
+    const wrapper = mountModal(googleOneAccount(), false, true)
+
+    await wrapper.get(syncButton).trigger('click')
+    await wrapper.setProps({ account: { ...googleOneAccount(), id: 72 } })
+    resolveSync({ models: ['gemini-4-neon'], discovery_source: 'gemini_code_assist_quota' })
+    await flushPromises()
+    const selector = wrapper.get('[data-testid="google-one-model-selection"]')
+    await selector.get('.cursor-pointer').trigger('click')
+
+    expect(selector.findAll('[data-testid="select-model"]').map(option => option.text())).not.toContain('gemini-4-neon')
+    expect(wrapper.get(syncButton).attributes('disabled')).toBeUndefined()
+  })
+
+  it('excludes configured fallback results from Google One sync options', async () => {
+    syncUpstreamModelsMock.mockResolvedValue({
+      models: ['gemini-4-argon'],
+      discovery_source: 'configured_fallback'
+    })
+    const wrapper = mountModal(googleOneAccount(), false, true)
+
+    await wrapper.get(syncButton).trigger('click')
+    await flushPromises()
+    const selector = wrapper.get('[data-testid="google-one-model-selection"]')
+    await selector.get('.cursor-pointer').trigger('click')
+
+    expect(selector.findAll('[data-testid="select-model"]').map(option => option.text())).not.toContain('gemini-4-argon')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(savedCredentials()).not.toHaveProperty('model_mapping')
+  })
+
+  it.each(['code_assist', 'ai_studio'])('keeps the Google One controls hidden for %s OAuth', (oauthType) => {
+    const wrapper = mountModal(googleOneAccount({ oauth_type: oauthType }))
+    expect(wrapper.find(section).exists()).toBe(false)
+  })
+})
 
 describe('EditAccountModal', () => {
   beforeEach(() => {

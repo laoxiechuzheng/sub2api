@@ -763,3 +763,52 @@ func TestAccountHandlerGetAvailableModels_TypeSafeOnlyReturnsJev(t *testing.T) {
 		require.Equal(t, "jev-latest", resp.Data[0].ID)
 	}
 }
+
+func TestAccountHandlerGetAvailableModels_GeminiGoogleOneUsesSavedMappings(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		oauthType string
+		want      []string
+	}{
+		{"Google One", "google_one", []string{"gemini-3.1-pro-preview", "neon-gemini-alias"}},
+		{"ordinary Gemini OAuth", "code_assist", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &availableModelsAdminService{
+				stubAdminService: newStubAdminService(),
+				account: service.Account{
+					ID:       71,
+					Platform: service.PlatformGemini,
+					Type:     service.AccountTypeOAuth,
+					Credentials: map[string]any{
+						"oauth_type": tc.oauthType,
+						"model_mapping": map[string]any{
+							"neon-gemini-alias":      "gemini-3.5-flash",
+							"gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+							"unused-*":               "gemini-2.5-pro",
+						},
+					},
+				},
+			}
+			rec := httptest.NewRecorder()
+			setupAvailableModelsRouter(svc).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/71/models", nil))
+			require.Equal(t, http.StatusOK, rec.Code)
+			var resp struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			got := make([]string, 0, len(resp.Data))
+			for _, model := range resp.Data {
+				got = append(got, model.ID)
+			}
+			if tc.want != nil {
+				require.Equal(t, tc.want, got)
+			} else {
+				require.Contains(t, got, "gemini-3.5-flash")
+				require.NotContains(t, got, "neon-gemini-alias")
+			}
+		})
+	}
+}

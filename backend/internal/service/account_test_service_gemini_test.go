@@ -48,7 +48,7 @@ func TestProcessGeminiStream_EmitsImageEvent(t *testing.T) {
 
 	stream := strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"QUJD\"}}]}}]}\n\ndata: [DONE]\n\n")
 
-	err := svc.processGeminiStream(ctx, stream)
+	err := svc.processGeminiStream(ctx, stream, false)
 	require.NoError(t, err)
 
 	body := recorder.Body.String()
@@ -65,6 +65,11 @@ func TestGeminiDefaultTestModel(t *testing.T) {
 	googleOne := &Account{Platform: PlatformGemini, Type: AccountTypeOAuth, Credentials: map[string]any{"oauth_type": "google_one"}}
 	require.Equal(t, geminicli.GoogleOneModels[0].ID, geminiDefaultTestModel(googleOne))
 	require.Contains(t, googleOne.GetModelMapping(), geminiDefaultTestModel(googleOne))
+
+	googleOne.Credentials["model_mapping"] = map[string]any{
+		"neon-gemini-alias": "gemini-3.5-flash",
+	}
+	require.Equal(t, "neon-gemini-alias", geminiDefaultTestModel(googleOne))
 
 	apiKey := &Account{Platform: PlatformGemini, Type: AccountTypeAPIKey}
 	require.Equal(t, geminicli.DefaultTestModel, geminiDefaultTestModel(apiKey))

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -225,6 +226,14 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
 	if account != nil && account.Platform == PlatformKiro && isKiroDirectModeAccount(account) {
 		return s.syncKiroDirectModelCatalog(ctx, account)
+	}
+	if account != nil && account.IsGeminiGoogleOne() {
+		models, err := s.FetchUpstreamSupportedModels(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+		// A quota bucket provides a candidate ID, without capability metadata.
+		return &UpstreamModelCatalog{Models: models, DiscoverySource: "gemini_code_assist_quota"}, nil
 	}
 	fetched, err := s.fetchUpstreamModelListWithObservation(ctx, account)
 	var (
@@ -823,6 +832,11 @@ func (s *AccountTestService) fetchUpstreamModelListRequest(ctx context.Context, 
 		return nil, nil, nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
 	}
 
+	if account.IsGeminiGoogleOne() {
+		models, err := s.fetchGoogleOneQuotaModels(ctx, account)
+		return models, nil, nil, err
+	}
+
 	if account.IsGemini() && account.IsVertexServiceAccount() {
 		models, err := s.fetchVertexGeminiUpstreamModels(ctx, account)
 		return models, nil, nil, err
@@ -1344,6 +1358,78 @@ func (s *AccountTestService) buildOpenAIOAuthUpstreamModelsRequest(ctx context.C
 	credentialAccount.ApplyHeaderOverrides(withoutHeaderOverrideRequestScope(req.Context()), req.Header)
 	enforceCodexIdentityHeadersWithUA(req.Header, credentialAccount.GetOpenAIUserAgent())
 	return req, nil
+}
+
+// fetchGoogleOneQuotaModels uses the same Code Assist host and project as
+// Gemini CLI generation but only queries quota buckets for candidate model IDs.
+func (s *AccountTestService) fetchGoogleOneQuotaModels(ctx context.Context, account *Account) ([]string, error) {
+	project := strings.TrimSpace(account.GetCredential("project_id"))
+	if project == "" {
+		return nil, newUpstreamModelSyncConfigError("Google One project ID is required for model sync", nil)
+	}
+	if s.geminiTokenProvider == nil {
+		return nil, newUpstreamModelSyncConfigError("Gemini token provider is not configured", nil)
+	}
+	baseURL, err := s.validateUpstreamBaseURL(geminicli.GeminiCliBaseURL)
+	if err != nil {
+		return nil, newUpstreamModelSyncConfigError("Invalid Gemini Code Assist base URL", nil)
+	}
+
+	token, err := s.geminiTokenProvider.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, newUpstreamModelSyncUpstreamError("Failed to get Google One access token", nil)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, newUpstreamModelSyncConfigError("No Google One access token is available", nil)
+	}
+
+	payload, _ := json.Marshal(map[string]string{"project": project})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/v1internal:retrieveUserQuota", bytes.NewReader(payload))
+	if err != nil {
+		return nil, newUpstreamModelSyncConfigError("Failed to build Google One quota request", nil)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	body, err := s.readUpstreamModelsResponse(req, account)
+	if err != nil {
+		// Preserve the safe status and message without retaining provider or proxy details.
+		var syncErr *UpstreamModelSyncError
+		if errors.As(err, &syncErr) {
+			return nil, &UpstreamModelSyncError{
+				Kind:       syncErr.Kind,
+				Message:    syncErr.SafeMessage(),
+				StatusCode: syncErr.StatusCode,
+			}
+		}
+		return nil, newUpstreamModelSyncUpstreamError("Failed to request Google One quota", nil)
+	}
+
+	var quota struct {
+		Buckets []json.RawMessage `json:"buckets"`
+	}
+	if err := json.Unmarshal(body, &quota); err != nil {
+		return nil, newUpstreamModelSyncUpstreamError("Google One quota response was invalid", nil)
+	}
+	models := make([]string, 0, len(quota.Buckets))
+	for _, raw := range quota.Buckets {
+		var bucket struct {
+			ModelID string `json:"modelId"`
+		}
+		if err := json.Unmarshal(raw, &bucket); err != nil {
+			continue
+		}
+		id := strings.TrimPrefix(strings.TrimSpace(bucket.ModelID), "models/")
+		if strings.HasPrefix(id, "gemini-") && len(id) > len("gemini-") && IsSafeGeminiModelPathSegment(id) {
+			models = append(models, id)
+		}
+	}
+	if len(models) == 0 {
+		return nil, newUpstreamModelSyncUpstreamError("Google One quota returned no Gemini models", nil)
+	}
+	return dedupeAndSortModelIDs(models), nil
 }
 
 func (s *AccountTestService) buildGeminiUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {

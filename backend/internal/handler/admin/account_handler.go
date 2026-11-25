@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -1281,9 +1282,10 @@ func (h *AccountHandler) Delete(c *gin.Context) {
 
 // TestAccountRequest represents the request body for testing an account
 type TestAccountRequest struct {
-	ModelID string `json:"model_id"`
-	Prompt  string `json:"prompt"`
-	Mode    string `json:"mode"`
+	ModelID             string `json:"model_id"`
+	Prompt              string `json:"prompt"`
+	Mode                string `json:"mode"`
+	GoogleOneExactModel bool   `json:"google_one_exact_model"`
 	// Optional media for Grok (and future) real generation tests.
 	// ImageDataURL / AudioDataURL are data:<mime>;base64,... payloads.
 	ImageDataURL string `json:"image_data_url"`
@@ -1314,12 +1316,16 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	}
 
 	var req TestAccountRequest
-	// Allow empty body, model_id is optional
-	_ = c.ShouldBindJSON(&req)
+	// Allow an empty body, but do not silently execute a malformed request.
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.BadRequest(c, "Invalid account test request")
+		return
+	}
 
 	opts := service.AccountTestOptions{
-		ImageDataURL: req.ImageDataURL,
-		AudioDataURL: req.AudioDataURL,
+		ImageDataURL:        req.ImageDataURL,
+		AudioDataURL:        req.AudioDataURL,
+		GoogleOneExactModel: req.GoogleOneExactModel,
 	}
 
 	// Use AccountTestService to test the account with SSE streaming
@@ -1328,7 +1334,7 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		return
 	}
 
-	if h.rateLimitService != nil {
+	if h.rateLimitService != nil && !req.GoogleOneExactModel {
 		if _, err := h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request.Context(), accountID); err != nil {
 			_ = c.Error(err)
 		}
@@ -2898,12 +2904,9 @@ func (h *AccountHandler) respondAvailableModels(c *gin.Context, account *service
 
 	// Handle Gemini accounts
 	if account.IsGemini() {
-		// Consumer Google One OAuth still uses the legacy Gemini CLI / Code
-		// Assist channel. Do not advertise newer 3.x or image models that the
-		// channel cannot serve.
 		if account.IsOAuth() {
 			if account.IsGeminiGoogleOne() {
-				response.Success(c, geminicli.GoogleOneModels)
+				response.Success(c, service.GeminiGoogleOneAccountTestModels(account))
 				return
 			}
 			response.Success(c, geminicli.DefaultModels)

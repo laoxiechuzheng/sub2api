@@ -612,7 +612,7 @@ export interface SyncUpstreamModelsResult {
   models: string[]
   metadata?: Record<string, UpstreamModelMetadata>
   warnings?: UpstreamModelSyncWarning[]
-  discovery_source?: 'upstream' | 'configured_fallback'
+  discovery_source?: 'upstream' | 'configured_fallback' | 'gemini_code_assist_quota'
   grok_model_diagnostics?: GrokModelDiagnostics
 }
 

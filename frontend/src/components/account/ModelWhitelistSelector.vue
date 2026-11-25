@@ -95,6 +95,7 @@
     <!-- Quick Actions -->
     <div class="mb-4 flex flex-wrap gap-2">
       <button
+        v-if="availableModelIds === undefined"
         type="button"
         @click="fillRelated"
         class="rounded-lg border border-blue-200 px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-900/30"
@@ -121,7 +122,7 @@
     </div>
 
     <!-- Custom Model Input -->
-    <div class="mb-3">
+    <div v-if="availableModelIds === undefined" class="mb-3">
       <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.accounts.customModelName') }}</label>
       <div class="flex gap-2">
         <input
@@ -165,6 +166,7 @@ const props = withDefaults(defineProps<{
   modelMappings?: { from: string; to: string }[]
   platform?: string
   platforms?: string[]
+  availableModelIds?: string[]
   accountId?: number
   syncCredentials?: {
     platform: string
@@ -241,6 +243,9 @@ const canSyncUpstream = computed(() => {
 })
 
 const availableOptions = computed(() => {
+  if (props.availableModelIds !== undefined) {
+    return props.availableModelIds.map(id => ({ value: id, label: id }))
+  }
   if (normalizedPlatforms.value.length === 0) {
     return allModels
   }

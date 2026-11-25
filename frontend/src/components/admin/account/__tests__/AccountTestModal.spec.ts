@@ -68,7 +68,7 @@ function mountModal(account: Record<string, unknown> = {
   platform: 'gemini',
   type: 'apikey',
   status: 'active'
-}) {
+}, renderModelSelect = false) {
   return mount(AccountTestModal, {
     props: {
       show: false,
@@ -77,7 +77,8 @@ function mountModal(account: Record<string, unknown> = {
     global: {
       stubs: {
         BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
-        Select: { template: '<div class="select-stub"></div>' },
+        Select: renderModelSelect ? false : { template: '<div class="select-stub"></div>' },
+        ...(renderModelSelect ? { Teleport: true } : {}),
         TextArea: {
           props: ['modelValue'],
           emits: ['update:modelValue'],
@@ -117,6 +118,102 @@ describe('AccountTestModal', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('uses a custom Google One model only after the administrator starts the test', async () => {
+    const wrapper = mountModal({
+      id: 71,
+      name: 'Google One',
+      platform: 'gemini',
+      type: 'oauth',
+      status: 'active',
+      credentials: { oauth_type: 'google_one' }
+    }, true)
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    await wrapper.get('.select-trigger').trigger('click')
+    await wrapper.get('input.select-search-input').setValue('gemini-4-neon')
+    await wrapper.get('[role="option"]').trigger('click')
+
+    expect(global.fetch).not.toHaveBeenCalled()
+    const start = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.startTest')!
+    await start.trigger('click')
+    await flushPromises()
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    const [url, request] = vi.mocked(global.fetch).mock.calls[0]
+    expect(url).toContain('/admin/accounts/71/test')
+    expect(JSON.parse(request?.body as string)).toEqual({
+      model_id: 'gemini-4-neon',
+      prompt: '',
+      google_one_exact_model: true
+    })
+  })
+
+  it('tests a saved Google One alias through its configured mapping', async () => {
+    getAvailableModels.mockResolvedValue([
+      { id: 'gemini-2.5-pro', display_name: 'Gemini 2.5 Pro' },
+      { id: 'my-gemini-alias', display_name: 'My Gemini Alias' }
+    ])
+    const wrapper = mountModal({
+      id: 71,
+      name: 'Google One',
+      platform: 'gemini',
+      type: 'oauth',
+      status: 'active',
+      credentials: { oauth_type: 'google_one' }
+    }, true)
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    await wrapper.get('.select-trigger').trigger('click')
+    const alias = wrapper.findAll('[role="option"]').find(option => option.text() === 'My Gemini Alias')!
+    await alias.trigger('click')
+    const start = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.startTest')!
+    await start.trigger('click')
+    await flushPromises()
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    const [, request] = vi.mocked(global.fetch).mock.calls[0]
+    expect(JSON.parse(request?.body as string)).toEqual({
+      model_id: 'my-gemini-alias',
+      prompt: ''
+    })
+  })
+
+  it('blocks an invalid custom Google One model ID before sending a test', async () => {
+    const wrapper = mountModal({
+      id: 71,
+      name: 'Google One',
+      platform: 'gemini',
+      type: 'oauth',
+      status: 'active',
+      credentials: { oauth_type: 'google_one' }
+    }, true)
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    await wrapper.get('.select-trigger').trigger('click')
+    await wrapper.get('input.select-search-input').setValue('gemini-4/neon')
+    await wrapper.get('[role="option"]').trigger('click')
+
+    const start = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.startTest')!
+    expect(start.attributes('disabled')).toBeDefined()
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  it('retains the existing model selector for other Gemini OAuth types', async () => {
+    const wrapper = mountModal({
+      id: 73,
+      name: 'Gemini Code Assist',
+      platform: 'gemini',
+      type: 'oauth',
+      status: 'active',
+      credentials: { oauth_type: 'code_assist' }
+    }, true)
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    await wrapper.get('.select-trigger').trigger('click')
+
+    expect(wrapper.find('input.select-search-input').exists()).toBe(false)
   })
 
   it('gemini 图片模型测试会携带提示词并渲染图片预览', async () => {

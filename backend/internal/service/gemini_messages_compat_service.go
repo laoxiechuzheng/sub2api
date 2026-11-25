@@ -547,10 +547,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	}
 
 	originalModel := req.Model
-	mappedModel := req.Model
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
-		mappedModel = account.GetMappedModel(req.Model)
-	}
+	mappedModel := geminiGenerationModel(account, originalModel)
 
 	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(body, mappedModel)
 	if err != nil {
@@ -1085,6 +1082,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	}, nil
 }
 
+// geminiGenerationModel resolves the account mapping for static credentials
+// and Google One OAuth. Other Gemini OAuth modes retain their requested model.
+func geminiGenerationModel(account *Account, requestedModel string) string {
+	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount || account.IsGeminiGoogleOne() {
+		return account.GetMappedModel(requestedModel)
+	}
+	return requestedModel
+}
+
 func isGeminiSignatureRelatedError(respBody []byte) bool {
 	msg := strings.ToLower(strings.TrimSpace(extractAntigravityErrorMessage(respBody)))
 	if msg == "" {
@@ -1124,10 +1130,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	// `thoughtSignature` to avoid frequent INVALID_ARGUMENT 400s.
 	body = ensureGeminiFunctionCallThoughtSignatures(body)
 
-	mappedModel := originalModel
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
-		mappedModel = account.GetMappedModel(originalModel)
-	}
+	mappedModel := geminiGenerationModel(account, originalModel)
 	if action != "countTokens" && geminiImageGenerationDenied(c, body, originalModel, mappedModel) {
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, ImageGenerationPermissionMessage())
 	}
