@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/gemini"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -60,18 +61,6 @@ func geminiThinkingParamForModel(model string) geminiThinkingParam {
 	default:
 		return geminiThinkingParamNone
 	}
-}
-
-// geminiModelNameCarriesThinkingTier 判断模型名是否以档位后缀结尾（如 -low/-high），
-// 这类名字由上游按名字选档，不再叠加思考档位参数。
-func geminiModelNameCarriesThinkingTier(model string) bool {
-	name := strings.ToLower(strings.TrimSpace(model))
-	for _, suffix := range []string{"-minimal", "-low", "-medium", "-high", "-xhigh", "-max", "-tiered"} {
-		if strings.HasSuffix(name, suffix) {
-			return true
-		}
-	}
-	return false
 }
 
 // claudeThinkingIntent 是 Anthropic 请求体里与思考相关的意图。
@@ -189,7 +178,7 @@ func applyGeminiCompatThinkingConfig(geminiReq, claudeBody []byte, upstreamModel
 	intent := parseClaudeThinkingIntent(claudeBody)
 	out := geminiReq
 	thinkingOff := false
-	if !geminiModelNameCarriesThinkingTier(upstreamModel) {
+	if !gemini.ModelNameCarriesThinkingTier(upstreamModel) {
 		switch param {
 		case geminiThinkingParamLevel:
 			if level := geminiThinkingLevelFor(upstreamModel, intent); level != "" {

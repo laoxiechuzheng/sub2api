@@ -1530,3 +1530,106 @@ func TestAntigravityCompatInterleavedThoughtChunksResetIdleTimeout(t *testing.T)
 	require.Contains(t, out, "event: response.completed")
 	require.NotContains(t, out, "stream_timeout")
 }
+
+func TestAntigravityReasoningVariantsAcrossProtocols(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	type route struct {
+		path    string
+		request func(model, effort, thinking string) string
+		forward func(*AntigravityGatewayService, *gin.Context, *Account, []byte) (*ForwardResult, error)
+	}
+	routes := []route{
+		{
+			path: "/v1/messages",
+			request: func(model, effort, thinking string) string {
+				return fmt.Sprintf(`{"model":%q,"max_tokens":2048,"stream":true,"messages":[{"role":"user","content":"test"}],"output_config":{"effort":%q}%s}`, model, effort, thinking)
+			},
+			forward: func(s *AntigravityGatewayService, c *gin.Context, a *Account, b []byte) (*ForwardResult, error) {
+				return s.Forward(c.Request.Context(), c, a, b, false)
+			},
+		},
+		{
+			path: "/v1/chat/completions",
+			request: func(model, effort, _ string) string {
+				return fmt.Sprintf(`{"model":%q,"stream":true,"messages":[{"role":"user","content":"test"}],"reasoning_effort":%q}`, model, effort)
+			},
+			forward: func(s *AntigravityGatewayService, c *gin.Context, a *Account, b []byte) (*ForwardResult, error) {
+				return s.ForwardAsChatCompletions(c.Request.Context(), c, a, b, nil)
+			},
+		},
+		{
+			path: "/v1/responses",
+			request: func(model, effort, _ string) string {
+				return fmt.Sprintf(`{"model":%q,"stream":true,"input":"test","reasoning":{"effort":%q}}`, model, effort)
+			},
+			forward: func(s *AntigravityGatewayService, c *gin.Context, a *Account, b []byte) (*ForwardResult, error) {
+				return s.ForwardAsResponses(c.Request.Context(), c, a, b, nil)
+			},
+		},
+	}
+
+	check := func(t *testing.T, route route, model, effort, thinking, want string) {
+		t.Helper()
+		account := newAntigravityCompatAccount(AccountTypeOAuth)
+		mapping := account.Credentials["model_mapping"].(map[string]any)
+		for _, base := range []string{"gemini-3.8-flash", "gemini-4-argon", "gemini-4-neon"} {
+			mapping[base] = base
+			for _, level := range []string{"low", "medium", "high"} {
+				variant := base + "-" + level
+				mapping[variant] = variant
+			}
+		}
+		mapping["gemini-4-neon-xhigh"] = "gemini-4-neon-xhigh"
+		upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{antigravityCompatSuccessResponse()}}
+		svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, upstream)
+		body := []byte(route.request(model, effort, thinking))
+		c, recorder := newAntigravityCompatContext(http.MethodPost, route.path, body)
+		result, err := route.forward(svc, c, account, body)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, recorder.Code)
+		require.Len(t, upstream.requestBodies, 1)
+		wire := upstream.requestBodies[0]
+		require.Equal(t, want, gjson.GetBytes(wire, "model").String(), "wire model")
+		require.Equal(t, want, result.UpstreamModel, "recorded upstream model")
+		require.False(t, gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingLevel").Exists())
+		require.False(t, gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingBudget").Exists())
+	}
+
+	for _, route := range routes {
+		t.Run(strings.TrimPrefix(route.path, "/v1/"), func(t *testing.T) {
+			for _, model := range []string{"gemini-3.8-flash", "gemini-4-argon", "gemini-4-neon"} {
+				for _, level := range []string{"low", "medium", "high"} {
+					t.Run(model+"/"+level, func(t *testing.T) {
+						check(t, route, model, level, `,"thinking":{"type":"adaptive"}`, model+"-"+level)
+					})
+				}
+			}
+			t.Run("neon-xhigh", func(t *testing.T) {
+				check(t, route, "gemini-4-neon", "xhigh", "", "gemini-4-neon-xhigh")
+			})
+			t.Run("neon-max-alias", func(t *testing.T) {
+				check(t, route, "gemini-4-neon", "max", "", "gemini-4-neon-xhigh")
+			})
+			t.Run("missing-xhigh-keeps-configured-fallback", func(t *testing.T) {
+				check(t, route, "gemini-4-argon", "xhigh", "", "gemini-4-argon-high")
+			})
+			t.Run("explicit-variant-takes-precedence", func(t *testing.T) {
+				check(t, route, "gemini-4-neon-xhigh", "medium", "", "gemini-4-neon-xhigh")
+			})
+			t.Run("unspecified-effort-keeps-default", func(t *testing.T) {
+				check(t, route, "gemini-4-neon", "", "", "gemini-4-neon-high")
+			})
+		})
+	}
+
+	t.Run("messages-effort-takes-precedence-over-budget", func(t *testing.T) {
+		check(t, routes[0], "gemini-4-neon", "medium", `,"thinking":{"type":"enabled","budget_tokens":24576}`, "gemini-4-neon-medium")
+	})
+	t.Run("messages-budget-used-without-explicit-effort", func(t *testing.T) {
+		check(t, routes[0], "gemini-4-neon", "", `,"thinking":{"type":"enabled","budget_tokens":4096}`, "gemini-4-neon-medium")
+	})
+	t.Run("messages-disabled-thinking-keeps-lowest-variant", func(t *testing.T) {
+		check(t, routes[0], "gemini-4-neon", "high", `,"thinking":{"type":"disabled"}`, "gemini-4-neon-low")
+	})
+}

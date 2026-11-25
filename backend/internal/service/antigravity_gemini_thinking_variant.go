@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/gemini"
 )
 
 // Gemini 原生请求（/v1beta/models/{model}:generateContent 等）经 Antigravity 账号转发时，
@@ -21,8 +22,6 @@ import (
 // 选中的后缀在映射表里不存在时按 high → medium → low → tiered 的顺序降级到存在的变体。
 // 显式映射（裸名本身在 model_mapping 里）始终优先，行为与现在完全一致。
 
-var geminiThinkingVariantSuffixes = []string{"-low", "-medium", "-high", "-tiered"}
-
 const (
 	geminiThinkingBudgetLowMax    = 1024
 	geminiThinkingBudgetMediumMax = 8192
@@ -35,16 +34,6 @@ type geminiThinkingConfigProbe struct {
 			ThinkingLevel  string       `json:"thinkingLevel"`
 		} `json:"thinkingConfig"`
 	} `json:"generationConfig"`
-}
-
-// hasGeminiThinkingVariantSuffix 判断模型名是否已经带了思考深度后缀。
-func hasGeminiThinkingVariantSuffix(model string) bool {
-	for _, suffix := range geminiThinkingVariantSuffixes {
-		if strings.HasSuffix(model, suffix) {
-			return true
-		}
-	}
-	return false
 }
 
 // geminiThinkingLevelFromBody 从 Gemini 原生请求体推导期望的思考档位（low/medium/high）。
@@ -85,20 +74,23 @@ func geminiThinkingLevelFromBody(body []byte) string {
 	}
 }
 
-// geminiThinkingLevelFromClaudeBody 结合兼容层转换后的 output_config.effort 与 thinking 配置推导档位。
-// OpenAI Responses / Chat Completions 在 effort=low/minimal/none 时可能只写 output_config.effort 而不写 thinking，
-// 优先读取显式 effort 可避免裸 Gemini 模型被默认归入 high 变体。
-func geminiThinkingLevelFromClaudeBody(claudeBody []byte, thinking *antigravity.ThinkingConfig) string {
-	switch parseClaudeThinkingIntent(claudeBody).tier {
-	case "minimal", "low":
+// geminiThinkingLevelFromClaudeRequest reads the native or converted Messages
+// request before Gemini variant selection. OpenAI xhigh can arrive here as max.
+func geminiThinkingLevelFromClaudeRequest(req *antigravity.ClaudeRequest) string {
+	if req.Thinking != nil && strings.EqualFold(strings.TrimSpace(req.Thinking.Type), "disabled") {
 		return "low"
-	case "medium":
-		return "medium"
-	case "high":
-		return "high"
-	default:
-		return geminiThinkingLevelFromClaudeThinking(thinking)
 	}
+	if req.OutputConfig != nil {
+		switch effort := strings.ToLower(strings.TrimSpace(req.OutputConfig.Effort)); effort {
+		case "none", "minimal":
+			return "low"
+		case "low", "medium", "high", "xhigh":
+			return effort
+		case "max":
+			return "xhigh"
+		}
+	}
+	return geminiThinkingLevelFromClaudeThinking(req.Thinking)
 }
 
 // geminiThinkingLevelFromClaudeThinking 用 Claude Messages 协议的 thinking 配置推导档位，
@@ -132,13 +124,13 @@ func resolveGeminiThinkingVariant(account *Account, requestedModel string, body 
 
 // resolveGeminiThinkingVariantForLevel 是 resolveGeminiThinkingVariant 的协议无关内核：
 // 调用方负责按自身协议推导 preferred 档位（Gemini 原生读 generationConfig.thinkingConfig，
-// Claude/OpenAI 兼容层读 thinking.budget_tokens），此处只做映射查找与降级。
+// Claude/OpenAI 入口读 output_config.effort 并兼容 thinking.budget_tokens），此处只做映射查找与降级。
 func resolveGeminiThinkingVariantForLevel(account *Account, requestedModel string, preferred string) (string, bool) {
 	if account == nil {
 		return "", false
 	}
 	model := strings.TrimSpace(strings.TrimPrefix(requestedModel, "models/"))
-	if !strings.HasPrefix(model, "gemini-") || hasGeminiThinkingVariantSuffix(model) {
+	if !strings.HasPrefix(model, "gemini-") || gemini.ModelNameCarriesThinkingTier(model) {
 		return "", false
 	}
 	mapping := account.GetModelMapping()

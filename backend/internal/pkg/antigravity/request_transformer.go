@@ -696,9 +696,9 @@ func isAntigravityOpusHighTierModel(model string) bool {
 		strings.HasPrefix(lower, "claude-opus-4-8")
 }
 
-// carbonThinkingConfig preserves the upstream default when no effort is specified.
-// https://aistudio.google.com/docs/whats-new-gemini-4-carbon
-func carbonThinkingConfig(req *ClaudeRequest, bareModel bool) *GeminiThinkingConfig {
+// geminiVariantThinkingConfig leaves the effort to the selected variant.
+// Bare Gemini 4 Carbon accepts an optional thinkingLevel.
+func geminiVariantThinkingConfig(req *ClaudeRequest, bareModel bool) *GeminiThinkingConfig {
 	cfg := &GeminiThinkingConfig{}
 	if req.Thinking != nil {
 		cfg.IncludeThoughts = req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive"
@@ -751,16 +751,14 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 		config.MaxOutputTokens = req.MaxTokens
 	}
 
-	// Carbon accepts thinking levels rather than token budgets. Tiered IDs, when
-	// supplied by the account catalog, already select the level upstream.
-	carbonModel := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(req.Model)), "models/")
-	isCarbon := carbonModel == "gemini-4-carbon" || carbonModel == "gemini-4-carbon-low" || carbonModel == "gemini-4-carbon-medium" || carbonModel == "gemini-4-carbon-high"
-	if isCarbon {
-		config.ThinkingConfig = carbonThinkingConfig(req, carbonModel == "gemini-4-carbon")
-	}
-
-	// Thinking 配置
-	if !isCarbon && req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive") {
+	// Fixed variants select effort by model ID. Keep legacy budgets on the
+	// dynamic -tiered variant and leave bare Carbon on its thinkingLevel path.
+	model := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(req.Model)), "models/")
+	bareCarbon := model == "gemini-4-carbon"
+	fixedVariant := gemini.ModelNameCarriesThinkingTier(model) && !strings.HasSuffix(model, "-tiered")
+	if bareCarbon || fixedVariant {
+		config.ThinkingConfig = geminiVariantThinkingConfig(req, bareCarbon)
+	} else if req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive") {
 		config.ThinkingConfig = &GeminiThinkingConfig{
 			IncludeThoughts: true,
 		}

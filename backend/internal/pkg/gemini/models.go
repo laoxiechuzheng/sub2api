@@ -4,6 +4,20 @@ package gemini
 
 import "strings"
 
+// ModelNameCarriesThinkingTier reports whether a Gemini model ID already selects a thinking variant.
+func ModelNameCarriesThinkingTier(model string) bool {
+	name := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "models/")
+	if !strings.HasPrefix(name, "gemini-") {
+		return false
+	}
+	for _, suffix := range []string{"-minimal", "-low", "-medium", "-high", "-xhigh", "-max", "-tiered"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 type Model struct {
 	Name                       string   `json:"name"`
 	DisplayName                string   `json:"displayName,omitempty"`
